@@ -1,0 +1,32 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="tile" x1="512" y1="96" x2="512" y2="928" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2c2c2c"/>
+      <stop offset="1" stop-color="#161616"/>
+    </linearGradient>
+    <linearGradient id="prompt" x1="340" y1="400" x2="470" y2="624" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#9bbf8a"/>
+      <stop offset="1" stop-color="#7fa3df"/>
+    </linearGradient>
+    <linearGradient id="topglow" x1="512" y1="96" x2="512" y2="430" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.06"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- rounded terminal tile -->
+  <rect x="96" y="96" width="832" height="832" rx="190" fill="url(#tile)"/>
+  <rect x="96" y="96" width="832" height="832" rx="190" fill="url(#topglow)"/>
+  <rect x="98" y="98" width="828" height="828" rx="188" fill="none" stroke="#3a3a3a" stroke-width="4"/>
+
+  <!-- prompt chevron -->
+  <polyline points="356,402 478,512 356,622" fill="none" stroke="url(#prompt)"
+            stroke-width="56" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- composed context lines (notes + files + turns) -->
+  <rect x="540" y="422" width="248" height="42" rx="21" fill="#9bbf8a"/>
+  <rect x="540" y="491" width="188" height="42" rx="21" fill="#7fa3df"/>
+  <rect x="540" y="560" width="120" height="42" rx="21" fill="#8a7fb0"/>
+  <!-- cursor block -->
+  <rect x="676" y="560" width="48" height="42" rx="12" fill="#8a7fb0" opacity="0.55"/>
+</svg>

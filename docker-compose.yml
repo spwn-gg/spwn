@@ -1,0 +1,51 @@
+# Dev environment. Two services share one image and the same caches:
+#   * dev — headless builds, tests, the gated pty spike, and one-time claude login
+#   * gui — runs the Tauri window on a virtual X display, served to the browser
+#           via noVNC at http://localhost:6080/vnc.html
+#
+# FULL HOST INTEGRATION: the host home ($HOME) is mounted at the SAME path (rw)
+# and HOME is set to it, so the container's `claude` uses the EXACT same paths as
+# your host (~/.claude.json + ~/.claude/), is already authenticated, and sees your
+# real projects/sessions. Resume/branch/fork work because each session's original
+# working dir resolves at its real path inside the container. Caveats: the
+# container runs as root, so files it creates (session JSONL, edited code) are
+# root-owned on the host, and it has rw access to everything under $HOME.
+#
+# Named volumes cache the cargo registry, the Rust target dir, and node_modules.
+
+x-common: &common
+  build: .
+  image: context-manager-dev
+  working_dir: /work
+  volumes:
+    - .:/work
+    - "${HOME}:${HOME}" # real host home at the same path (code + ~/.claude)
+    - cargo-registry:/usr/local/cargo/registry
+    - cargo-target:/work/src-tauri/target
+    - node-modules:/work/node_modules
+  environment:
+    - CARGO_TERM_COLOR=always
+    # Use the host home so claude finds ~/.claude.json + ~/.claude/ exactly as on
+    # the host (already authenticated). CARGO_HOME is set in the image, so the Rust
+    # toolchain is unaffected by this.
+    - "HOME=${HOME}"
+
+services:
+  dev:
+    <<: *common
+    stdin_open: true
+    tty: true
+    command: bash
+
+  gui:
+    <<: *common
+    ports:
+      - "6080:6080" # noVNC web UI
+    stdin_open: true
+    tty: true
+    command: bash scripts/gui.sh
+
+volumes:
+  cargo-registry:
+  cargo-target:
+  node-modules:

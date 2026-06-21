@@ -1,0 +1,47 @@
+[package]
+name = "context_manager"
+version = "0.1.0"
+description = "Desktop GUI for managing Claude Code sessions"
+authors = ["Mark Barta"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "context_manager_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Filesystem watching for the project/session navigation tree.
+notify = "6"
+notify-debouncer-full = "0.3"
+# Locating ~/.claude and the user's home dir portably.
+directories = "5"
+# Async runtime + concurrency primitives.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+# Stable ids for ptys/panes.
+uuid = { version = "1", features = ["v4"] }
+# Ergonomic error handling.
+anyhow = "1"
+thiserror = "1"
+# Encode raw pty bytes for IPC (avoids corrupting UTF-8 split across read chunks).
+base64 = "0.22"
+# rmux: programmable terminal multiplexer SDK. Backs claude sessions with
+# persistent sessions + structured snapshots/wait_for_text for rewind/branch.
+rmux-sdk = "0.6"
+
+[dev-dependencies]
+# The M0 rewind/branch risk-spike harness drives a real `claude` over a pty.
+tempfile = "3"
+portable-pty = "0.8"
