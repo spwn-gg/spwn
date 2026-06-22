@@ -11,6 +11,10 @@ export interface TerminalRec {
 	groupId?: string | null;
 	/** The terminal this was forked from (its parent in the branch tree). */
 	parentId?: string | null;
+	/** Git branch this session works on in its own worktree (null = no worktree). */
+	branch?: string | null;
+	/** The branch this session merges back into. */
+	baseBranch?: string | null;
 }
 
 export interface ContextBlock {

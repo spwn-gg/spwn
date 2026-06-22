@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import { readTranscript, onProjectsChanged, addContextBlock } from './ipc';
-	import { openTab, refreshProjects } from './stores';
+	import { readTranscript, onProjectsChanged, addContextBlock, mergeSession } from './ipc';
+	import { openTab, refreshProjects, projects } from './stores';
 	import type { Turn, QuestionSpec } from './types';
 	import { marked } from 'marked';
 	import DOMPurify from 'dompurify';
@@ -175,6 +175,27 @@
 		clearTimeout(statusTimer);
 	});
 
+	// This session's terminal record (for its worktree branch).
+	const term = $derived(
+		$projects.find((p) => p.id === projectId)?.terminals.find((t) => t.id === terminalId)
+	);
+	let merging = $state(false);
+
+	async function merge() {
+		if (!term?.branch || merging) return;
+		merging = true;
+		setStatus(`Merging ${term.branch} → ${term.baseBranch}…`);
+		try {
+			const msg = await mergeSession(projectId, terminalId!);
+			setStatus(msg);
+			await refreshProjects();
+		} catch (e) {
+			setStatus(String(e));
+		} finally {
+			merging = false;
+		}
+	}
+
 	function fork() {
 		if (!sessionId) return;
 		openTab({
@@ -227,6 +248,13 @@
 <div class="mirror">
 	<div class="bar">
 		<span class="title">Conversation</span>
+		{#if term?.branch}
+			<button
+				class="act"
+				disabled={merging}
+				onclick={merge}
+				title="Merge this session's branch ({term.branch}) into {term.baseBranch}">⤵ Merge</button>
+		{/if}
 		<button class="act" disabled={!sessionId} onclick={fork} title="Fork this whole session">⑂ Fork</button>
 	</div>
 	<div class="filters">

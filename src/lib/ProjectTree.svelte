@@ -202,6 +202,7 @@
 		<button class="row-main" onclick={() => openExisting(p, t)} title={t.title}>
 			<span class="t-icon" class:branch={depth > 0}>{depth > 0 ? '↳' : '✦'}</span>
 			<span class="t-title" class:attn={attnFor(t)}>{t.title}</span>
+			{#if t.branch}<span class="wt-chip" title="git worktree branch: {t.branch}">⎇ {t.branch.replace(/^cm\//, '')}</span>{/if}
 			{#if attnFor(t)}<span class="attn-dot" title="Needs attention"></span>{/if}
 			{#if node.children.length}<span class="count" title="{node.children.length} branch(es)">{node.children.length}</span>{/if}
 		</button>
@@ -532,6 +533,20 @@
 	.count {
 		color: #777;
 		font-size: 11px;
+	}
+	.wt-chip {
+		flex: 0 0 auto;
+		font-size: 10px;
+		font-family: ui-monospace, Menlo, monospace;
+		color: #7a8aa0;
+		background: #1b2230;
+		border: 1px solid #2a3344;
+		border-radius: 4px;
+		padding: 0 4px;
+		max-width: 90px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 	.t-title.attn {
 		color: #f0c674;

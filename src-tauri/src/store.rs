@@ -25,6 +25,13 @@ pub struct TerminalRec {
     /// tree). None for a root session. Lets the nav render true fork lineage.
     #[serde(default)]
     pub parent_id: Option<String>,
+    /// Git branch this session works on in its own worktree (None if the project
+    /// isn't a git repo). `cwd` points at the worktree.
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// The branch this session's branch should merge back into.
+    #[serde(default)]
+    pub base_branch: Option<String>,
 }
 
 /// A block in a project's context space: a manual note, a file's contents, or a
@@ -87,6 +94,14 @@ impl ProjectStore {
         self.projects
             .iter()
             .flat_map(|p| p.terminals.iter())
+            .find(|t| t.id == terminal_id)
+    }
+
+    /// Mutable lookup of a terminal record by id, across all projects.
+    pub fn terminal_mut(&mut self, terminal_id: &str) -> Option<&mut TerminalRec> {
+        self.projects
+            .iter_mut()
+            .flat_map(|p| p.terminals.iter_mut())
             .find(|t| t.id == terminal_id)
     }
 }
