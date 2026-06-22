@@ -584,6 +584,47 @@ pub fn claude_answer(
     send_to_agent(&state, &terminal_id, &payload)
 }
 
+/// Rewind a session to an earlier turn: restart its sidecar resumed at `anchor_uuid`,
+/// truncating the conversation to that point (later turns become an abandoned branch
+/// the transcript no longer renders).
+#[tauri::command]
+pub fn claude_rewind(
+    app: AppHandle,
+    state: State<AppState>,
+    terminal_id: String,
+    anchor_uuid: String,
+) -> Result<(), String> {
+    let (session_id, cwd) = {
+        let store = state.store.lock();
+        let t = store
+            .terminal(&terminal_id)
+            .ok_or_else(|| "no such session".to_string())?;
+        let sid = t
+            .session_id
+            .clone()
+            .ok_or_else(|| "this session hasn't started yet".to_string())?;
+        (sid, t.cwd.clone())
+    };
+    let claude_bin = resolved_claude(state.inner())
+        .ok_or_else(|| "claude binary not found (set its path in Settings)".to_string())?;
+    let cwd_path = std::fs::canonicalize(&cwd).unwrap_or_else(|_| PathBuf::from(&cwd));
+    if let Some(mut agent) = state.claude_agents.lock().remove(&terminal_id) {
+        agent.kill();
+    }
+    let agent = crate::claude::spawn_claude_agent(
+        app,
+        &terminal_id,
+        &cwd_path,
+        Some(session_id.as_str()),
+        Some(anchor_uuid.as_str()),
+        false,
+        &claude_bin,
+    )
+    .map_err(|e| e.to_string())?;
+    state.claude_agents.lock().insert(terminal_id, agent);
+    Ok(())
+}
+
 /// Write one JSON-line command to a Claude sidecar's stdin.
 fn send_to_agent(state: &AppState, terminal_id: &str, payload: &str) -> Result<(), String> {
     let mut agents = state.claude_agents.lock();

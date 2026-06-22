@@ -3,6 +3,7 @@
 
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
@@ -33,27 +34,27 @@ pub struct Turn {
     pub blocks: Vec<Block>,
 }
 
-/// Read and parse a transcript into all main-line user/assistant turns, in file
-/// (chronological) order. We render the full conversation rather than only the
-/// `parentUuid` leaf-chain, so nothing is dropped if a link points at a skipped
-/// entry. (Sidechain/subagent traffic is still excluded.)
+/// Read and parse a transcript into the **active** conversation path — the chain
+/// of user/assistant turns reachable from the latest turn via `parentUuid`. A
+/// `/rewind` branches the JSONL into a tree; following the leaf-chain hides the
+/// abandoned branch instead of showing both. Falls back to all turns (file order)
+/// if the chain can't be walked. (Sidechain/subagent traffic is excluded.)
 pub fn read_transcript(path: &Path) -> Vec<Turn> {
     let Ok(text) = fs::read_to_string(path) else {
         return Vec::new();
     };
 
-    let mut turns: Vec<Turn> = Vec::new();
+    // `parentUuid` for every entry (the chain runs through non-turn entries too),
+    // plus the renderable turn for each user/assistant entry.
+    let mut parent_of: HashMap<String, Option<String>> = HashMap::new();
+    let mut turn_of: HashMap<String, Turn> = HashMap::new();
+    let mut all_turns: Vec<Turn> = Vec::new();
+    let mut last_turn: Option<String> = None;
+
     for line in text.lines() {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        let kind = v.get("type").and_then(Value::as_str).unwrap_or("");
-        if kind != "user" && kind != "assistant" {
-            continue;
-        }
-        if v.get("isSidechain").and_then(Value::as_bool).unwrap_or(false) {
-            continue;
-        }
         let Some(uuid) = v.get("uuid").and_then(Value::as_str) else {
             continue;
         };
@@ -61,24 +62,51 @@ pub fn read_transcript(path: &Path) -> Vec<Turn> {
             .get("parentUuid")
             .and_then(Value::as_str)
             .map(str::to_string);
-        let timestamp = v.get("timestamp").and_then(Value::as_str).unwrap_or("");
-        let message = v.get("message");
-        let model = message
-            .and_then(|m| m.get("model"))
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        let blocks = message.map(parse_blocks).unwrap_or_default();
+        parent_of.insert(uuid.to_string(), parent_uuid.clone());
 
-        turns.push(Turn {
-            uuid: uuid.to_string(),
-            parent_uuid,
-            role: kind.to_string(),
-            timestamp: Some(timestamp.to_string()),
-            model,
-            blocks,
-        });
+        let kind = v.get("type").and_then(Value::as_str).unwrap_or("");
+        if (kind == "user" || kind == "assistant")
+            && !v.get("isSidechain").and_then(Value::as_bool).unwrap_or(false)
+        {
+            let timestamp = v.get("timestamp").and_then(Value::as_str).unwrap_or("");
+            let message = v.get("message");
+            let model = message
+                .and_then(|m| m.get("model"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let blocks = message.map(parse_blocks).unwrap_or_default();
+            let turn = Turn {
+                uuid: uuid.to_string(),
+                parent_uuid,
+                role: kind.to_string(),
+                timestamp: Some(timestamp.to_string()),
+                model,
+                blocks,
+            };
+            turn_of.insert(uuid.to_string(), turn.clone());
+            all_turns.push(turn);
+            last_turn = Some(uuid.to_string());
+        }
     }
-    turns
+
+    // Walk from the latest turn back to the root, collecting the turns on the way.
+    let mut path: Vec<Turn> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut cur = last_turn;
+    while let Some(u) = cur {
+        if !seen.insert(u.clone()) {
+            break; // cycle guard
+        }
+        if let Some(t) = turn_of.get(&u) {
+            path.push(t.clone());
+        }
+        cur = parent_of.get(&u).cloned().flatten();
+    }
+    if path.is_empty() {
+        return all_turns;
+    }
+    path.reverse();
+    path
 }
 
 /// Map a `message` object's `content` (string or block list) into display blocks.

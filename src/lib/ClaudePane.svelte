@@ -176,6 +176,17 @@
 		busy = true; // the held turn resumes once answered
 	}
 
+	// The session's sidecar was just restarted (rewind) — drop stale live state.
+	function onRewound() {
+		clearTimeout(clearTimer);
+		busy = false;
+		resetLive();
+		pendingUserText = null;
+		pendingPermissions = [];
+		pendingQuestions = [];
+		lastAssistantUuid = null;
+	}
+
 	function allow(pid: string) {
 		if (id) claudePermission(id, pid, true);
 		pendingPermissions = pendingPermissions.filter((p) => p.id !== pid);
@@ -197,7 +208,8 @@
 			{streamingThinking}
 			{liveTools}
 			{pendingUserText}
-			{onReload} />
+			{onReload}
+			{onRewound} />
 	</div>
 	{#if exited}
 		<div class="ended">Session ended — send a message to resume.</div>

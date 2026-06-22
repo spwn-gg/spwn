@@ -80,6 +80,7 @@ pub fn run() {
             commands::claude_set_mode,
             commands::claude_interrupt,
             commands::claude_answer,
+            commands::claude_rewind,
             commands::write_to_pty,
             commands::resize_pty,
             commands::read_transcript,

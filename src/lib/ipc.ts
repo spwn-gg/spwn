@@ -168,6 +168,11 @@ export function claudeAnswer(terminalId: string, id: string, text: string): Prom
 	return invoke('claude_answer', { terminalId, id, text });
 }
 
+/** Rewind a session to an earlier turn (anchorUuid = the turn's uuid). */
+export function claudeRewind(terminalId: string, anchorUuid: string): Promise<void> {
+	return invoke('claude_rewind', { terminalId, anchorUuid });
+}
+
 // --- Claude transcript ---
 
 /** Prior conversation turns for a saved claude session (history on reattach). */

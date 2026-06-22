@@ -1,6 +1,12 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import { readTranscript, onProjectsChanged, addContextBlock, mergeSession } from './ipc';
+	import {
+		readTranscript,
+		onProjectsChanged,
+		addContextBlock,
+		mergeSession,
+		claudeRewind
+	} from './ipc';
 	import { openTab, refreshProjects, projects } from './stores';
 	import type { Turn, QuestionSpec } from './types';
 	import { marked } from 'marked';
@@ -45,7 +51,8 @@
 		streamingThinking = '',
 		liveTools = [],
 		pendingUserText = null,
-		onReload = () => {}
+		onReload = () => {},
+		onRewound = () => {}
 	}: {
 		projectId: string;
 		terminalId?: string;
@@ -56,6 +63,7 @@
 		liveTools?: { id: string; name: string }[];
 		pendingUserText?: string | null;
 		onReload?: (turns: Turn[]) => void;
+		onRewound?: () => void;
 	} = $props();
 
 	const showOverlay = $derived(
@@ -63,6 +71,15 @@
 	);
 
 	let turns = $state<Turn[]>([]);
+	// Optimistic rewind: truncate the view to the anchor until the next message
+	// lands and the parser's active-path takes over.
+	let rewindAnchor = $state<string | null>(null);
+	let rewindBaseline: string | null = null;
+	const visibleTurns = $derived.by(() => {
+		if (!rewindAnchor) return turns;
+		const i = turns.findIndex((t) => t.uuid === rewindAnchor);
+		return i >= 0 ? turns.slice(0, i + 1) : turns;
+	});
 	let loadingId: string | null = null;
 	let status = $state('');
 	let statusTimer: ReturnType<typeof setTimeout> | undefined;
@@ -95,7 +112,20 @@
 		if (loadingId === sid) {
 			turns = loaded;
 			onReload(loaded);
+			// Once a new message lands past the rewind, the active-path parser is
+			// authoritative — drop the optimistic truncation.
+			const leaf = loaded.length ? loaded[loaded.length - 1].uuid : null;
+			if (rewindAnchor && leaf !== rewindBaseline) rewindAnchor = null;
 		}
+	}
+
+	function rewindTo(uuid: string) {
+		if (!terminalId) return;
+		rewindBaseline = turns.length ? turns[turns.length - 1].uuid : null;
+		rewindAnchor = uuid;
+		claudeRewind(terminalId, uuid).catch((e) => setStatus(String(e)));
+		setStatus('Rewound here — your next message continues from this point; later turns drop.');
+		onRewound();
 	}
 
 	$effect(() => {
@@ -273,16 +303,19 @@
 	</div>
 	{#if status}<div class="status">{status}</div>{/if}
 	<div class="body" role="presentation" bind:this={bodyEl} onscroll={onScroll} onclick={onBodyClick}>
-		{#if turns.length === 0 && !pendingUserText && !showOverlay}
+		{#if visibleTurns.length === 0 && !pendingUserText && !showOverlay}
 			<div class="hint">{sessionId ? 'No messages yet.' : 'Send a message to start the conversation.'}</div>
 		{/if}
-		{#each turns as t (t.uuid)}
+		{#each visibleTurns as t (t.uuid)}
 			{@const toolOnly = t.blocks.length > 0 && t.blocks.every((b) => b.kind === 'toolResult')}
 			{@const visible = t.blocks.filter(blockVisible)}
 			{#if !toolOnly && visible.length > 0}
 				<div class="turn {t.role}">
 					<div class="who">
 						<span>{t.role}</span>
+						{#if t.role === 'assistant'}
+							<button class="rewind" title="Rewind the conversation to here" onclick={() => rewindTo(t.uuid)}>↺ rewind</button>
+						{/if}
 						<button class="addctx" title="Add to project context" onclick={() => addToContext(t)}>＋ ctx</button>
 					</div>
 					{#each t.blocks as b}
@@ -454,7 +487,8 @@
 			opacity: 1;
 		}
 	}
-	.addctx {
+	.addctx,
+	.rewind {
 		background: none;
 		border: 1px solid #3a3a3a;
 		color: #888;
@@ -464,10 +498,23 @@
 		cursor: pointer;
 		text-transform: none;
 		letter-spacing: 0;
+		opacity: 0;
+		transition: opacity 0.1s;
+	}
+	.turn:hover .addctx,
+	.turn:hover .rewind,
+	.addctx:focus-visible,
+	.rewind:focus-visible {
+		opacity: 1;
 	}
 	.addctx:hover {
 		color: #fff;
 		background: #2a3344;
+	}
+	.rewind:hover {
+		color: #fff;
+		background: #3a2e4a;
+		border-color: #5a4a7a;
 	}
 	.turn.user {
 		align-self: flex-end;
