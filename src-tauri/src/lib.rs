@@ -1,6 +1,5 @@
 mod claude;
 mod commands;
-mod gitwt;
 mod projects;
 mod pty;
 mod settings;
@@ -73,7 +72,6 @@ pub fn run() {
             commands::open_terminal,
             commands::close_terminal,
             commands::delete_terminal,
-            commands::merge_session,
             commands::set_terminal_session,
             commands::claude_send,
             commands::claude_permission,

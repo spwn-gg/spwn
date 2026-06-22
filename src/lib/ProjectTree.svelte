@@ -211,12 +211,11 @@
 		<button class="row-main" onclick={() => openExisting(p, t)} title={t.title}>
 			<span class="t-icon" class:branch={depth > 0}>{depth > 0 ? '↳' : '✦'}</span>
 			<span class="t-title" class:attn={attnFor(t)}>{t.title}</span>
-			{#if t.branch}<span class="wt-chip" title="git worktree branch: {t.branch}">⎇ {t.branch.replace(/^cm\//, '')}</span>{/if}
 			{#if attnFor(t)}<span class="attn-dot" title="Needs attention"></span>{/if}
 			{#if node.children.length}<span class="count" title="{node.children.length} branch(es)">{node.children.length}</span>{/if}
 		</button>
 		<button class="icon-btn fork" title={t.sessionId ? 'Branch a new session from here' : 'Send a message first to enable branching'} disabled={!t.sessionId} onclick={(e) => forkSession(p, t, e)}>⑂</button>
-		<button class="icon-btn code" title={t.branch ? `Open worktree (${t.branch}) in VS Code` : 'Open in VS Code'} onclick={(e) => openSessionCode(t, e)}>{'</>'}</button>
+		<button class="icon-btn code" title="Open project in VS Code" onclick={(e) => openSessionCode(t, e)}>{'</>'}</button>
 		<button class="icon-btn t-del" title="Delete session" onclick={(e) => removeTerminal(p, t, e)}>×</button>
 	</div>
 	{#if node.children.length && open}
@@ -551,20 +550,6 @@
 	.count {
 		color: #777;
 		font-size: 11px;
-	}
-	.wt-chip {
-		flex: 0 0 auto;
-		font-size: 10px;
-		font-family: ui-monospace, Menlo, monospace;
-		color: #7a8aa0;
-		background: #1b2230;
-		border: 1px solid #2a3344;
-		border-radius: 4px;
-		padding: 0 4px;
-		max-width: 90px;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
 	}
 	.t-title.attn {
 		color: #f0c674;

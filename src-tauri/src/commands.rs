@@ -4,7 +4,6 @@
 //! A terminal is a shell or a `claude` TUI, both running in an rmux pty under
 //! stable, persistent ids so they reattach across restarts.
 
-use crate::gitwt;
 use crate::pty::{default_shell, find_claude_bin, spawn_rmux_session};
 use crate::settings::Settings;
 use crate::state::AppState;
@@ -14,7 +13,7 @@ use rmux_sdk::{EnsureSession, EnsureSessionPolicy, Rmux, RmuxBuilder, SessionNam
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
@@ -264,7 +263,7 @@ pub async fn open_terminal(
     state: State<'_, AppState>,
     spec: OpenTerminalSpec,
 ) -> Result<String, String> {
-    let (terminal_id, kind, cwd, resume_src, fork, is_new, project_dir, fork_base) = {
+    let (terminal_id, kind, cwd, resume_src, fork) = {
         let mut store = state.store.lock();
         let project = store
             .project(&spec.project_id)
@@ -275,11 +274,6 @@ pub async fn open_terminal(
             .terminal_id
             .as_deref()
             .and_then(|tid| store.terminal(tid).cloned());
-        // A fork's worktree branches from its parent session's branch.
-        let fork_base = spec
-            .parent_terminal_id
-            .as_deref()
-            .and_then(|pid| store.terminal(pid).and_then(|t| t.branch.clone()));
         let terminal_id = spec
             .terminal_id
             .clone()
@@ -288,10 +282,17 @@ pub async fn open_terminal(
             .as_ref()
             .map(|t| t.kind.clone())
             .unwrap_or_else(|| spec.kind.clone());
-        let cwd = existing
-            .as_ref()
-            .map(|t| t.cwd.clone())
-            .unwrap_or_else(|| project.directory.clone());
+        // Sessions work in the project directory itself. (Claude sessions briefly
+        // ran in per-session git worktrees; that's been dropped, so reattaching an
+        // old one migrates its cwd back to the project dir.)
+        let cwd = if kind == "claude" {
+            project.directory.clone()
+        } else {
+            existing
+                .as_ref()
+                .map(|t| t.cwd.clone())
+                .unwrap_or_else(|| project.directory.clone())
+        };
         let saved_session = existing.as_ref().and_then(|t| t.session_id.clone());
 
         // Claude resume/fork resolution. Fork resumes its source then branches; a
@@ -329,62 +330,17 @@ pub async fn open_terminal(
                     session_id: None,
                     group_id,
                     parent_id,
-                    branch: None,
-                    base_branch: None,
                 });
             }
-        }
-        let is_new = existing.is_none();
-        (
-            terminal_id,
-            kind,
-            cwd,
-            resume_src,
-            fork,
-            is_new,
-            project.directory.clone(),
-            fork_base,
-        )
-    };
-    persist(&state);
-
-    // A fresh Claude session in a git repo gets its own isolated worktree+branch,
-    // so sessions don't clobber each other's files. Falls back to the project dir
-    // if the project isn't a git repo or the worktree can't be created.
-    let mut cwd = cwd;
-    if is_new && kind == "claude" {
-        if let Some(repo) = gitwt::repo_root(Path::new(&project_dir)) {
-            let base = fork_base.or_else(|| gitwt::current_branch(&repo));
-            if let Some(base) = base {
-                let short = terminal_id.split('-').next().unwrap_or(terminal_id.as_str());
-                let branch = format!("cm/{short}");
-                let wt_path = worktrees_dir(&app).join(&terminal_id);
-                match gitwt::add_worktree(&repo, &wt_path, &branch, &base) {
-                    Ok(()) => {
-                        cwd = wt_path.to_string_lossy().into_owned();
-                        {
-                            let mut store = state.store.lock();
-                            if let Some(t) = store.terminal_mut(&terminal_id) {
-                                t.cwd = cwd.clone();
-                                t.branch = Some(branch);
-                                t.base_branch = Some(base);
-                            }
-                        }
-                        persist(&state);
-                    }
-                    Err(e) => {
-                        eprintln!("worktree create failed (using project dir): {e}");
-                        if let Some(app2) = state.app.lock().as_ref() {
-                            let _ = app2.emit(
-                                "store://error",
-                                format!("Couldn't create a git worktree for the session; using the project folder. {e}"),
-                            );
-                        }
-                    }
-                }
+        } else if kind == "claude" {
+            // Migrate an old worktree-backed session's cwd back to the project dir.
+            if let Some(t) = store.terminal_mut(&terminal_id) {
+                t.cwd = cwd.clone();
             }
         }
-    }
+        (terminal_id, kind, cwd, resume_src, fork)
+    };
+    persist(&state);
 
     let cwd_path = std::fs::canonicalize(&cwd).unwrap_or_else(|_| PathBuf::from(&cwd));
 
@@ -450,16 +406,6 @@ pub async fn delete_terminal(
     terminal_id: String,
 ) -> Result<(), String> {
     kill_terminals(&state, std::slice::from_ref(&terminal_id)).await;
-    // Capture the session's worktree (if any) before dropping its record, so we
-    // can remove it. The branch is kept (its commits aren't lost).
-    let worktree = {
-        let store = state.store.lock();
-        let proj_dir = store.project(&project_id).map(|p| p.directory.clone());
-        store.terminal(&terminal_id).and_then(|t| {
-            t.branch.as_ref()?;
-            Some((proj_dir?, t.cwd.clone()))
-        })
-    };
     {
         let mut store = state.store.lock();
         if let Some(p) = store.project_mut(&project_id) {
@@ -467,45 +413,7 @@ pub async fn delete_terminal(
         }
     }
     persist(&state);
-    if let Some((proj_dir, wt_path)) = worktree {
-        if let Some(repo) = gitwt::repo_root(Path::new(&proj_dir)) {
-            if let Err(e) = gitwt::remove_worktree(&repo, Path::new(&wt_path)) {
-                eprintln!("worktree remove failed: {e}");
-            }
-        }
-    }
     Ok(())
-}
-
-/// Merge a session's branch back into its base branch.
-#[tauri::command]
-pub fn merge_session(
-    state: State<AppState>,
-    project_id: String,
-    terminal_id: String,
-) -> Result<String, String> {
-    let (proj_dir, branch, base) = {
-        let store = state.store.lock();
-        let proj_dir = store
-            .project(&project_id)
-            .map(|p| p.directory.clone())
-            .ok_or_else(|| "no such project".to_string())?;
-        let t = store
-            .terminal(&terminal_id)
-            .ok_or_else(|| "no such session".to_string())?;
-        let branch = t
-            .branch
-            .clone()
-            .ok_or_else(|| "this session has no git branch to merge".to_string())?;
-        let base = t
-            .base_branch
-            .clone()
-            .ok_or_else(|| "this session has no base branch to merge into".to_string())?;
-        (proj_dir, branch, base)
-    };
-    let repo = gitwt::repo_root(Path::new(&proj_dir))
-        .ok_or_else(|| "project is not a git repository".to_string())?;
-    gitwt::merge_into_base(&repo, &base, &branch)
 }
 
 /// Persist a discovered claude session id onto a terminal.
@@ -760,14 +668,6 @@ async fn kill_terminals(state: &AppState, terminal_ids: &[String]) {
             }
         }
     }
-}
-
-/// Where per-session worktrees live (under the app data dir, keyed by terminal id).
-fn worktrees_dir(app: &AppHandle) -> PathBuf {
-    app.path()
-        .app_data_dir()
-        .map(|d| d.join("worktrees"))
-        .unwrap_or_else(|_| PathBuf::from("worktrees"))
 }
 
 fn persist(state: &AppState) {

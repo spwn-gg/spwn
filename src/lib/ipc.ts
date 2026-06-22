@@ -114,11 +114,6 @@ export function deleteTerminal(projectId: string, terminalId: string): Promise<v
 	return invoke('delete_terminal', { projectId, terminalId });
 }
 
-/** Merge a session's branch back into its base branch; resolves to a summary. */
-export function mergeSession(projectId: string, terminalId: string): Promise<string> {
-	return invoke('merge_session', { projectId, terminalId });
-}
-
 /** Persist a discovered claude session id onto a terminal record. */
 export function setTerminalSession(
 	projectId: string,
