@@ -89,6 +89,15 @@
 		openTab({ projectId: p.id, kind, title: kind, projectName: p.name });
 	}
 
+	async function openSessionCode(t: TerminalRec, e: Event) {
+		e.stopPropagation();
+		try {
+			await openInVscode(t.cwd);
+		} catch (err) {
+			console.error(err);
+		}
+	}
+
 	function openContext(p: ProjectRec, e: Event) {
 		e.stopPropagation();
 		openTab({ projectId: p.id, kind: 'context', title: `Context · ${p.name}`, projectName: p.name });
@@ -207,6 +216,7 @@
 			{#if node.children.length}<span class="count" title="{node.children.length} branch(es)">{node.children.length}</span>{/if}
 		</button>
 		<button class="icon-btn fork" title={t.sessionId ? 'Branch a new session from here' : 'Send a message first to enable branching'} disabled={!t.sessionId} onclick={(e) => forkSession(p, t, e)}>⑂</button>
+		<button class="icon-btn code" title={t.branch ? `Open worktree (${t.branch}) in VS Code` : 'Open in VS Code'} onclick={(e) => openSessionCode(t, e)}>{'</>'}</button>
 		<button class="icon-btn t-del" title="Delete session" onclick={(e) => removeTerminal(p, t, e)}>×</button>
 	</div>
 	{#if node.children.length && open}
@@ -491,6 +501,14 @@
 	}
 	.fork {
 		font-size: 13px;
+	}
+	.code {
+		font-size: 11px;
+		font-family: ui-monospace, Menlo, monospace;
+	}
+	.code:hover {
+		color: #9bbce0;
+		background: #1b2230;
 	}
 	.fork:hover:not(:disabled) {
 		color: #d8b8f0;
