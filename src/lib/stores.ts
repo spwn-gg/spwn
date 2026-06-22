@@ -30,6 +30,7 @@ export async function refreshProjects() {
 export interface OpenTab {
 	key: string;
 	projectId: string;
+	projectName?: string;
 	kind: PaneKind;
 	title: string;
 	terminalId?: string;
@@ -39,10 +40,26 @@ export interface OpenTab {
 	claudeFork?: string;
 	parentTerminalId?: string;
 	initialPrompt?: string;
+	/** A background tab needs the user's attention (permission prompt / turn done). */
+	needsAttention?: boolean;
 }
 
 export const openTabs = writable<OpenTab[]>([]);
 export const activeTabKey = writable<string | null>(null);
+
+/** Flag a tab as needing attention — ignored if it's already the focused tab. */
+export function markAttention(key: string) {
+	if (get(activeTabKey) === key) return;
+	openTabs.update((ts) => ts.map((t) => (t.key === key ? { ...t, needsAttention: true } : t)));
+}
+
+// Focusing a tab clears its attention flag.
+activeTabKey.subscribe((key) => {
+	if (!key) return;
+	openTabs.update((ts) =>
+		ts.map((t) => (t.key === key && t.needsAttention ? { ...t, needsAttention: false } : t))
+	);
+});
 
 /** Whether the settings panel is shown. */
 export const showSettings = writable(false);
@@ -84,11 +101,16 @@ export function openTab(spec: Omit<OpenTab, 'key'>) {
 }
 
 export function closeTab(key: string) {
+	// Remember where the closing tab sat so we can focus its neighbour, not jump
+	// to the far end of the bar.
+	const idx = get(openTabs).findIndex((t) => t.key === key);
 	openTabs.update((ts) => ts.filter((t) => t.key !== key));
 	activeTabKey.update((cur) => {
 		if (cur !== key) return cur;
 		const rest = get(openTabs);
-		return rest.length ? rest[rest.length - 1].key : null;
+		if (!rest.length) return null;
+		// Prefer the tab now at the same index (the one to the right), else the last.
+		return rest[Math.min(idx, rest.length - 1)].key;
 	});
 }
 

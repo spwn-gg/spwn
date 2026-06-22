@@ -1,20 +1,34 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import { readTranscript, onProjectsChanged, writeToPty, addContextBlock } from './ipc';
+	import { readTranscript, onProjectsChanged, addContextBlock } from './ipc';
 	import { openTab, refreshProjects } from './stores';
-	import type { Turn } from './types';
+	import type { Turn, QuestionSpec } from './types';
 	import { marked } from 'marked';
 	import DOMPurify from 'dompurify';
 	import { openUrl } from '@tauri-apps/plugin-opener';
 
 	function renderMarkdown(text: string): string {
 		const html = marked.parse(text, { async: false, gfm: true, breaks: true }) as string;
-		return DOMPurify.sanitize(html);
+		const clean = DOMPurify.sanitize(html);
+		// Add a copy affordance to each fenced code block (handled via delegation).
+		return clean.replaceAll('<pre>', '<pre><button class="copy-btn" type="button">Copy</button>');
 	}
 
-	// Open links externally instead of navigating the app's webview.
+	// Handle in-message clicks: copy buttons, and external links.
 	function onBodyClick(e: MouseEvent) {
-		const a = (e.target as HTMLElement)?.closest?.('a');
+		const target = e.target as HTMLElement;
+		const copy = target?.closest?.('.copy-btn');
+		if (copy) {
+			e.preventDefault();
+			const code = copy.closest('pre')?.querySelector('code')?.textContent ?? '';
+			navigator.clipboard.writeText(code).then(() => {
+				const btn = copy as HTMLButtonElement;
+				btn.textContent = 'Copied';
+				setTimeout(() => (btn.textContent = 'Copy'), 1200);
+			});
+			return;
+		}
+		const a = target?.closest?.('a');
 		const href = a?.getAttribute('href');
 		if (href && /^https?:\/\//.test(href)) {
 			e.preventDefault();
@@ -25,12 +39,50 @@
 	let {
 		projectId,
 		terminalId = undefined,
-		sessionId = undefined
-	}: { projectId: string; terminalId?: string; sessionId?: string } = $props();
+		sessionId = undefined,
+		busy = false,
+		streamingText = '',
+		streamingThinking = '',
+		liveTools = [],
+		pendingUserText = null,
+		onReload = () => {}
+	}: {
+		projectId: string;
+		terminalId?: string;
+		sessionId?: string;
+		busy?: boolean;
+		streamingText?: string;
+		streamingThinking?: string;
+		liveTools?: { id: string; name: string }[];
+		pendingUserText?: string | null;
+		onReload?: (turns: Turn[]) => void;
+	} = $props();
+
+	const showOverlay = $derived(
+		busy || streamingText.length > 0 || streamingThinking.length > 0 || liveTools.length > 0
+	);
 
 	let turns = $state<Turn[]>([]);
 	let loadingId: string | null = null;
 	let status = $state('');
+	let statusTimer: ReturnType<typeof setTimeout> | undefined;
+	let bodyEl: HTMLDivElement | undefined;
+	let stick = true; // pinned to the bottom unless the user scrolls up
+
+	// Transient status line that clears itself.
+	function setStatus(msg: string) {
+		status = msg;
+		clearTimeout(statusTimer);
+		statusTimer = setTimeout(() => (status = ''), 4000);
+	}
+
+	function onScroll() {
+		if (!bodyEl) return;
+		stick = bodyEl.scrollHeight - bodyEl.scrollTop - bodyEl.clientHeight < 40;
+	}
+	function scrollToBottom() {
+		if (bodyEl) bodyEl.scrollTop = bodyEl.scrollHeight;
+	}
 
 	async function reload() {
 		const sid = sessionId ?? null;
@@ -40,12 +92,25 @@
 			return;
 		}
 		const loaded = await readTranscript(sid);
-		if (loadingId === sid) turns = loaded;
+		if (loadingId === sid) {
+			turns = loaded;
+			onReload(loaded);
+		}
 	}
 
 	$effect(() => {
 		void sessionId;
+		stick = true;
 		reload();
+	});
+
+	// Follow new turns / streaming text when pinned to the bottom (live mirror).
+	$effect(() => {
+		void turns;
+		void streamingText;
+		void streamingThinking;
+		void pendingUserText;
+		if (stick) requestAnimationFrame(scrollToBottom);
 	});
 
 	// Map tool_use id -> its result, so results nest under their call.
@@ -81,11 +146,34 @@
 		return true;
 	}
 
+	// Parse an AskUserQuestion tool_use input into its questions (null if it isn't one).
+	function parseQuestions(text?: string | null): QuestionSpec[] | null {
+		if (!text) return null;
+		try {
+			const v = JSON.parse(text);
+			return Array.isArray(v?.questions) && v.questions.length ? (v.questions as QuestionSpec[]) : null;
+		} catch {
+			return null;
+		}
+	}
+	// An option was chosen if its label appears in the answer (our "→ label" form
+	// and Claude's native «"Q"="label"» form both contain the label).
+	function wasChosen(label: string, result?: string): boolean {
+		return !!result && result.includes(label);
+	}
+
 	let unlisten: (() => void) | undefined;
 	onMount(async () => {
-		unlisten = await onProjectsChanged(() => reload());
+		// Reload only when our own session's transcript changed (or when the set of
+		// changed sessions is unknown), not on every filesystem event in the tree.
+		unlisten = await onProjectsChanged((changed) => {
+			if (!sessionId || changed.length === 0 || changed.includes(sessionId)) reload();
+		});
 	});
-	onDestroy(() => unlisten?.());
+	onDestroy(() => {
+		unlisten?.();
+		clearTimeout(statusTimer);
+	});
 
 	function fork() {
 		if (!sessionId) return;
@@ -94,16 +182,12 @@
 			kind: 'claude',
 			title: 'fork',
 			claudeFork: sessionId,
-			parentTerminalId: terminalId
+			parentTerminalId: terminalId,
+			// Show the parent's history right away; rebinds to the fork's own
+			// (history-carrying) session id after its first message.
+			sessionId
 		});
-		status = 'Forked — opening the new session…';
-	}
-
-	function rewind() {
-		if (!terminalId) return;
-		// Open Claude's native /rewind picker in the live terminal; pick there.
-		writeToPty(terminalId, '/rewind\r');
-		status = 'Opened /rewind in the terminal — choose a checkpoint there.';
+		setStatus('Forked — opening the new session…');
 	}
 
 	async function addToContext(t: Turn) {
@@ -115,15 +199,35 @@
 		if (!text) return;
 		await addContextBlock(projectId, 'session', t.role, text);
 		await refreshProjects();
-		status = 'Added to this project’s context.';
+		setStatus('Added to this project’s context.');
 	}
 </script>
+
+{#snippet askCard(questions: QuestionSpec[], resultText?: string)}
+	<div class="askcard">
+		{#each questions as q (q.question)}
+			<div class="ask-q">
+				<div class="ask-qhead">
+					{#if q.header}<span class="ask-tag">{q.header}</span>{/if}
+					<span class="ask-qtext">{q.question}</span>
+				</div>
+				<div class="ask-opts">
+					{#each q.options as o (o.label)}
+						<div class="ask-opt" class:chosen={wasChosen(o.label, resultText)}>
+							<span class="ask-mark">{wasChosen(o.label, resultText) ? '◉' : '○'}</span>
+							<span class="ask-olabel">{o.label}</span>
+						</div>
+					{/each}
+				</div>
+			</div>
+		{/each}
+	</div>
+{/snippet}
 
 <div class="mirror">
 	<div class="bar">
 		<span class="title">Conversation</span>
 		<button class="act" disabled={!sessionId} onclick={fork} title="Fork this whole session">⑂ Fork</button>
-		<button class="act" disabled={!terminalId} onclick={rewind} title="Open /rewind in the terminal">↺ Rewind</button>
 	</div>
 	<div class="filters">
 		<button class="chip" class:off={!filters.text} onclick={() => (filters.text = !filters.text)}>
@@ -140,41 +244,67 @@
 		</button>
 	</div>
 	{#if status}<div class="status">{status}</div>{/if}
-	<div class="body" role="presentation" onclick={onBodyClick}>
-		{#if !sessionId}
-			<div class="hint">Waiting for the Claude session to start…</div>
-		{:else if turns.length === 0}
-			<div class="hint">No messages yet.</div>
-		{:else}
-			{#each turns as t (t.uuid)}
-				{@const toolOnly = t.blocks.length > 0 && t.blocks.every((b) => b.kind === 'toolResult')}
-				{@const visible = t.blocks.filter(blockVisible)}
-				{#if !toolOnly && visible.length > 0}
-					<div class="turn {t.role}">
-						<div class="who">
-							<span>{t.role}</span>
-							<button class="addctx" title="Add to project context" onclick={() => addToContext(t)}>＋ ctx</button>
-						</div>
-						{#each t.blocks as b}
-							{#if b.kind === 'text' && filters.text}
-								<div class="text md">{@html renderMarkdown(b.text ?? '')}</div>
-							{:else if b.kind === 'thinking' && filters.thinking}
-								<details class="thinking"><summary>thinking</summary><div class="pre">{b.text}</div></details>
-							{:else if b.kind === 'toolUse' && filters.toolCalls}
-								{@const res = b.id ? resultsById.get(b.id) : undefined}
+	<div class="body" role="presentation" bind:this={bodyEl} onscroll={onScroll} onclick={onBodyClick}>
+		{#if turns.length === 0 && !pendingUserText && !showOverlay}
+			<div class="hint">{sessionId ? 'No messages yet.' : 'Send a message to start the conversation.'}</div>
+		{/if}
+		{#each turns as t (t.uuid)}
+			{@const toolOnly = t.blocks.length > 0 && t.blocks.every((b) => b.kind === 'toolResult')}
+			{@const visible = t.blocks.filter(blockVisible)}
+			{#if !toolOnly && visible.length > 0}
+				<div class="turn {t.role}">
+					<div class="who">
+						<span>{t.role}</span>
+						<button class="addctx" title="Add to project context" onclick={() => addToContext(t)}>＋ ctx</button>
+					</div>
+					{#each t.blocks as b}
+						{#if b.kind === 'text' && filters.text}
+							<div class="text md">{@html renderMarkdown(b.text ?? '')}</div>
+						{:else if b.kind === 'thinking' && filters.thinking}
+							<details class="thinking"><summary>thinking</summary><div class="pre">{b.text}</div></details>
+						{:else if b.kind === 'toolUse' && filters.toolCalls}
+							{@const res = b.id ? resultsById.get(b.id) : undefined}
+							{@const questions = b.name === 'AskUserQuestion' ? parseQuestions(b.text) : null}
+							{#if questions}
+								{@render askCard(questions, res?.text)}
+							{:else}
 								<details class="toolcall">
 									<summary>▸ {b.name} <span class="dim">{b.text}</span></summary>
 									{#if res && filters.toolResults}
 										<div class="tool result" class:err={res.isError}>{res.text}</div>
 									{/if}
 								</details>
-							{:else if b.kind === 'toolResult' && filters.toolResults}
-								<div class="tool result" class:err={b.isError}>⮑ <span class="dim">{b.text}</span></div>
 							{/if}
-						{/each}
-					</div>
+						{:else if b.kind === 'toolResult' && filters.toolResults}
+							<div class="tool result" class:err={b.isError}>⮑ <span class="dim">{b.text}</span></div>
+						{/if}
+					{/each}
+				</div>
+			{/if}
+		{/each}
+
+		<!-- Optimistic user bubble + live streaming assistant turn (overlay). -->
+		{#if pendingUserText}
+			<div class="turn user">
+				<div class="who"><span>user</span></div>
+				<div class="text md">{@html renderMarkdown(pendingUserText)}</div>
+			</div>
+		{/if}
+		{#if showOverlay}
+			<div class="turn assistant">
+				<div class="who"><span>assistant</span><span class="streaming">streaming…</span></div>
+				{#if streamingThinking && filters.thinking}
+					<details class="thinking" open><summary>thinking</summary><div class="pre">{streamingThinking}</div></details>
 				{/if}
-			{/each}
+				{#each liveTools as tu (tu.id)}
+					<div class="tool">▸ {tu.name}</div>
+				{/each}
+				{#if streamingText}
+					<div class="text md">{@html renderMarkdown(streamingText)}</div>
+				{:else if !streamingThinking && liveTools.length === 0}
+					<div class="dots">●●●</div>
+				{/if}
+			</div>
 		{/if}
 	</div>
 </div>
@@ -275,6 +405,27 @@
 		color: #7fa3df;
 		margin-bottom: 3px;
 	}
+	.streaming {
+		font-weight: 400;
+		text-transform: none;
+		letter-spacing: 0;
+		color: #8a7fb0;
+		font-style: italic;
+	}
+	.dots {
+		color: #6a6a6a;
+		letter-spacing: 2px;
+		animation: pulse 1.2s ease-in-out infinite;
+	}
+	@keyframes pulse {
+		0%,
+		100% {
+			opacity: 0.3;
+		}
+		50% {
+			opacity: 1;
+		}
+	}
 	.addctx {
 		background: none;
 		border: 1px solid #3a3a3a;
@@ -342,11 +493,34 @@
 		font-size: 12px;
 	}
 	.text.md :global(pre) {
+		position: relative;
 		background: #0d0d0d;
 		padding: 10px;
 		border-radius: 6px;
 		overflow: auto;
 		margin: 8px 0;
+	}
+	.text.md :global(pre .copy-btn) {
+		position: absolute;
+		top: 6px;
+		right: 6px;
+		background: #232323;
+		border: 1px solid #3a3a3a;
+		color: #b8b8b8;
+		border-radius: 4px;
+		padding: 2px 8px;
+		font-size: 11px;
+		font-family: ui-sans-serif, system-ui, sans-serif;
+		cursor: pointer;
+		opacity: 0;
+		transition: opacity 0.12s;
+	}
+	.text.md :global(pre:hover .copy-btn) {
+		opacity: 1;
+	}
+	.text.md :global(pre .copy-btn:hover) {
+		color: #fff;
+		background: #333;
 	}
 	.text.md :global(pre code) {
 		background: none;
@@ -401,6 +575,61 @@
 	}
 	.tool.result.err {
 		color: #cf7a7a;
+	}
+	.askcard {
+		margin: 4px 0;
+		padding: 8px 10px;
+		background: #1b2230;
+		border: 1px solid #2f4366;
+		border-radius: 8px;
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+	}
+	.ask-qhead {
+		display: flex;
+		align-items: baseline;
+		flex-wrap: wrap;
+		gap: 7px;
+		margin-bottom: 5px;
+	}
+	.ask-tag {
+		font-size: 9px;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		padding: 1px 5px;
+		border-radius: 4px;
+		background: #2a3344;
+		color: #9bbce0;
+	}
+	.ask-qtext {
+		color: #e6e6e6;
+		font-size: 13px;
+		font-weight: 600;
+	}
+	.ask-opts {
+		display: flex;
+		flex-direction: column;
+		gap: 3px;
+	}
+	.ask-opt {
+		display: flex;
+		align-items: center;
+		gap: 7px;
+		font-size: 12px;
+		color: #8a93a0;
+		padding: 1px 0;
+	}
+	.ask-mark {
+		font-size: 11px;
+		color: #5a6472;
+	}
+	.ask-opt.chosen {
+		color: #cfe0f5;
+		font-weight: 600;
+	}
+	.ask-opt.chosen .ask-mark {
+		color: var(--accent-text);
 	}
 	.toolcall {
 		margin-top: 3px;

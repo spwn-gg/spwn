@@ -21,6 +21,10 @@ pub struct TerminalRec {
     /// keyed by its id); a fork/branch inherits its source's group key.
     #[serde(default)]
     pub group_id: Option<String>,
+    /// The terminal this one was forked from (its direct parent in the branch
+    /// tree). None for a root session. Lets the nav render true fork lineage.
+    #[serde(default)]
+    pub parent_id: Option<String>,
 }
 
 /// A block in a project's context space: a manual note, a file's contents, or a

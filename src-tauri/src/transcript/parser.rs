@@ -122,9 +122,12 @@ fn parse_blocks(message: &Value) -> Vec<Block> {
                         .and_then(Value::as_str)
                         .unwrap_or("tool")
                         .to_string();
+                    // Keep AskUserQuestion's input intact so the UI can render the
+                    // question + options as a card (the rest stay truncated/compact).
+                    let cap = if name == "AskUserQuestion" { 20_000 } else { 800 };
                     let input = b
                         .get("input")
-                        .map(|i| truncate(&compact(i), 800))
+                        .map(|i| truncate(&compact(i), cap))
                         .unwrap_or_default();
                     out.push(Block {
                         kind: "toolUse".into(),

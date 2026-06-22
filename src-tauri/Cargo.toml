@@ -30,6 +30,8 @@ notify-debouncer-full = "0.3"
 directories = "5"
 # Async runtime + concurrency primitives.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+# Non-poisoning mutexes: a panic while holding a lock won't brick every later command.
+parking_lot = "0.12"
 # Stable ids for ptys/panes.
 uuid = { version = "1", features = ["v4"] }
 # Ergonomic error handling.

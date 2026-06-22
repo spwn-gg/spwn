@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite dev",
     "build": "vite build",
-    "build:sidecar": "esbuild sidecar/index.mjs --bundle --platform=node --format=esm --outfile=src-tauri/resources/sidecar.mjs",
+    "build:sidecar": "npm --prefix sidecar install && esbuild sidecar/index.mjs --bundle --platform=node --format=esm --outfile=src-tauri/resources/sidecar.mjs",
     "build:all": "npm run build && npm run build:sidecar",
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",

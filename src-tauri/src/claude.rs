@@ -28,9 +28,9 @@ impl ClaudeAgent {
     }
 }
 
-/// Spawn a sidecar for a Claude session (optionally resuming/forking one).
-/// Dormant: Claude now runs in a pty; kept for a future SDK-driven path.
-#[allow(dead_code)]
+/// Spawn a sidecar for a Claude session (optionally resuming/forking one). Drives
+/// the Agent SDK; the chat UI sends user turns / permission answers over stdin and
+/// renders the streamed events forwarded from stdout.
 pub fn spawn_claude_agent(
     app: AppHandle,
     terminal_id: &str,

@@ -8,12 +8,13 @@
 		onProjectsChanged,
 		openInVscode
 	} from './ipc';
-	import { projects, openTab, closeTab, refreshProjects, openTabs } from './stores';
+	import { projects, openTab, closeTab, refreshProjects, openTabs, activeTab } from './stores';
 	import { get } from 'svelte/store';
 	import type { ProjectRec, TerminalRec } from './types';
 
 	let collapsed = $state(new Set<string>());
 	let openMenuId = $state<string | null>(null);
+	let menuPos = $state({ x: 0, y: 0 });
 	let unlisten: (() => void) | undefined;
 
 	const closeMenu = () => (openMenuId = null);
@@ -23,15 +24,29 @@
 		// Claude's ai-title evolves as a session runs; refresh names live.
 		unlisten = await onProjectsChanged(() => refreshProjects());
 		window.addEventListener('click', closeMenu);
+		window.addEventListener('keydown', onKey);
 	});
 	onDestroy(() => {
 		unlisten?.();
 		window.removeEventListener('click', closeMenu);
+		window.removeEventListener('keydown', onKey);
 	});
 
-	function toggleMenu(p: ProjectRec, e: Event) {
+	function onKey(e: KeyboardEvent) {
+		if (e.key === 'Escape') closeMenu();
+	}
+
+	function toggleMenu(p: ProjectRec, e: MouseEvent) {
 		e.stopPropagation();
-		openMenuId = openMenuId === p.id ? null : p.id;
+		if (openMenuId === p.id) {
+			openMenuId = null;
+			return;
+		}
+		const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+		const estHeight = 196; // ~5 rows; flip above if it would overflow the viewport
+		const y = r.bottom + estHeight > window.innerHeight ? r.top - estHeight : r.bottom + 2;
+		menuPos = { x: Math.min(r.left, window.innerWidth - 210), y: Math.max(8, y) };
+		openMenuId = p.id;
 	}
 	function menuShell(p: ProjectRec, e: Event) {
 		openMenuId = null;
@@ -71,12 +86,12 @@
 
 	function addTerminal(p: ProjectRec, kind: 'shell' | 'claude', e: Event) {
 		e.stopPropagation();
-		openTab({ projectId: p.id, kind, title: kind });
+		openTab({ projectId: p.id, kind, title: kind, projectName: p.name });
 	}
 
 	function openContext(p: ProjectRec, e: Event) {
 		e.stopPropagation();
-		openTab({ projectId: p.id, kind: 'context', title: `Context · ${p.name}` });
+		openTab({ projectId: p.id, kind: 'context', title: `Context · ${p.name}`, projectName: p.name });
 	}
 
 	function openExisting(p: ProjectRec, t: TerminalRec) {
@@ -85,12 +100,14 @@
 			kind: t.kind,
 			terminalId: t.id,
 			title: t.title,
+			projectName: p.name,
 			sessionId: t.sessionId ?? undefined
 		});
 	}
 
 	async function removeTerminal(p: ProjectRec, t: TerminalRec, e: Event) {
 		e.stopPropagation();
+		if (!confirm(`Delete terminal “${t.title}”? This kills its session and can't be undone.`)) return;
 		// Close any open tab for this terminal first.
 		const tab = get(openTabs).find((x) => x.terminalId === t.id);
 		if (tab) closeTab(tab.key);
@@ -100,6 +117,9 @@
 
 	async function removeProject(p: ProjectRec, e: Event) {
 		e.stopPropagation();
+		const n = p.terminals.length;
+		const detail = n ? ` and its ${n} terminal${n === 1 ? '' : 's'}` : '';
+		if (!confirm(`Delete project “${p.name}”${detail}? This can't be undone.`)) return;
 		for (const tab of get(openTabs).filter((x) => x.projectId === p.id)) closeTab(tab.key);
 		await deleteProject(p.id);
 		await refreshProjects();
@@ -109,31 +129,90 @@
 		return p.terminals.filter((t) => t.kind === 'shell');
 	}
 
-	// Group claude terminals by their group key (groupId, else their own id). A
-	// fork/branch shares its source's key, so lineages cluster together.
-	function claudeGroups(p: ProjectRec): { key: string; root: TerminalRec; members: TerminalRec[] }[] {
-		const map = new Map<string, TerminalRec[]>();
-		for (const t of p.terminals.filter((t) => t.kind === 'claude')) {
-			const key = t.groupId ?? t.id;
-			if (!map.has(key)) map.set(key, []);
-			map.get(key)!.push(t);
-		}
-		return [...map.entries()].map(([key, members]) => ({
-			key,
-			members,
-			root: members.find((m) => m.id === key) ?? members[0]
-		}));
+	// Build the claude sessions into a branch forest: each fork nests under the
+	// session it was forked from, so lineage is visible at a glance.
+	interface SessionNode {
+		t: TerminalRec;
+		children: SessionNode[];
 	}
+	function parentOf(t: TerminalRec, ids: Set<string>): string | null {
+		if (t.parentId && ids.has(t.parentId)) return t.parentId;
+		// Legacy data: groupId pointed at the lineage root.
+		if (t.groupId && t.groupId !== t.id && ids.has(t.groupId)) return t.groupId;
+		return null;
+	}
+	function claudeForest(p: ProjectRec): SessionNode[] {
+		const claudes = p.terminals.filter((t) => t.kind === 'claude');
+		const ids = new Set(claudes.map((t) => t.id));
+		const nodes = new Map<string, SessionNode>();
+		for (const t of claudes) nodes.set(t.id, { t, children: [] });
+		const roots: SessionNode[] = [];
+		for (const t of claudes) {
+			const pid = parentOf(t, ids);
+			if (pid) nodes.get(pid)!.children.push(nodes.get(t.id)!);
+			else roots.push(nodes.get(t.id)!);
+		}
+		return roots;
+	}
+
+	// Branch a new session from an existing one (same as Fork in the chat panel).
+	function forkSession(p: ProjectRec, t: TerminalRec, e: Event) {
+		e.stopPropagation();
+		if (!t.sessionId) return;
+		openTab({
+			projectId: p.id,
+			kind: 'claude',
+			title: 'branch',
+			projectName: p.name,
+			claudeFork: t.sessionId,
+			parentTerminalId: t.id,
+			// Show the parent's history immediately; once the branch sends its first
+			// message it rebinds to its own (history-carrying) forked session id.
+			sessionId: t.sessionId
+		});
+	}
+
+	// Highlight the row backing the currently-focused tab.
+	const isActiveTerm = (t: TerminalRec) => $activeTab?.terminalId === t.id;
+	// A background tab for this session needs attention (permission / turn done).
+	const attnFor = (t: TerminalRec) => $openTabs.some((tab) => tab.terminalId === t.id && tab.needsAttention);
+	const isActiveCtx = (p: ProjectRec) =>
+		$activeTab?.kind === 'context' && $activeTab?.projectId === p.id;
 </script>
 
 {#snippet termRow(p: ProjectRec, t: TerminalRec, nested: boolean)}
-	<button class="terminal" class:nested onclick={() => openExisting(p, t)}>
-		<span class="t-icon">{t.kind === 'claude' ? '✦' : '$'}</span>
-		<span class="t-title">{t.title}</span>
-		<span class="t-del" role="button" tabindex="0" title="Delete terminal"
-			onclick={(e) => removeTerminal(p, t, e)}
-			onkeydown={(e) => e.key === 'Enter' && removeTerminal(p, t, e)}>×</span>
-	</button>
+	<div class="row terminal" class:nested class:active={isActiveTerm(t)}>
+		<button class="row-main" onclick={() => openExisting(p, t)} title={t.title}>
+			<span class="t-icon">{t.kind === 'claude' ? '✦' : '$'}</span>
+			<span class="t-title">{t.title}</span>
+		</button>
+		<button class="icon-btn t-del" title="Delete terminal" onclick={(e) => removeTerminal(p, t, e)}>×</button>
+	</div>
+{/snippet}
+
+{#snippet sessionNode(p: ProjectRec, node: SessionNode, depth: number)}
+	{@const t = node.t}
+	{@const open = !collapsed.has('s:' + t.id)}
+	<div class="row session" class:active={isActiveTerm(t)} style="--depth: {depth}">
+		{#if node.children.length}
+			<button class="twisty" title={open ? 'Hide branches' : 'Show branches'} onclick={() => toggle('s:' + t.id)}>{open ? '▾' : '▸'}</button>
+		{:else}
+			<span class="twisty-spacer"></span>
+		{/if}
+		<button class="row-main" onclick={() => openExisting(p, t)} title={t.title}>
+			<span class="t-icon" class:branch={depth > 0}>{depth > 0 ? '↳' : '✦'}</span>
+			<span class="t-title" class:attn={attnFor(t)}>{t.title}</span>
+			{#if attnFor(t)}<span class="attn-dot" title="Needs attention"></span>{/if}
+			{#if node.children.length}<span class="count" title="{node.children.length} branch(es)">{node.children.length}</span>{/if}
+		</button>
+		<button class="icon-btn fork" title={t.sessionId ? 'Branch a new session from here' : 'Send a message first to enable branching'} disabled={!t.sessionId} onclick={(e) => forkSession(p, t, e)}>⑂</button>
+		<button class="icon-btn t-del" title="Delete session" onclick={(e) => removeTerminal(p, t, e)}>×</button>
+	</div>
+	{#if node.children.length && open}
+		{#each node.children as c (c.t.id)}
+			{@render sessionNode(p, c, depth + 1)}
+		{/each}
+	{/if}
 {/snippet}
 
 <div class="tree">
@@ -143,57 +222,55 @@
 	{/if}
 	{#each $projects as p (p.id)}
 		<div class="project">
-			<button class="project-header" onclick={() => toggle(p.id)} title={p.directory}>
-				<span class="chevron">{collapsed.has(p.id) ? '▸' : '▾'}</span>
-				<span class="project-name">{p.name}</span>
-				<span class="act plus" role="button" tabindex="0" title="Actions"
-					onclick={(e) => toggleMenu(p, e)}
-					onkeydown={(e) => e.key === 'Enter' && toggleMenu(p, e)}>＋</span>
-			</button>
-			{#if openMenuId === p.id}
-				<div class="menu" role="menu">
-					<button onclick={(e) => menuShell(p, e)}>New terminal</button>
-					<button onclick={(e) => menuClaude(p, e)}>New Claude session</button>
-					<button onclick={(e) => menuVscode(p, e)}>Open in VSCode</button>
-					<div class="sep"></div>
-					<button class="danger" onclick={(e) => menuDelete(p, e)}>Delete project</button>
-				</div>
-			{/if}
+			<div class="row project-header">
+				<button class="row-main" onclick={() => toggle(p.id)} title={p.directory}>
+					<span class="chevron">{collapsed.has(p.id) ? '▸' : '▾'}</span>
+					<span class="proj-folder">▪</span>
+					<span class="project-name">{p.name}</span>
+				</button>
+				<button class="icon-btn act" title="Actions" onclick={(e) => toggleMenu(p, e)}>⋯</button>
+			</div>
 			{#if !collapsed.has(p.id)}
 				<div class="terminals">
-					<button class="ctx-row" onclick={(e) => openContext(p, e)}>
-						<span class="t-icon">▦</span>
-						<span class="t-title">Context</span>
-						{#if p.context?.length}<span class="count">{p.context.length}</span>{/if}
-					</button>
+					<div class="row ctx-row" class:active={isActiveCtx(p)}>
+						<button class="row-main" onclick={(e) => openContext(p, e)}>
+							<span class="t-icon ctx">▦</span>
+							<span class="t-title">Context</span>
+							{#if p.context?.length}<span class="count">{p.context.length}</span>{/if}
+						</button>
+					</div>
 					{#each shells(p) as t (t.id)}
 						{@render termRow(p, t, false)}
 					{/each}
-					{#each claudeGroups(p) as g (g.key)}
-						{#if g.members.length === 1}
-							{@render termRow(p, g.members[0], false)}
-						{:else}
-							<button class="group-header" onclick={() => toggle('g:' + g.key)} title={g.root.title}>
-								<span class="chevron">{collapsed.has('g:' + g.key) ? '▸' : '▾'}</span>
-								<span class="t-icon">✦</span>
-								<span class="t-title">{g.root.title}</span>
-								<span class="count">{g.members.length}</span>
-							</button>
-							{#if !collapsed.has('g:' + g.key)}
-								{#each g.members as t (t.id)}
-									{@render termRow(p, t, true)}
-								{/each}
-							{/if}
-						{/if}
+					{#each claudeForest(p) as node (node.t.id)}
+						{@render sessionNode(p, node, 0)}
 					{/each}
+					<button class="add-session" onclick={(e) => menuClaude(p, e)} title="Start a new Claude session">＋ Claude session</button>
 					{#if p.terminals.length === 0}
-						<div class="t-empty">No terminals — use $ or ✦ above.</div>
+						<div class="t-empty">No sessions yet — start one above, or use the ⋯ menu.</div>
 					{/if}
 				</div>
 			{/if}
 		</div>
 	{/each}
 </div>
+
+{#if openMenuId}
+	{@const p = $projects.find((x) => x.id === openMenuId)}
+	{#if p}
+		<div
+			class="menu"
+			role="menu"
+			tabindex="-1"
+			style="left: {menuPos.x}px; top: {menuPos.y}px">
+			<button onclick={(e) => menuShell(p, e)}>New terminal</button>
+			<button onclick={(e) => menuClaude(p, e)}>New Claude session</button>
+			<button onclick={(e) => menuVscode(p, e)}>Open in VSCode</button>
+			<div class="sep"></div>
+			<button class="danger" onclick={(e) => menuDelete(p, e)}>Delete project</button>
+		</div>
+	{/if}
+{/if}
 
 <style>
 	.tree {
@@ -203,17 +280,17 @@
 	}
 	.empty {
 		padding: 14px;
-		color: #6a6a6a;
+		color: var(--text-muted);
 	}
 	.new-project {
 		display: block;
 		width: calc(100% - 16px);
 		margin: 8px;
 		padding: 6px 8px;
-		background: #2a2a2a;
-		border: 1px solid #3a3a3a;
+		background: var(--bg-elevated);
+		border: 1px solid var(--border-strong);
 		color: #cfcfcf;
-		border-radius: 6px;
+		border-radius: var(--radius);
 		font-size: 12px;
 		cursor: pointer;
 	}
@@ -221,62 +298,94 @@
 		background: #333;
 		color: #fff;
 	}
-	.project-header {
+
+	/* A row is a flex container holding a primary button + optional action buttons,
+	   so interactive elements are siblings (never nested). */
+	.row {
+		display: flex;
+		align-items: center;
+		border-left: 2px solid transparent;
+	}
+	.row-main {
 		display: flex;
 		align-items: center;
 		gap: 6px;
-		width: 100%;
-		padding: 6px 10px;
+		flex: 1 1 auto;
+		min-width: 0;
 		background: none;
 		border: none;
 		color: #cfcfcf;
 		cursor: pointer;
 		text-align: left;
+		padding: 6px 6px 6px 10px;
+	}
+	.icon-btn {
+		background: none;
+		border: none;
+		color: var(--text-muted);
+		cursor: pointer;
+		padding: 0 6px;
+		border-radius: 4px;
+		font-size: 16px;
+		line-height: 1;
+	}
+	.icon-btn:hover {
+		color: #fff;
+		background: #333;
+	}
+
+	/* Projects are sticky section headers so they stay anchored over their own
+	   sessions and read clearly apart from the next project. */
+	.project {
+		position: relative;
+		border-top: 1px solid #000;
+	}
+	.tree .project:first-of-type {
+		border-top: none;
+	}
+	.project-header {
+		position: sticky;
+		top: 0;
+		z-index: 5;
+		background: var(--bg-elevated);
+		border-bottom: 1px solid var(--border);
+		border-left-color: #3b475e;
+	}
+	.project-header .row-main {
+		padding-top: 9px;
+		padding-bottom: 9px;
 	}
 	.project-header:hover {
-		background: #222;
+		background: #2c2c2c;
 	}
 	.chevron {
 		width: 12px;
-		color: #888;
+		color: #9a9a9a;
 		font-size: 12px;
+		flex: 0 0 auto;
+	}
+	.proj-folder {
+		flex: 0 0 auto;
+		color: var(--accent-text);
+		font-size: 11px;
 	}
 	.project-name {
 		flex: 1 1 auto;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-		font-weight: 600;
+		font-weight: 700;
+		font-size: 13px;
+		letter-spacing: 0.01em;
+		color: #efefef;
 	}
-	.actions {
-		display: flex;
-		gap: 2px;
-	}
-	.act {
-		color: #888;
-		padding: 0 5px;
-		border-radius: 4px;
-		font-size: 16px;
-		line-height: 1;
-	}
-	.act:hover {
-		color: #fff;
-		background: #333;
-	}
-	.act.del:hover {
-		background: #5a2a2a;
-	}
-	.project {
-		position: relative;
-	}
+
 	.menu {
-		position: absolute;
-		right: 8px;
-		top: 28px;
-		z-index: 20;
-		background: #232323;
-		border: 1px solid #3a3a3a;
-		border-radius: 8px;
+		position: fixed;
+		z-index: 200;
+		background: var(--bg-elevated);
+		border: 1px solid var(--border-strong);
+		border-radius: var(--radius-lg);
 		box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
 		padding: 4px;
 		min-width: 190px;
@@ -294,14 +403,14 @@
 		font-size: 13px;
 	}
 	.menu button:hover {
-		background: #2f3a4a;
+		background: var(--accent-soft);
 		color: #fff;
 	}
 	.menu button.danger {
-		color: #cf9a9a;
+		color: var(--danger);
 	}
 	.menu button.danger:hover {
-		background: #5a2a2a;
+		background: var(--danger-bg);
 		color: #fff;
 	}
 	.menu .sep {
@@ -309,74 +418,139 @@
 		background: #333;
 		margin: 4px 6px;
 	}
+
 	.terminals {
 		display: flex;
 		flex-direction: column;
 	}
-	.terminal {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		width: 100%;
-		text-align: left;
-		background: none;
-		border: none;
-		border-left: 2px solid transparent;
-		padding: 5px 10px 5px 26px;
+	.terminal .row-main {
+		padding-left: 26px;
 		color: #d0d0d0;
-		cursor: pointer;
 	}
 	.terminal:hover {
 		background: #1f1f1f;
-		border-left-color: #4a78c8;
+		border-left-color: var(--accent-line);
 	}
-	.terminal.nested {
+	.terminal.nested .row-main {
 		padding-left: 40px;
 	}
-	.ctx-row {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		width: 100%;
-		text-align: left;
-		background: none;
-		border: none;
-		border-left: 2px solid transparent;
-		padding: 5px 10px 5px 26px;
+	.row.active {
+		background: #20262f;
+		border-left-color: var(--accent-line);
+	}
+	.row.active .row-main {
+		color: #fff;
+	}
+
+	.ctx-row .row-main {
+		padding-left: 26px;
 		color: #b8a9d8;
-		cursor: pointer;
 	}
 	.ctx-row:hover {
 		background: #1f1f1f;
 		border-left-color: #8a7fb0;
 	}
-	.group-header {
+	.ctx-row.active {
+		border-left-color: #8a7fb0;
+	}
+
+	/* Claude session branch tree: indentation = fork depth. */
+	.row.session {
+		padding-left: calc(var(--depth) * 16px);
+	}
+	.twisty {
+		flex: 0 0 auto;
+		width: 16px;
+		background: none;
+		border: none;
+		color: #888;
+		font-size: 11px;
+		cursor: pointer;
+		padding: 0;
+	}
+	.twisty:hover {
+		color: #fff;
+	}
+	.twisty-spacer {
+		flex: 0 0 auto;
+		width: 16px;
+	}
+	.session .row-main {
+		gap: 7px;
+		color: #d0d0d0;
+		padding-left: 2px;
+	}
+	.session:hover {
+		background: #1f1f1f;
+		border-left-color: var(--accent-line);
+	}
+	.t-icon.branch {
+		color: #b88fd8;
+		font-size: 13px;
+	}
+	.fork {
+		font-size: 13px;
+	}
+	.fork:hover:not(:disabled) {
+		color: #d8b8f0;
+		background: #2f2640;
+	}
+	.fork:disabled {
+		opacity: 0.25;
+		cursor: default;
+	}
+	/* Keep row actions out of the way until hover / active, to cut clutter. */
+	.terminals .row .icon-btn {
+		opacity: 0;
+		transition: opacity 0.1s;
+	}
+	.terminals .row:hover .icon-btn,
+	.terminals .row.active .icon-btn,
+	.terminals .row .icon-btn:focus-visible {
+		opacity: 1;
+	}
+	.add-session {
 		display: flex;
 		align-items: center;
 		gap: 6px;
-		width: 100%;
-		text-align: left;
+		width: calc(100% - 16px);
+		margin: 4px 8px 8px 24px;
+		padding: 4px 8px;
 		background: none;
-		border: none;
-		padding: 5px 10px 5px 22px;
-		color: #cfcfcf;
-		cursor: pointer;
-	}
-	.group-header:hover {
-		background: #1f1f1f;
-	}
-	.group-header .chevron {
-		width: 12px;
-		color: #888;
+		border: 1px dashed var(--border-strong);
+		border-radius: var(--radius);
+		color: var(--text-muted);
 		font-size: 12px;
+		cursor: pointer;
+		text-align: left;
+	}
+	.add-session:hover {
+		color: var(--accent-text);
+		border-color: var(--accent-line);
+		background: #1b2230;
 	}
 	.count {
 		color: #777;
 		font-size: 11px;
 	}
+	.t-title.attn {
+		color: #f0c674;
+	}
+	.attn-dot {
+		flex: 0 0 auto;
+		width: 7px;
+		height: 7px;
+		border-radius: 50%;
+		background: #e0a83a;
+		box-shadow: 0 0 0 2px rgba(224, 168, 58, 0.22);
+	}
 	.t-icon {
-		color: #7fa3df;
+		color: var(--accent-text);
 		font-size: 15px;
+		flex: 0 0 auto;
+	}
+	.t-icon.ctx {
+		color: #b8a9d8;
 	}
 	.t-title {
 		flex: 1 1 auto;
@@ -385,15 +559,11 @@
 		white-space: nowrap;
 	}
 	.t-del {
-		color: #777;
-		padding: 0 4px;
-		border-radius: 3px;
 		font-size: 15px;
-		line-height: 1;
 	}
 	.t-del:hover {
 		color: #fff;
-		background: #5a2a2a;
+		background: var(--danger-bg);
 	}
 	.t-empty {
 		padding: 5px 10px 8px 26px;

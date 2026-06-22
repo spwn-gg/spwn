@@ -11,22 +11,22 @@
 </script>
 
 <div class="panes">
-	<div class="tabbar">
+	<div class="tabbar" data-tauri-drag-region>
 		{#each $openTabs as tab (tab.key)}
-			<button
-				class="tab"
-				class:active={tab.key === $activeTabKey}
-				onclick={() => activeTabKey.set(tab.key)}
-				title={tab.title}>
-				<span class="tab-icon">{tab.kind === 'claude' ? '✦' : tab.kind === 'context' ? '▦' : '$'}</span>
-				<span class="tab-title">{tab.title}</span>
-				<span
-					class="tab-close"
-					role="button"
-					tabindex="0"
-					onclick={(e) => close(tab.key, e)}
-					onkeydown={(e) => e.key === 'Enter' && close(tab.key, e)}>×</span>
-			</button>
+			<div class="tab" class:active={tab.key === $activeTabKey} class:attn={tab.needsAttention}>
+				<button
+					class="tab-main"
+					onclick={() => activeTabKey.set(tab.key)}
+					title={tab.projectName ? `${tab.title} — ${tab.projectName}` : tab.title}>
+					{#if tab.needsAttention}<span class="attn-dot" title="Needs attention"></span>{/if}
+					<span class="tab-icon">{tab.kind === 'claude' ? '✦' : tab.kind === 'context' ? '▦' : '$'}</span>
+					<span class="tab-title">{tab.title}</span>
+					{#if tab.projectName && tab.kind !== 'context'}
+						<span class="tab-proj">· {tab.projectName}</span>
+					{/if}
+				</button>
+				<button class="tab-close" title="Close tab (⌘W)" onclick={(e) => close(tab.key, e)}>×</button>
+			</div>
 		{/each}
 	</div>
 
@@ -66,45 +66,75 @@
 	.tabbar {
 		display: flex;
 		gap: 2px;
-		background: #232323;
-		border-bottom: 1px solid #2c2c2c;
+		background: var(--bg-elevated);
+		border-bottom: 1px solid var(--border);
 		overflow-x: auto;
 		min-height: 34px;
 	}
 	.tab {
 		display: flex;
 		align-items: center;
-		gap: 6px;
-		max-width: 220px;
-		padding: 7px 10px;
-		background: #2a2a2a;
-		border: none;
+		max-width: 240px;
+		background: var(--bg-elevated);
 		border-right: 1px solid #1c1c1c;
 		color: #b8b8b8;
-		cursor: pointer;
-		font-size: 12px;
 	}
 	.tab.active {
-		background: #1e1e1e;
+		background: var(--bg);
 		color: #fff;
 	}
-	.tab-icon {
-		color: #7fa3df;
-		font-size: 15px;
+	.tab.attn:not(.active) {
+		color: #f0c674;
 	}
-	.tab-close {
+	.attn-dot {
+		flex: 0 0 auto;
+		width: 7px;
+		height: 7px;
+		border-radius: 50%;
+		background: #e0a83a;
+		box-shadow: 0 0 0 2px rgba(224, 168, 58, 0.25);
+	}
+	.tab-main {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		min-width: 0;
+		flex: 1 1 auto;
+		background: none;
+		border: none;
+		color: inherit;
+		cursor: pointer;
+		font-size: 12px;
+		padding: 7px 4px 7px 10px;
+	}
+	.tab-icon {
+		color: var(--accent-text);
 		font-size: 15px;
-		line-height: 1;
+		flex: 0 0 auto;
 	}
 	.tab-title {
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
+	.tab-proj {
+		color: var(--text-muted);
+		font-size: 11px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		flex: 0 1 auto;
+	}
 	.tab-close {
+		background: none;
+		border: none;
+		font-size: 15px;
+		line-height: 1;
 		color: #888;
 		border-radius: 3px;
-		padding: 0 4px;
+		padding: 2px 6px;
+		margin-right: 4px;
+		cursor: pointer;
 	}
 	.tab-close:hover {
 		color: #fff;
@@ -117,7 +147,7 @@
 	}
 	.empty {
 		padding: 20px;
-		color: #6a6a6a;
+		color: var(--text-muted);
 	}
 	.pane {
 		position: absolute;

@@ -502,6 +502,7 @@ dependencies = [
  "directories",
  "notify",
  "notify-debouncer-full",
+ "parking_lot",
  "portable-pty",
  "rmux-sdk",
  "serde",

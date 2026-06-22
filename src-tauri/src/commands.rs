@@ -1,8 +1,8 @@
 //! Tauri commands: the frontend → backend contract.
 //!
 //! Context Manager owns "projects" (a named working directory grouping terminals).
-//! A terminal is either a SHELL (rmux pty) or a CLAUDE chat (Agent SDK sidecar).
-//! Both run under stable, persistent ids and reattach across restarts.
+//! A terminal is a shell or a `claude` TUI, both running in an rmux pty under
+//! stable, persistent ids so they reattach across restarts.
 
 use crate::pty::{default_shell, find_claude_bin, spawn_rmux_session};
 use crate::settings::Settings;
@@ -11,7 +11,6 @@ use crate::store::{rmux_session_name, ContextBlock, ProjectRec, TerminalRec};
 use crate::transcript::{read_transcript as parse_transcript, Turn};
 use rmux_sdk::{EnsureSession, EnsureSessionPolicy, Rmux, RmuxBuilder, SessionName, TerminalSizeSpec};
 use serde::Deserialize;
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, State};
@@ -23,13 +22,13 @@ use uuid::Uuid;
 
 #[tauri::command]
 pub fn list_projects(state: State<AppState>) -> Vec<ProjectRec> {
-    let mut projects = state.store.lock().unwrap().projects.clone();
+    let mut projects = state.store.lock().projects.clone();
     // Show Claude's own session name (ai-title) for claude terminals.
     for project in &mut projects {
         for terminal in &mut project.terminals {
             if terminal.kind == "claude" {
                 if let Some(sid) = &terminal.session_id {
-                    if let Some(name) = crate::projects::session_title(sid) {
+                    if let Some(name) = cached_session_title(&state, sid) {
                         terminal.title = name;
                     }
                 }
@@ -37,6 +36,28 @@ pub fn list_projects(state: State<AppState>) -> Vec<ProjectRec> {
         }
     }
     projects
+}
+
+/// A session's title, cached by transcript mtime so an unchanged session isn't
+/// re-read and re-parsed on every refresh.
+fn cached_session_title(state: &AppState, session_id: &str) -> Option<String> {
+    let path = crate::projects::locate_session(session_id)?;
+    let mtime = std::fs::metadata(&path).ok().and_then(|m| m.modified().ok());
+    if let Some(mtime) = mtime {
+        if let Some((cached_mtime, title)) = state.title_cache.lock().get(session_id).cloned() {
+            if cached_mtime == mtime {
+                return Some(title);
+            }
+        }
+    }
+    let title = crate::projects::session_title(session_id)?;
+    if let Some(mtime) = mtime {
+        state
+            .title_cache
+            .lock()
+            .insert(session_id.to_string(), (mtime, title.clone()));
+    }
+    Some(title)
 }
 
 #[tauri::command]
@@ -52,7 +73,7 @@ pub fn create_project(
         terminals: Vec::new(),
         context: Vec::new(),
     };
-    state.store.lock().unwrap().projects.push(rec.clone());
+    state.store.lock().projects.push(rec.clone());
     persist(&state);
     Ok(rec)
 }
@@ -78,14 +99,14 @@ pub fn open_in_vscode(path: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn delete_project(state: State<'_, AppState>, project_id: String) -> Result<(), String> {
     let terminal_ids: Vec<String> = {
-        let store = state.store.lock().unwrap();
+        let store = state.store.lock();
         store
             .project(&project_id)
             .map(|p| p.terminals.iter().map(|t| t.id.clone()).collect())
             .unwrap_or_default()
     };
     kill_terminals(&state, &terminal_ids).await;
-    state.store.lock().unwrap().projects.retain(|p| p.id != project_id);
+    state.store.lock().projects.retain(|p| p.id != project_id);
     persist(&state);
     Ok(())
 }
@@ -143,9 +164,48 @@ pub fn remove_context_block(
     block_id: String,
 ) -> Result<(), String> {
     {
-        let mut store = state.store.lock().unwrap();
+        let mut store = state.store.lock();
         if let Some(p) = store.project_mut(&project_id) {
             p.context.retain(|b| b.id != block_id);
+        }
+    }
+    persist(&state);
+    Ok(())
+}
+
+/// Replace the text/label of an existing context block (inline edit).
+#[tauri::command]
+pub fn update_context_block(
+    state: State<AppState>,
+    project_id: String,
+    block_id: String,
+    text: String,
+) -> Result<(), String> {
+    {
+        let mut store = state.store.lock();
+        if let Some(p) = store.project_mut(&project_id) {
+            if let Some(b) = p.context.iter_mut().find(|b| b.id == block_id) {
+                b.text = text;
+            }
+        }
+    }
+    persist(&state);
+    Ok(())
+}
+
+/// Reorder a project's context blocks to match the given id order. Ids not
+/// present are ignored; missing ids keep their relative order at the end.
+#[tauri::command]
+pub fn reorder_context(
+    state: State<AppState>,
+    project_id: String,
+    order: Vec<String>,
+) -> Result<(), String> {
+    {
+        let mut store = state.store.lock();
+        if let Some(p) = store.project_mut(&project_id) {
+            let rank = |id: &str| order.iter().position(|o| o == id).unwrap_or(usize::MAX);
+            p.context.sort_by_key(|b| rank(&b.id));
         }
     }
     persist(&state);
@@ -155,7 +215,7 @@ pub fn remove_context_block(
 #[tauri::command]
 pub fn clear_context(state: State<AppState>, project_id: String) -> Result<(), String> {
     {
-        let mut store = state.store.lock().unwrap();
+        let mut store = state.store.lock();
         if let Some(p) = store.project_mut(&project_id) {
             p.context.clear();
         }
@@ -166,7 +226,7 @@ pub fn clear_context(state: State<AppState>, project_id: String) -> Result<(), S
 
 fn push_block(state: &AppState, project_id: &str, block: ContextBlock) -> Result<(), String> {
     {
-        let mut store = state.store.lock().unwrap();
+        let mut store = state.store.lock();
         let p = store
             .project_mut(project_id)
             .ok_or_else(|| "no such project".to_string())?;
@@ -195,9 +255,6 @@ pub struct OpenTerminalSpec {
     pub claude_fork: Option<String>,
     /// The terminal a fork/branch originated from (to inherit its group).
     pub parent_terminal_id: Option<String>,
-    /// Seed a new Claude session with this composed context: it is pasted into the
-    /// input box (not auto-submitted), for the user to review and send.
-    pub initial_prompt: Option<String>,
 }
 
 #[tauri::command]
@@ -207,7 +264,7 @@ pub async fn open_terminal(
     spec: OpenTerminalSpec,
 ) -> Result<String, String> {
     let (terminal_id, kind, cwd, resume_src, fork) = {
-        let mut store = state.store.lock().unwrap();
+        let mut store = state.store.lock();
         let project = store
             .project(&spec.project_id)
             .ok_or_else(|| "no such project".to_string())?
@@ -231,7 +288,9 @@ pub async fn open_terminal(
             .unwrap_or_else(|| project.directory.clone());
         let saved_session = existing.as_ref().and_then(|t| t.session_id.clone());
 
-        // Claude resume/fork resolution (the Claude session runs in a real pty).
+        // Claude resume/fork resolution. Fork resumes its source then branches; a
+        // plain resume continues a saved session; otherwise it's a fresh session
+        // whose id arrives later via the sidecar's `init` event.
         let (resume_src, fork) = if kind == "claude" {
             if let Some(fork_id) = spec.claude_fork.clone() {
                 (Some(fork_id), true)
@@ -246,12 +305,15 @@ pub async fn open_terminal(
 
         if existing.is_none() {
             // Forks/branches inherit their source's group; fresh sessions get None
-            // (their own group, keyed by their id).
+            // (their own group, keyed by their id). The session id is bound later
+            // from the sidecar's `init` event (set_terminal_session).
             let group_id = spec.parent_terminal_id.as_deref().and_then(|pid| {
                 store
                     .terminal(pid)
                     .map(|t| t.group_id.clone().unwrap_or_else(|| pid.to_string()))
             });
+            // The direct parent in the branch tree (the terminal we forked from).
+            let parent_id = spec.parent_terminal_id.clone();
             if let Some(p) = store.project_mut(&spec.project_id) {
                 p.terminals.push(TerminalRec {
                     id: terminal_id.clone(),
@@ -260,6 +322,7 @@ pub async fn open_terminal(
                     cwd: cwd.clone(),
                     session_id: None,
                     group_id,
+                    parent_id,
                 });
             }
         }
@@ -269,38 +332,28 @@ pub async fn open_terminal(
 
     let cwd_path = std::fs::canonicalize(&cwd).unwrap_or_else(|_| PathBuf::from(&cwd));
 
-    // Both shell and claude run in a real pty; only the argv differs.
-    let argv = if kind == "claude" {
+    if kind == "claude" {
+        // Claude sessions run via the Agent SDK sidecar (a node process), NOT rmux.
+        // The chat UI drives it over stdin/stdout; its `init` event supplies the
+        // session id (bound by the frontend via set_terminal_session).
         let claude_bin = resolved_claude(state.inner())
             .ok_or_else(|| "claude binary not found (set its path in Settings)".to_string())?;
-        let mut argv = vec![claude_bin.to_string_lossy().into_owned()];
-        if fork {
-            if let Some(src) = &resume_src {
-                argv.push("--resume".into());
-                argv.push(src.clone());
-            }
-            argv.push("--fork-session".into());
-        } else if let Some(src) = &resume_src {
-            argv.push("--resume".into());
-            argv.push(src.clone());
-        }
-        // Note: the composed context is NOT passed as a CLI prompt arg (that would
-        // auto-submit it). It is pasted into the input box after the TUI is ready
-        // (see the paste-after-ready task below), so the user can review/edit and
-        // press Enter themselves.
-        argv
-    } else {
-        vec![default_shell(), "-l".to_string()]
-    };
+        let agent = crate::claude::spawn_claude_agent(
+            app.clone(),
+            &terminal_id,
+            &cwd_path,
+            resume_src.as_deref(),
+            None, // resume_at: per-turn rewind is a v2 feature
+            fork,
+            &claude_bin,
+        )
+        .map_err(|e| e.to_string())?;
+        state.claude_agents.lock().insert(terminal_id.clone(), agent);
+        return Ok(terminal_id);
+    }
 
-    // new/fork claude sessions create a new JSONL whose id we discover on disk.
-    let want_discovery = kind == "claude" && (resume_src.is_none() || fork);
-    let before = if want_discovery {
-        snapshot_session_paths()
-    } else {
-        HashSet::new()
-    };
-
+    // Shell: a real login shell in a persistent rmux pty.
+    let argv = vec![default_shell(), "-l".to_string()];
     let rmux = connect(&state).await?;
     let session_name = rmux_session_name(&terminal_id);
     let session = spawn_rmux_session(
@@ -315,46 +368,20 @@ pub async fn open_terminal(
     )
     .await
     .map_err(|e| e.to_string())?;
-    // Paste the composed context into the Claude input box without submitting it:
-    // wait until the TUI has rendered and gone quiet, then send the text wrapped in
-    // bracketed-paste markers (so embedded newlines are inserted literally instead
-    // of submitting) with NO trailing Enter. The user reviews and sends it.
-    if kind == "claude" {
-        if let Some(prompt) = spec.initial_prompt.clone().filter(|p| !p.is_empty()) {
-            let pane = session.pane.clone();
-            tauri::async_runtime::spawn(async move {
-                // Wait for the initial render to settle (prompt-ready), bounded so a
-                // never-quiet TUI still gets the paste.
-                let _ = pane
-                    .wait_until_stable_for(Duration::from_millis(400))
-                    .timeout(Duration::from_secs(15))
-                    .await;
-                let payload = format!("\x1b[200~{prompt}\x1b[201~");
-                let _ = pane.send_text(&payload).await;
-            });
-        }
-    }
-
-    state.sessions.lock().unwrap().insert(terminal_id.clone(), session);
-
-    if want_discovery {
-        let cwd_str = cwd_path.to_string_lossy().into_owned();
-        let tid = terminal_id.clone();
-        std::thread::spawn(move || discover_session_id(app, tid, cwd_str, before));
-    }
+    state.sessions.lock().insert(terminal_id.clone(), session);
 
     Ok(terminal_id)
 }
 
-/// Detach a terminal tab. Shell sessions stay alive (rmux) for reattach; Claude
-/// sidecars are killed (the conversation persists in the session JSONL and
-/// reattaches via resume).
+/// Detach a terminal tab. A shell's rmux session stays alive for reattach (we just
+/// drop the output task); a Claude sidecar is killed (the conversation persists in
+/// its JSONL and reattaches via `--resume`).
 #[tauri::command]
 pub fn close_terminal(state: State<AppState>, terminal_id: String) -> Result<(), String> {
-    if let Some(session) = state.sessions.lock().unwrap().remove(&terminal_id) {
+    if let Some(session) = state.sessions.lock().remove(&terminal_id) {
         session.output_task.abort();
     }
-    if let Some(mut agent) = state.claude_agents.lock().unwrap().remove(&terminal_id) {
+    if let Some(mut agent) = state.claude_agents.lock().remove(&terminal_id) {
         agent.kill();
     }
     Ok(())
@@ -368,7 +395,7 @@ pub async fn delete_terminal(
 ) -> Result<(), String> {
     kill_terminals(&state, std::slice::from_ref(&terminal_id)).await;
     {
-        let mut store = state.store.lock().unwrap();
+        let mut store = state.store.lock();
         if let Some(p) = store.project_mut(&project_id) {
             p.terminals.retain(|t| t.id != terminal_id);
         }
@@ -377,7 +404,7 @@ pub async fn delete_terminal(
     Ok(())
 }
 
-/// Persist a claude session id (from the sidecar init event) onto a terminal.
+/// Persist a discovered claude session id onto a terminal.
 #[tauri::command]
 pub fn set_terminal_session(
     state: State<AppState>,
@@ -386,7 +413,7 @@ pub fn set_terminal_session(
     session_id: String,
 ) -> Result<(), String> {
     {
-        let mut store = state.store.lock().unwrap();
+        let mut store = state.store.lock();
         if let Some(p) = store.project_mut(&project_id) {
             if let Some(t) = p.terminals.iter_mut().find(|t| t.id == terminal_id) {
                 t.session_id = Some(session_id);
@@ -398,22 +425,17 @@ pub fn set_terminal_session(
 }
 
 // ---------------------------------------------------------------------------
-// Claude chat I/O
+// Claude chat I/O (Agent SDK sidecar)
 // ---------------------------------------------------------------------------
 
-/// Send a user message to a Claude terminal's sidecar.
+/// Send a user turn to a Claude session's sidecar.
 #[tauri::command]
 pub fn claude_send(state: State<AppState>, terminal_id: String, text: String) -> Result<(), String> {
     let payload = serde_json::json!({ "t": "user", "text": text }).to_string();
-    let mut agents = state.claude_agents.lock().unwrap();
-    agents
-        .get_mut(&terminal_id)
-        .ok_or_else(|| "no such claude terminal".to_string())?
-        .send_json(&payload)
-        .map_err(|e| e.to_string())
+    send_to_agent(&state, &terminal_id, &payload)
 }
 
-/// Answer a tool-permission request for a Claude terminal.
+/// Answer a tool-permission request for a Claude session.
 #[tauri::command]
 pub fn claude_permission(
     state: State<AppState>,
@@ -422,15 +444,49 @@ pub fn claude_permission(
     allow: bool,
     message: Option<String>,
 ) -> Result<(), String> {
-    let payload = serde_json::json!({
-        "t": "permission", "id": id, "allow": allow, "message": message
-    })
-    .to_string();
-    let mut agents = state.claude_agents.lock().unwrap();
+    let payload =
+        serde_json::json!({ "t": "permission", "id": id, "allow": allow, "message": message })
+            .to_string();
+    send_to_agent(&state, &terminal_id, &payload)
+}
+
+/// Change the permission mode live (the Shift-Tab affordance): default → acceptEdits → plan.
+#[tauri::command]
+pub fn claude_set_mode(
+    state: State<AppState>,
+    terminal_id: String,
+    mode: String,
+) -> Result<(), String> {
+    let payload = serde_json::json!({ "t": "set_mode", "mode": mode }).to_string();
+    send_to_agent(&state, &terminal_id, &payload)
+}
+
+/// Interrupt the in-flight turn (Esc).
+#[tauri::command]
+pub fn claude_interrupt(state: State<AppState>, terminal_id: String) -> Result<(), String> {
+    let payload = serde_json::json!({ "t": "interrupt" }).to_string();
+    send_to_agent(&state, &terminal_id, &payload)
+}
+
+/// Answer an AskUserQuestion picker (id is the tool_use id from the question event).
+#[tauri::command]
+pub fn claude_answer(
+    state: State<AppState>,
+    terminal_id: String,
+    id: String,
+    text: String,
+) -> Result<(), String> {
+    let payload = serde_json::json!({ "t": "answer", "id": id, "text": text }).to_string();
+    send_to_agent(&state, &terminal_id, &payload)
+}
+
+/// Write one JSON-line command to a Claude sidecar's stdin.
+fn send_to_agent(state: &AppState, terminal_id: &str, payload: &str) -> Result<(), String> {
+    let mut agents = state.claude_agents.lock();
     agents
-        .get_mut(&terminal_id)
-        .ok_or_else(|| "no such claude terminal".to_string())?
-        .send_json(&payload)
+        .get_mut(terminal_id)
+        .ok_or_else(|| "no such claude session".to_string())?
+        .send_json(payload)
         .map_err(|e| e.to_string())
 }
 
@@ -444,7 +500,7 @@ pub async fn write_to_pty(
     pty_id: String,
     data: String,
 ) -> Result<(), String> {
-    let pane = state.sessions.lock().unwrap().get(&pty_id).map(|s| s.pane.clone());
+    let pane = state.sessions.lock().get(&pty_id).map(|s| s.pane.clone());
     pane.ok_or_else(|| "no such terminal".to_string())?
         .send_text(&data)
         .await
@@ -458,7 +514,7 @@ pub async fn resize_pty(
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
-    let pane = state.sessions.lock().unwrap().get(&pty_id).map(|s| s.pane.clone());
+    let pane = state.sessions.lock().get(&pty_id).map(|s| s.pane.clone());
     pane.ok_or_else(|| "no such terminal".to_string())?
         .resize(TerminalSizeSpec::new(cols.max(1), rows.max(1)))
         .await
@@ -478,18 +534,17 @@ pub fn find_claude() -> Option<String> {
 
 #[tauri::command]
 pub fn get_settings(state: State<AppState>) -> Settings {
-    state.settings.lock().unwrap().clone()
+    state.settings.lock().clone()
 }
 
 #[tauri::command]
 pub fn set_settings(state: State<AppState>, settings: Settings) -> Result<(), String> {
-    *state.settings.lock().unwrap() = settings;
-    let path = state.settings_path.lock().unwrap().clone();
+    *state.settings.lock() = settings;
+    let path = state.settings_path.lock().clone();
     if let Some(path) = path {
         state
             .settings
             .lock()
-            .unwrap()
             .save(&path)
             .map_err(|e| e.to_string())?;
     }
@@ -498,7 +553,7 @@ pub fn set_settings(state: State<AppState>, settings: Settings) -> Result<(), St
 
 /// The `claude` binary to use: the configured override (if it exists), else auto-detect.
 fn resolved_claude(state: &AppState) -> Option<PathBuf> {
-    let configured = state.settings.lock().unwrap().claude_path.clone();
+    let configured = state.settings.lock().claude_path.clone();
     if let Some(p) = configured.filter(|s| !s.trim().is_empty()) {
         let pb = PathBuf::from(p);
         if pb.exists() {
@@ -533,17 +588,17 @@ async fn connect(state: &AppState) -> Result<&Rmux, String> {
         .map_err(|e| e.to_string())
 }
 
-/// Kill the given terminals (both shell and claude) by id.
+/// Permanently kill the given terminals (rmux sessions and/or Claude sidecars) by id.
 async fn kill_terminals(state: &AppState, terminal_ids: &[String]) {
     let mut rmux_ids = Vec::new();
     for tid in terminal_ids {
-        if let Some(session) = state.sessions.lock().unwrap().remove(tid) {
+        if let Some(session) = state.sessions.lock().remove(tid) {
             session.output_task.abort();
-            rmux_ids.push(tid.clone());
         }
-        if let Some(mut agent) = state.claude_agents.lock().unwrap().remove(tid) {
+        if let Some(mut agent) = state.claude_agents.lock().remove(tid) {
             agent.kill();
         }
+        rmux_ids.push(tid.clone());
     }
     if !rmux_ids.is_empty() {
         if let Ok(rmux) = connect(state).await {
@@ -563,62 +618,14 @@ async fn kill_terminals(state: &AppState, terminal_ids: &[String]) {
 }
 
 fn persist(state: &AppState) {
-    let path = state.store_path.lock().unwrap().clone();
-    if let Some(path) = path {
-        let _ = state.store.lock().unwrap().save(&path);
-    }
-}
-
-/// Snapshot all claude session `*.jsonl` paths across all project dirs.
-fn snapshot_session_paths() -> HashSet<PathBuf> {
-    let mut set = HashSet::new();
-    let Ok(dirs) = std::fs::read_dir(crate::projects::projects_root()) else {
-        return set;
+    let Some(path) = state.store_path.lock().clone() else {
+        return;
     };
-    for d in dirs.flatten() {
-        let dir = d.path();
-        if !dir.is_dir() {
-            continue;
-        }
-        if let Ok(files) = std::fs::read_dir(&dir) {
-            for f in files.flatten() {
-                let p = f.path();
-                if p.extension().and_then(|e| e.to_str()) == Some("jsonl") {
-                    set.insert(p);
-                }
-            }
+    if let Err(e) = state.store.lock().save(&path) {
+        eprintln!("failed to persist projects.json: {e}");
+        if let Some(app) = state.app.lock().as_ref() {
+            let _ = app.emit("store://error", format!("Couldn't save changes to disk: {e}"));
         }
     }
-    set
 }
 
-/// The authoritative cwd recorded inside a transcript (first `cwd` field).
-fn file_cwd(path: &Path) -> Option<String> {
-    let text = std::fs::read_to_string(path).ok()?;
-    for line in text.lines().take(50) {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-            if let Some(c) = v.get("cwd").and_then(|c| c.as_str()) {
-                return Some(c.to_string());
-            }
-        }
-    }
-    None
-}
-
-/// Poll for the new claude session file (created by a new/fork session) matching
-/// `cwd`, and emit its id on `pty://session-id/<terminal_id>`.
-fn discover_session_id(app: AppHandle, terminal_id: String, cwd: String, before: HashSet<PathBuf>) {
-    let event = format!("pty://session-id/{terminal_id}");
-    for _ in 0..50 {
-        std::thread::sleep(Duration::from_millis(300));
-        let after = snapshot_session_paths();
-        for path in after.difference(&before) {
-            if file_cwd(path).as_deref() == Some(cwd.as_str()) {
-                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    let _ = app.emit(&event, stem.to_string());
-                    return;
-                }
-            }
-        }
-    }
-}

@@ -17,14 +17,13 @@ opens a new Claude session seeded with it (`▦` on a project → add blocks →
   rmux pty (you type in it — full slash-commands, native tool prompts), with a live
   **chat mirror** panel rendered from the session JSONL alongside it. **Fork** spawns
   a native `--fork-session` pty (grouped under the lineage); **Rewind** opens Claude's
-  native `/rewind` picker in the terminal. Shell terminals are the same pty, running a
-  shell. (The Agent SDK sidecar from the earlier chat approach is retired/dormant.)
+  native `/rewind` picker in the terminal (you pick the checkpoint there). Shell
+  terminals are the same pty, running a shell.
 
 Built with **Tauri v2** (Rust backend), a **SvelteKit** (SPA) frontend, and
 **xterm.js**. Sessions run under **[rmux](https://github.com/helvesec/rmux)** (a
 programmable Rust terminal multiplexer) via the `rmux-sdk` crate — giving
-persistent sessions that survive app restarts and structured snapshots/`wait_for_text`
-for the rewind/branch automation. See
+persistent sessions that survive app restarts. See
 `/Users/mark/.claude/plans/i-want-to-create-unified-puppy.md` for the full plan.
 
 ## Status
@@ -41,10 +40,11 @@ for the rewind/branch automation. See
 - ✅ **M4** — Fork: the ⑂ Fork button spawns `--resume <id> --fork-session` in a new
   tab; the backend discovers the new session id (`pty://session-id/<ptyId>`) so the
   tree and transcript follow the fork.
-- ✅ **M5/M6** — Rewind/Branch from an arbitrary turn: the ↺ Rewind here button drives
-  the live session's `/rewind` picker (`rewind_restore_to` in `pty/manager.rs`, using
-  rmux snapshots to match the target checkpoint row) and selects "Restore conversation"
-  — conversation forked, code unchanged. Needs a live-tuning pass against the real menu.
+- ✅ **M5/M6** — Rewind: the ↺ Rewind button writes `/rewind` to the live pty,
+  opening Claude's native checkpoint picker in the terminal for you to choose a
+  restore point. (Driving the picker programmatically to a *specific past turn* —
+  the original `rewind_restore_to` automation — is not currently wired; the chat
+  mirror exposes a single session-level Rewind, not per-turn.)
 
 ## Native macOS build (on the host)
 
@@ -60,16 +60,10 @@ npm install
 npm run tauri build      # bundles the .app (see tauri.conf.json bundle.targets)
 ```
 
-The build bundles its runtimes so the app is self-contained:
-- **rmux** daemon (sidecar binary; `RMUX_SDK_DAEMON_BINARY` points at it),
-- **node** runtime (sidecar binary), and
-- the **Claude chat sidecar**, esbuild-bundled to a single `resources/sidecar.mjs`
-  (no `node_modules` shipped) via `npm run build:sidecar`.
-
-Binaries live in `src-tauri/binaries/<name>-<target-triple>`; the sidecar bundle is
-produced by `beforeBuildCommand` (`npm run build:all`). The only remaining host
-dependency is your own authenticated `claude` CLI (the Agent SDK shells out to it,
-using your login). App size is ~134 MB (mostly the node runtime).
+The build bundles the **rmux** daemon (sidecar binary; `RMUX_SDK_DAEMON_BINARY`
+points at it) so sessions are self-contained. The binary lives in
+`src-tauri/binaries/rmux-<target-triple>`. The only host dependency is your own
+authenticated `claude` CLI (the bundled app runs it in the pty, using your login).
 
 Output: `src-tauri/target/release/bundle/macos/Context Manager.app`. Run it with:
 

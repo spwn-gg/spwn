@@ -5,6 +5,10 @@
 //     {"t":"user","text":"..."}                      send a user turn
 //     {"t":"permission","id":"<toolUseID>","allow":true|false,"message":"..."}
 //     {"t":"interrupt"}
+//     {"t":"set_mode","mode":"default|acceptEdits|plan|bypassPermissions"}
+//     {"t":"answer","id":"<toolUseID>","text":"..."}   answer an AskUserQuestion
+//   stdout adds:
+//     {"t":"question","id":"<toolUseID>","questions":[{question,header,options,multiSelect}]}
 //   stdout -> Rust (forwarded to the chat UI):
 //     {"t":"init","sessionId":"..."}
 //     {"t":"delta","text":"..."}           streamed assistant text
@@ -65,6 +69,16 @@ class AsyncQueue {
 const userQ = new AsyncQueue();
 const pendingPermissions = new Map(); // toolUseID -> resolve fn
 
+// ExitPlanMode is a TUI-only plan-approval transition we can't render; decline it
+// so Claude presents the plan as plain text instead.
+const INTERACTIVE_TOOLS = new Set(['ExitPlanMode']);
+
+// AskUserQuestion gets a real picker: we hold the permission call open, show the
+// options in the UI, and resolve it once the user answers. The SDK can't return
+// the answer via `updatedInput` (TUI-only), but a deny `message` becomes the
+// tool_result Claude reads — so we deliver the selection that way.
+const pendingQuestions = new Map(); // toolUseID -> resolve(PermissionResult)
+
 const q = query({
 	prompt: userQ,
 	options: {
@@ -78,6 +92,20 @@ const q = query({
 		pathToClaudeCodeExecutable: claudePath,
 		canUseTool: (toolName, input, opts) => {
 			const id = opts?.toolUseID ?? `perm-${Date.now()}`;
+			// Interactive multiple-choice question → show a picker; resolve when answered.
+			if (toolName === 'AskUserQuestion') {
+				emit({ t: 'question', id, questions: input?.questions ?? [] });
+				return new Promise((resolve) => pendingQuestions.set(id, resolve));
+			}
+			// Plan approval and other TUI-only prompts → decline with guidance so
+			// Claude continues in plain text (the chat handles that fine).
+			if (INTERACTIVE_TOOLS.has(toolName)) {
+				return Promise.resolve({
+					behavior: 'deny',
+					message:
+						"This client can't display interactive plan approval. Summarize the plan as plain text and ask the user to confirm in the chat."
+				});
+			}
 			emit({ t: 'permission', id, tool: toolName, input, title: opts?.title ?? opts?.displayName });
 			return new Promise((resolve) => pendingPermissions.set(id, resolve));
 		}
@@ -113,6 +141,19 @@ rl.on('line', (line) => {
 		}
 	} else if (msg.t === 'interrupt') {
 		q.interrupt?.();
+	} else if (msg.t === 'answer') {
+		// The user answered an AskUserQuestion picker; deliver it as the tool_result.
+		const resolve = pendingQuestions.get(msg.id);
+		if (resolve) {
+			pendingQuestions.delete(msg.id);
+			resolve({ behavior: 'deny', message: msg.text || 'No selection.' });
+		}
+	} else if (msg.t === 'set_mode') {
+		// Live permission-mode change (the Shift-Tab affordance): default →
+		// acceptEdits → plan. Guarded so older SDKs degrade gracefully.
+		q.setPermissionMode?.(msg.mode).catch((e) =>
+			emit({ t: 'error', message: String(e?.message ?? e) })
+		);
 	}
 });
 rl.on('close', () => userQ.end());

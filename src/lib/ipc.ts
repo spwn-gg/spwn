@@ -4,7 +4,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
-import type { ProjectRec, Settings, TerminalKind, Turn } from './types';
+import type { ClaudeEvent, ProjectRec, Settings, TerminalKind, Turn } from './types';
 
 // --- Settings ---
 
@@ -62,6 +62,15 @@ export function addContextFile(projectId: string, path: string): Promise<void> {
 
 export function removeContextBlock(projectId: string, blockId: string): Promise<void> {
 	return invoke('remove_context_block', { projectId, blockId });
+}
+
+export function updateContextBlock(projectId: string, blockId: string, text: string): Promise<void> {
+	return invoke('update_context_block', { projectId, blockId, text });
+}
+
+/** Persist a new ordering of a project's context blocks (by block id). */
+export function reorderContext(projectId: string, order: string[]): Promise<void> {
+	return invoke('reorder_context', { projectId, order });
 }
 
 export function clearContext(projectId: string): Promise<void> {
@@ -122,14 +131,14 @@ export function resizePty(terminalId: string, cols: number, rows: number): Promi
 	return invoke('resize_pty', { ptyId: terminalId, cols, rows });
 }
 
-// --- Claude chat ---
+// --- Claude chat (Agent SDK sidecar) ---
 
-/** Send a user message to a Claude terminal's sidecar. */
+/** Send a user turn to a Claude session's sidecar. */
 export function claudeSend(terminalId: string, text: string): Promise<void> {
 	return invoke('claude_send', { terminalId, text });
 }
 
-/** Answer a Claude tool-permission request. */
+/** Answer a tool-permission request. */
 export function claudePermission(
 	terminalId: string,
 	id: string,
@@ -138,6 +147,23 @@ export function claudePermission(
 ): Promise<void> {
 	return invoke('claude_permission', { terminalId, id, allow, message });
 }
+
+/** Change the permission mode live (Shift-Tab): default | acceptEdits | plan | bypassPermissions. */
+export function claudeSetMode(terminalId: string, mode: string): Promise<void> {
+	return invoke('claude_set_mode', { terminalId, mode });
+}
+
+/** Interrupt the in-flight turn (Esc). */
+export function claudeInterrupt(terminalId: string): Promise<void> {
+	return invoke('claude_interrupt', { terminalId });
+}
+
+/** Answer an AskUserQuestion picker (id = the question event's id). */
+export function claudeAnswer(terminalId: string, id: string, text: string): Promise<void> {
+	return invoke('claude_answer', { terminalId, id, text });
+}
+
+// --- Claude transcript ---
 
 /** Prior conversation turns for a saved claude session (history on reattach). */
 export function readTranscript(sessionId: string): Promise<Turn[]> {
@@ -159,24 +185,31 @@ export function onPtySessionId(terminalId: string, cb: (sessionId: string) => vo
 	return listen<string>(`pty://session-id/${terminalId}`, (e) => cb(e.payload));
 }
 
-/** Claude sidecar events (JSON lines: init/delta/thinking/tool_use/.../result). */
-export function onClaudeEvent(terminalId: string, cb: (ev: any) => void): Promise<UnlistenFn> {
+/** Streamed events from a Claude session's sidecar (init/delta/thinking/tool_use/…). */
+export function onClaudeEvent(terminalId: string, cb: (ev: ClaudeEvent) => void): Promise<UnlistenFn> {
 	return listen<string>(`claude://event/${terminalId}`, (e) => {
 		try {
-			cb(JSON.parse(e.payload));
+			cb(JSON.parse(e.payload) as ClaudeEvent);
 		} catch {
-			/* ignore malformed line */
+			/* ignore a malformed line */
 		}
 	});
 }
 
+/** Fires when a Claude session's sidecar process exits. */
 export function onClaudeExit(terminalId: string, cb: () => void): Promise<UnlistenFn> {
 	return listen(`claude://exit/${terminalId}`, () => cb());
 }
 
-/** Fires (debounced) whenever ~/.claude/projects changes (live transcript). */
-export function onProjectsChanged(cb: () => void): Promise<UnlistenFn> {
-	return listen('projects://changed', () => cb());
+/** Fires (debounced) whenever ~/.claude/projects changes; the payload is the list
+ *  of changed session ids (empty when the affected sessions can't be determined). */
+export function onProjectsChanged(cb: (changed: string[]) => void): Promise<UnlistenFn> {
+	return listen<string[]>('projects://changed', (e) => cb(e.payload ?? []));
+}
+
+/** Fires when the backend fails to persist the project store to disk. */
+export function onStoreError(cb: (message: string) => void): Promise<UnlistenFn> {
+	return listen<string>('store://error', (e) => cb(e.payload));
 }
 
 function base64ToBytes(b64: string): Uint8Array {

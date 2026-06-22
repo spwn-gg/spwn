@@ -17,6 +17,9 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
         .setup(|app| {
+            // Stash the app handle so background helpers (e.g. persist) can emit.
+            *app.state::<AppState>().app.lock() = Some(app.handle().clone());
+
             // Point the rmux SDK at a daemon binary it can launch. Prefer the
             // bundled sidecar (next to the app binary in Contents/MacOS), falling
             // back to a system rmux for `tauri dev`. A Finder-launched app doesn't
@@ -36,18 +39,18 @@ pub fn run() {
                 let state = app.state::<AppState>();
 
                 let store_path = store::store_path(&data_dir);
-                *state.store.lock().unwrap() = store::ProjectStore::load(&store_path);
-                *state.store_path.lock().unwrap() = Some(store_path);
+                *state.store.lock() = store::ProjectStore::load(&store_path);
+                *state.store_path.lock() = Some(store_path);
 
                 let settings_path = settings::settings_path(&data_dir);
-                *state.settings.lock().unwrap() = settings::Settings::load(&settings_path);
-                *state.settings_path.lock().unwrap() = Some(settings_path);
+                *state.settings.lock() = settings::Settings::load(&settings_path);
+                *state.settings_path.lock() = Some(settings_path);
             }
 
             // Watch ~/.claude/projects so the transcript panel refreshes live.
             let root = projects::projects_root();
             match projects::start_watcher(app.handle().clone(), &root) {
-                Ok(w) => *app.state::<AppState>().watcher.lock().unwrap() = Some(w),
+                Ok(w) => *app.state::<AppState>().watcher.lock() = Some(w),
                 Err(e) => eprintln!("failed to start projects watcher: {e}"),
             }
             Ok(())
@@ -63,6 +66,8 @@ pub fn run() {
             commands::add_context_block,
             commands::add_context_file,
             commands::remove_context_block,
+            commands::update_context_block,
+            commands::reorder_context,
             commands::clear_context,
             commands::open_terminal,
             commands::close_terminal,
@@ -70,10 +75,22 @@ pub fn run() {
             commands::set_terminal_session,
             commands::claude_send,
             commands::claude_permission,
+            commands::claude_set_mode,
+            commands::claude_interrupt,
+            commands::claude_answer,
             commands::write_to_pty,
             commands::resize_pty,
             commands::read_transcript,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            // Don't leave orphaned sidecar node processes when the app quits.
+            if let tauri::RunEvent::Exit = event {
+                let state = app_handle.state::<AppState>();
+                for (_, mut agent) in state.claude_agents.lock().drain() {
+                    agent.kill();
+                }
+            }
+        });
 }

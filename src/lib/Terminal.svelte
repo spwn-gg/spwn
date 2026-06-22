@@ -115,6 +115,6 @@
 		height: 100%;
 		padding: 4px 6px;
 		box-sizing: border-box;
-		background: #1e1e1e;
+		background: var(--bg);
 	}
 </style>

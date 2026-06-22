@@ -6,9 +6,11 @@ use crate::pty::RmuxSession;
 use crate::settings::Settings;
 use crate::store::ProjectStore;
 use rmux_sdk::Rmux;
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::time::SystemTime;
+use tauri::AppHandle;
 use tokio::sync::OnceCell;
 
 /// Live in-memory state plus the persisted Context Manager project store.
@@ -18,7 +20,7 @@ pub struct AppState {
     pub rmux: OnceCell<Rmux>,
     /// Live shell terminals (rmux), keyed by terminal id.
     pub sessions: Mutex<HashMap<String, RmuxSession>>,
-    /// Live Claude chat terminals (Agent SDK sidecars), keyed by terminal id.
+    /// Live Claude chat sessions (Agent SDK sidecars), keyed by terminal id.
     pub claude_agents: Mutex<HashMap<String, ClaudeAgent>>,
     /// Watches ~/.claude/projects for live transcript refresh.
     pub watcher: Mutex<Option<ProjectsWatcher>>,
@@ -30,4 +32,9 @@ pub struct AppState {
     pub settings: Mutex<Settings>,
     /// Path to settings.json (resolved at startup).
     pub settings_path: Mutex<Option<PathBuf>>,
+    /// App handle (set at startup) so background helpers can emit events.
+    pub app: Mutex<Option<AppHandle>>,
+    /// Cache of Claude session titles keyed by session id → (file mtime, title),
+    /// so list_projects doesn't re-read every transcript on each refresh.
+    pub title_cache: Mutex<HashMap<String, (SystemTime, String)>>,
 }

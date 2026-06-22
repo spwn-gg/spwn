@@ -75,8 +75,8 @@
 	.panel {
 		width: 560px;
 		max-width: 90vw;
-		background: #1e1e1e;
-		border: 1px solid #3a3a3a;
+		background: var(--bg);
+		border: 1px solid var(--border-strong);
 		border-radius: 10px;
 		box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
 		display: flex;
@@ -165,8 +165,8 @@
 		cursor: pointer;
 	}
 	.foot .primary {
-		background: #2a4a78;
-		border-color: #3a5a88;
+		background: var(--accent);
+		border-color: var(--accent-border);
 		color: #fff;
 	}
 	.foot button:hover {
