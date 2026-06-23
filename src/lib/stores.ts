@@ -47,6 +47,9 @@ export interface OpenTab {
 export const openTabs = writable<OpenTab[]>([]);
 export const activeTabKey = writable<string | null>(null);
 
+/** Text queued to be dropped into a session's input box (keyed by terminal id). */
+export const pasteToInput = writable<{ terminalId: string; text: string } | null>(null);
+
 /** Flag a tab as needing attention — ignored if it's already the focused tab. */
 export function markAttention(key: string) {
 	if (get(activeTabKey) === key) return;

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { claudeSend, claudeSetMode, claudeInterrupt } from './ipc';
+	import { pasteToInput } from './stores';
 
 	let {
 		terminalId,
@@ -29,6 +30,19 @@
 
 	let text = $state(initialPrompt ?? '');
 	let ta: HTMLTextAreaElement | undefined;
+
+	// Consume a response pasted in from a child session (e.g. "→ parent").
+	$effect(() => {
+		const inj = $pasteToInput;
+		if (inj && inj.terminalId === terminalId) {
+			text = text.trim() ? `${text.trimEnd()}\n\n${inj.text}` : inj.text;
+			pasteToInput.set(null);
+			queueMicrotask(() => {
+				autogrow();
+				ta?.focus();
+			});
+		}
+	});
 
 	function autogrow() {
 		if (!ta) return;

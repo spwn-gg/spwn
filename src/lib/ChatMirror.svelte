@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { readTranscript, onProjectsChanged, addContextBlock, claudeRewind } from './ipc';
-	import { openTab, refreshProjects } from './stores';
+	import { openTab, refreshProjects, projects, pasteToInput } from './stores';
 	import type { Turn, QuestionSpec } from './types';
 	import { marked } from 'marked';
 	import DOMPurify from 'dompurify';
@@ -199,6 +199,39 @@
 		clearTimeout(statusTimer);
 	});
 
+	// If this is a forked (child) session, find its parent terminal so responses
+	// can be pasted back into the parent's input.
+	const parentTerm = $derived.by(() => {
+		const terms = $projects.find((p) => p.id === projectId)?.terminals;
+		const me = terms?.find((t) => t.id === terminalId);
+		return me?.parentId ? terms?.find((t) => t.id === me.parentId) : undefined;
+	});
+
+	function turnText(t: Turn): string {
+		return t.blocks
+			.filter((b) => b.kind === 'text')
+			.map((b) => b.text ?? '')
+			.join('\n')
+			.trim();
+	}
+
+	function pasteToParent(t: Turn) {
+		const parent = parentTerm;
+		const text = turnText(t);
+		if (!parent || !text) return;
+		// Open/focus the parent session, then drop the response into its input.
+		openTab({
+			projectId,
+			kind: 'claude',
+			terminalId: parent.id,
+			sessionId: parent.sessionId ?? undefined,
+			title: parent.title,
+			projectName: $projects.find((p) => p.id === projectId)?.name
+		});
+		pasteToInput.set({ terminalId: parent.id, text });
+		setStatus('Pasted into the parent session’s input.');
+	}
+
 	function fork() {
 		if (!sessionId) return;
 		openTab({
@@ -281,6 +314,9 @@
 						<span>{t.role}</span>
 						{#if t.role === 'assistant'}
 							<button class="rewind" title="Rewind the conversation to here" onclick={() => rewindTo(t.uuid)}>↺ rewind</button>
+							{#if parentTerm}
+								<button class="toparent" title="Paste this response into the parent session ({parentTerm.title})" onclick={() => pasteToParent(t)}>→ parent</button>
+							{/if}
 						{/if}
 						<button class="addctx" title="Add to project context" onclick={() => addToContext(t)}>＋ ctx</button>
 					</div>
@@ -454,7 +490,8 @@
 		}
 	}
 	.addctx,
-	.rewind {
+	.rewind,
+	.toparent {
 		background: none;
 		border: 1px solid #3a3a3a;
 		color: #888;
@@ -469,9 +506,16 @@
 	}
 	.turn:hover .addctx,
 	.turn:hover .rewind,
+	.turn:hover .toparent,
 	.addctx:focus-visible,
-	.rewind:focus-visible {
+	.rewind:focus-visible,
+	.toparent:focus-visible {
 		opacity: 1;
+	}
+	.toparent:hover {
+		color: #fff;
+		background: #1f3a2c;
+		border-color: #2f6a4a;
 	}
 	.addctx:hover {
 		color: #fff;
