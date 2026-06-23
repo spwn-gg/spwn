@@ -4,6 +4,7 @@
 //! A terminal is a shell or a `claude` TUI, both running in an rmux pty under
 //! stable, persistent ids so they reattach across restarts.
 
+use crate::checkpoints::{self, CheckpointMeta};
 use crate::pty::{default_shell, find_claude_bin, spawn_rmux_session};
 use crate::settings::Settings;
 use crate::state::AppState;
@@ -406,6 +407,12 @@ pub async fn delete_terminal(
     terminal_id: String,
 ) -> Result<(), String> {
     kill_terminals(&state, std::slice::from_ref(&terminal_id)).await;
+    // Capture the session id before dropping the record, to prune its checkpoints.
+    let session_id = state
+        .store
+        .lock()
+        .terminal(&terminal_id)
+        .and_then(|t| t.session_id.clone());
     {
         let mut store = state.store.lock();
         if let Some(p) = store.project_mut(&project_id) {
@@ -413,6 +420,9 @@ pub async fn delete_terminal(
         }
     }
     persist(&state);
+    if let (Some(sid), Some(app_data)) = (session_id, app_data_dir(&state)) {
+        checkpoints::remove_session(&app_data, &sid);
+    }
     Ok(())
 }
 
@@ -531,6 +541,126 @@ pub fn claude_rewind(
     .map_err(|e| e.to_string())?;
     state.claude_agents.lock().insert(terminal_id, agent);
     Ok(())
+}
+
+/// Rewind AND restore the project files to that turn's checkpoint. Restores in the
+/// window where the sidecar is dead (no race), after saving a pre-restore snapshot.
+#[tauri::command]
+pub fn claude_rewind_restore(
+    app: AppHandle,
+    state: State<AppState>,
+    terminal_id: String,
+    anchor_uuid: String,
+    restore: bool,
+) -> Result<(), String> {
+    let (session_id, cwd) = {
+        let store = state.store.lock();
+        let t = store
+            .terminal(&terminal_id)
+            .ok_or_else(|| "no such session".to_string())?;
+        let sid = t
+            .session_id
+            .clone()
+            .ok_or_else(|| "this session hasn't started yet".to_string())?;
+        (sid, t.cwd.clone())
+    };
+    let claude_bin = resolved_claude(state.inner())
+        .ok_or_else(|| "claude binary not found (set its path in Settings)".to_string())?;
+    let cwd_path = std::fs::canonicalize(&cwd).unwrap_or_else(|_| PathBuf::from(&cwd));
+    // 1. Kill the sidecar so the working tree is idle.
+    if let Some(mut agent) = state.claude_agents.lock().remove(&terminal_id) {
+        agent.kill();
+    }
+    // 2. Restore files (safety snapshot first) while the agent is dead.
+    if restore {
+        if let Some(app_data) = app_data_dir(&state) {
+            let pd = Path::new(&cwd);
+            if let Some(cp) = checkpoints::find_for_turn(&app_data, &session_id, &anchor_uuid) {
+                let _ = checkpoints::capture(&app_data, pd, &session_id, "pre-restore", "pre-restore");
+                checkpoints::restore(&app_data, &session_id, &cp.id, pd)?;
+            }
+        }
+    }
+    // 3. Respawn resumed at the anchor.
+    let agent = crate::claude::spawn_claude_agent(
+        app,
+        &terminal_id,
+        &cwd_path,
+        Some(session_id.as_str()),
+        Some(anchor_uuid.as_str()),
+        false,
+        &claude_bin,
+    )
+    .map_err(|e| e.to_string())?;
+    state.claude_agents.lock().insert(terminal_id, agent);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Code checkpoints (APFS-clone snapshots of the project dir)
+// ---------------------------------------------------------------------------
+
+/// The app data dir (parent of projects.json).
+fn app_data_dir(state: &AppState) -> Option<PathBuf> {
+    state
+        .store_path
+        .lock()
+        .clone()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+}
+
+/// Snapshot the project directory (kind: "turn" | "baseline" | ...).
+#[tauri::command]
+pub fn checkpoint_project(
+    state: State<AppState>,
+    project_id: String,
+    session_id: String,
+    turn_uuid: String,
+    kind: String,
+) -> Result<CheckpointMeta, String> {
+    let project_dir = state
+        .store
+        .lock()
+        .project(&project_id)
+        .map(|p| p.directory.clone())
+        .ok_or_else(|| "no such project".to_string())?;
+    let app_data = app_data_dir(&state).ok_or_else(|| "no app data dir".to_string())?;
+    checkpoints::capture(&app_data, Path::new(&project_dir), &session_id, &turn_uuid, &kind)
+}
+
+/// Restore the project's working files to a checkpoint. Takes a pre-restore safety
+/// snapshot first (returned, so the restore is itself undoable). The caller must
+/// ensure the session isn't mid-turn (the frontend gates on `busy`).
+#[tauri::command]
+pub fn restore_checkpoint(
+    state: State<AppState>,
+    project_id: String,
+    session_id: String,
+    checkpoint_id: String,
+    pre_restore: bool,
+) -> Result<Option<CheckpointMeta>, String> {
+    let project_dir = state
+        .store
+        .lock()
+        .project(&project_id)
+        .map(|p| p.directory.clone())
+        .ok_or_else(|| "no such project".to_string())?;
+    let app_data = app_data_dir(&state).ok_or_else(|| "no app data dir".to_string())?;
+    let pd = Path::new(&project_dir);
+    let safety = if pre_restore {
+        checkpoints::capture(&app_data, pd, &session_id, "pre-restore", "pre-restore").ok()
+    } else {
+        None
+    };
+    checkpoints::restore(&app_data, &session_id, &checkpoint_id, pd)?;
+    Ok(safety)
+}
+
+#[tauri::command]
+pub fn list_checkpoints(state: State<AppState>, session_id: String) -> Vec<CheckpointMeta> {
+    app_data_dir(&state)
+        .map(|ad| checkpoints::list(&ad, &session_id))
+        .unwrap_or_default()
 }
 
 /// Write one JSON-line command to a Claude sidecar's stdin.

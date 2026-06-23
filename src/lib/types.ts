@@ -63,6 +63,16 @@ export interface PendingQuestion {
 	questions: QuestionSpec[];
 }
 
+/** A code checkpoint (APFS-clone snapshot of the project dir). */
+export interface CheckpointMeta {
+	id: string;
+	sessionId: string;
+	turnUuid: string;
+	projectDir: string;
+	createdMs: number;
+	kind: 'turn' | 'baseline' | 'pre-restore' | 'pre-switch';
+}
+
 /** Streamed events from the Claude sidecar (mirrors its stdout JSON-line protocol). */
 export type ClaudeEvent =
 	| { t: 'init'; sessionId: string }

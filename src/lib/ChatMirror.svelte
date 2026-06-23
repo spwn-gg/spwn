@@ -1,7 +1,15 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import { readTranscript, onProjectsChanged, addContextBlock, claudeRewind } from './ipc';
+	import {
+		readTranscript,
+		onProjectsChanged,
+		addContextBlock,
+		claudeRewind,
+		claudeRewindRestore,
+		listCheckpoints
+	} from './ipc';
 	import { openTab, refreshProjects, projects, pasteToInput } from './stores';
+	import CheckpointList from './CheckpointList.svelte';
 	import type { Turn, QuestionSpec } from './types';
 	import { marked } from 'marked';
 	import DOMPurify from 'dompurify';
@@ -110,15 +118,46 @@
 			// authoritative — drop the optimistic truncation.
 			const leaf = loaded.length ? loaded[loaded.length - 1].uuid : null;
 			if (rewindAnchor && leaf !== rewindBaseline) rewindAnchor = null;
+			loadCheckpoints();
 		}
 	}
 
-	function rewindTo(uuid: string) {
+	// Which turn uuids have a code checkpoint (enables the "+ restore files" option).
+	let turnCheckpoints = $state<Set<string>>(new Set());
+	// The rewind choice popover: anchored at a turn.
+	let rewindMenu = $state<{ uuid: string; x: number; y: number } | null>(null);
+	let showCheckpoints = $state(false);
+
+	async function loadCheckpoints() {
+		if (!sessionId) {
+			turnCheckpoints = new Set();
+			return;
+		}
+		const cps = await listCheckpoints(sessionId);
+		turnCheckpoints = new Set(cps.filter((c) => c.kind === 'turn').map((c) => c.turnUuid));
+	}
+
+	function openRewindMenu(uuid: string, e: MouseEvent) {
+		e.stopPropagation();
+		const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+		rewindMenu = { uuid, x: Math.min(r.left, window.innerWidth - 230), y: r.bottom + 2 };
+	}
+
+	function rewindTo(uuid: string, restore: boolean) {
+		rewindMenu = null;
 		if (!terminalId) return;
+		if (restore && !confirm('Also restore the project files to this point?\n\nReverts working files and deletes files created since (git history kept; a safety snapshot is saved first).')) return;
 		rewindBaseline = turns.length ? turns[turns.length - 1].uuid : null;
 		rewindAnchor = uuid;
-		claudeRewind(terminalId, uuid).catch((e) => setStatus(String(e)));
-		setStatus('Rewound here — your next message continues from this point; later turns drop.');
+		const p = restore
+			? claudeRewindRestore(terminalId, uuid, true)
+			: claudeRewind(terminalId, uuid);
+		p.catch((e) => setStatus(String(e)));
+		setStatus(
+			restore
+				? 'Rewound + restored files to this point. A safety snapshot was saved.'
+				: 'Rewound here — your next message continues from this point; later turns drop.'
+		);
 		onRewound();
 	}
 
@@ -126,6 +165,7 @@
 		void sessionId;
 		stick = true;
 		reload();
+		loadCheckpoints();
 	});
 
 	// Follow new turns / streaming text when pinned to the bottom (live mirror).
@@ -187,16 +227,19 @@
 	}
 
 	let unlisten: (() => void) | undefined;
+	const closeRewindMenu = () => (rewindMenu = null);
 	onMount(async () => {
 		// Reload only when our own session's transcript changed (or when the set of
 		// changed sessions is unknown), not on every filesystem event in the tree.
 		unlisten = await onProjectsChanged((changed) => {
 			if (!sessionId || changed.length === 0 || changed.includes(sessionId)) reload();
 		});
+		window.addEventListener('click', closeRewindMenu);
 	});
 	onDestroy(() => {
 		unlisten?.();
 		clearTimeout(statusTimer);
+		window.removeEventListener('click', closeRewindMenu);
 	});
 
 	// If this is a forked (child) session, find its parent terminal so responses
@@ -284,8 +327,12 @@
 <div class="mirror">
 	<div class="bar">
 		<span class="title">Conversation</span>
+		<button class="act" class:on={showCheckpoints} disabled={!sessionId} onclick={() => (showCheckpoints = !showCheckpoints)} title="Code checkpoints — undo file changes">⟲ Checkpoints</button>
 		<button class="act" disabled={!sessionId} onclick={fork} title="Fork this whole session">⑂ Fork</button>
 	</div>
+	{#if showCheckpoints && sessionId}
+		<CheckpointList {projectId} {sessionId} disabled={busy} onStatus={setStatus} />
+	{/if}
 	<div class="filters">
 		<button class="chip" class:off={!filters.text} onclick={() => (filters.text = !filters.text)}>
 			Text <span class="n">{counts.text}</span>
@@ -313,7 +360,7 @@
 					<div class="who">
 						<span>{t.role}</span>
 						{#if t.role === 'assistant'}
-							<button class="rewind" title="Rewind the conversation to here" onclick={() => rewindTo(t.uuid)}>↺ rewind</button>
+							<button class="rewind" title="Rewind to here" onclick={(e) => openRewindMenu(t.uuid, e)}>↺ rewind</button>
 							{#if parentTerm}
 								<button class="toparent" title="Paste this response into the parent session ({parentTerm.title})" onclick={() => pasteToParent(t)}>→ parent</button>
 							{/if}
@@ -371,6 +418,15 @@
 		{/if}
 	</div>
 </div>
+
+{#if rewindMenu}
+	<div class="rewind-menu" role="menu" tabindex="-1" style="left: {rewindMenu.x}px; top: {rewindMenu.y}px">
+		<button onclick={() => rewindTo(rewindMenu!.uuid, false)}>Conversation only</button>
+		<button disabled={!turnCheckpoints.has(rewindMenu.uuid)} onclick={() => rewindTo(rewindMenu!.uuid, true)}>
+			Conversation + restore files
+		</button>
+	</div>
+{/if}
 
 <style>
 	.mirror {
@@ -479,6 +535,41 @@
 		color: #6a6a6a;
 		letter-spacing: 2px;
 		animation: pulse 1.2s ease-in-out infinite;
+	}
+	.act.on {
+		background: var(--bg);
+		color: #d8b8f0;
+		border-color: #5a4a7a;
+	}
+	.rewind-menu {
+		position: fixed;
+		z-index: 200;
+		background: var(--bg-elevated);
+		border: 1px solid var(--border-strong);
+		border-radius: var(--radius-lg);
+		box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+		padding: 4px;
+		min-width: 210px;
+		display: flex;
+		flex-direction: column;
+	}
+	.rewind-menu button {
+		background: none;
+		border: none;
+		color: #d0d0d0;
+		text-align: left;
+		padding: 7px 10px;
+		border-radius: 5px;
+		cursor: pointer;
+		font-size: 13px;
+	}
+	.rewind-menu button:hover:not(:disabled) {
+		background: var(--accent-soft);
+		color: #fff;
+	}
+	.rewind-menu button:disabled {
+		opacity: 0.4;
+		cursor: default;
 	}
 	@keyframes pulse {
 		0%,

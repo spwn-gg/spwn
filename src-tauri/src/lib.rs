@@ -1,3 +1,4 @@
+mod checkpoints;
 mod claude;
 mod commands;
 mod projects;
@@ -79,6 +80,10 @@ pub fn run() {
             commands::claude_interrupt,
             commands::claude_answer,
             commands::claude_rewind,
+            commands::claude_rewind_restore,
+            commands::checkpoint_project,
+            commands::restore_checkpoint,
+            commands::list_checkpoints,
             commands::write_to_pty,
             commands::resize_pty,
             commands::read_transcript,

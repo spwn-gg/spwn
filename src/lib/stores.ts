@@ -50,6 +50,20 @@ export const activeTabKey = writable<string | null>(null);
 /** Text queued to be dropped into a session's input box (keyed by terminal id). */
 export const pasteToInput = writable<{ terminalId: string; text: string } | null>(null);
 
+/** Sessions currently mid-turn (an agent may be writing files) — restores gate on this. */
+export const busySessions = writable<Set<string>>(new Set());
+export function setSessionBusy(sessionId: string, busy: boolean) {
+	busySessions.update((s) => {
+		const n = new Set(s);
+		if (busy) n.add(sessionId);
+		else n.delete(sessionId);
+		return n;
+	});
+}
+
+/** Which session's code is currently materialized in each project dir (projectId → sessionId). */
+export const activeCodeSession = writable<Record<string, string>>({});
+
 /** Flag a tab as needing attention — ignored if it's already the focused tab. */
 export function markAttention(key: string) {
 	if (get(activeTabKey) === key) return;

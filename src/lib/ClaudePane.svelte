@@ -4,15 +4,28 @@
 	import InputBar from './InputBar.svelte';
 	import PermissionPrompt from './PermissionPrompt.svelte';
 	import QuestionPicker from './QuestionPicker.svelte';
+	import { get } from 'svelte/store';
 	import {
 		openTerminal,
 		setTerminalSession,
 		claudePermission,
 		claudeAnswer,
+		checkpointProject,
+		listCheckpoints,
+		restoreCheckpoint,
 		onClaudeEvent,
 		onClaudeExit
 	} from './ipc';
-	import { setTabTerminalId, setTabSession, refreshProjects, markAttention } from './stores';
+	import {
+		setTabTerminalId,
+		setTabSession,
+		refreshProjects,
+		markAttention,
+		setSessionBusy,
+		busySessions,
+		activeCodeSession,
+		activeTabKey
+	} from './stores';
 	import type { ClaudeEvent, PendingQuestion, PermissionReq, Turn } from './types';
 
 	let {
@@ -38,6 +51,9 @@
 	let id = $state<string | undefined>(terminalId);
 	let liveSession = $state<string | undefined>(sessionId);
 	let mode = $state<'default' | 'acceptEdits' | 'plan' | 'auto'>('default');
+	// A brand-new tab (no terminalId yet) gets a pre-edit "baseline" checkpoint.
+	const isFreshSession = terminalId === undefined;
+	let baselineDone = false;
 
 	// Live, in-flight turn (overlaid on top of the JSONL-rendered history).
 	let busy = $state(false);
@@ -85,7 +101,45 @@
 	onDestroy(() => {
 		clearTimeout(clearTimer);
 		unlisten.forEach((u) => u());
+		if (liveSession) setSessionBusy(liveSession, false);
 	});
+
+	// Publish this session's busy state so restores can gate on "no agent writing".
+	$effect(() => {
+		if (liveSession) setSessionBusy(liveSession, busy);
+	});
+
+	// Auto-restore the project to a session's code when you switch to it (user choice).
+	// Guards: only when this pane is active, the session has a checkpoint, and NO
+	// session is mid-turn (avoid racing a background write). A pre-switch snapshot of
+	// the outgoing session preserves its on-disk state.
+	let switchingCode = false;
+	$effect(() => {
+		const active = $activeTabKey === tabKey;
+		const sid = liveSession;
+		const anyBusy = $busySessions.size > 0;
+		if (!active || !sid || busy || anyBusy || switchingCode) return;
+		if ($activeCodeSession[projectId] === sid) return;
+		autoRestoreOnSwitch(sid);
+	});
+
+	async function autoRestoreOnSwitch(sid: string) {
+		switchingCode = true;
+		try {
+			const current = get(activeCodeSession)[projectId];
+			if (current && current !== sid) {
+				// Preserve the outgoing session's current files so switching back restores them.
+				await checkpointProject(projectId, current, 'pre-switch', 'pre-switch').catch(() => {});
+			}
+			activeCodeSession.update((m) => ({ ...m, [projectId]: sid }));
+			const cps = await listCheckpoints(sid);
+			if (cps.length) await restoreCheckpoint(projectId, sid, cps[0].id, false);
+		} catch (e) {
+			console.error('auto-restore on switch', e);
+		} finally {
+			switchingCode = false;
+		}
+	}
 
 	function resetLive() {
 		streamingText = '';
@@ -99,6 +153,11 @@
 				liveSession = ev.sessionId;
 				setTabSession(tabKey, ev.sessionId);
 				if (id) setTerminalSession(projectId, id, ev.sessionId).then(refreshProjects);
+				// Snapshot the project's pre-edit state once, for a fresh session.
+				if (isFreshSession && !baselineDone) {
+					baselineDone = true;
+					checkpointProject(projectId, ev.sessionId, 'baseline', 'baseline').catch(() => {});
+				}
 				break;
 			case 'delta':
 				busy = true;
@@ -131,6 +190,12 @@
 				busy = false;
 				// A background session finished its turn.
 				markAttention(tabKey);
+				// Snapshot the project's files at this turn (for undo / rewind-restore).
+				if (liveSession && lastAssistantUuid) {
+					checkpointProject(projectId, liveSession, lastAssistantUuid, 'turn').catch((e) =>
+						console.error('checkpoint failed', e)
+					);
+				}
 				// Keep the overlay until the JSONL reload brings the finished turn in
 				// (onReload clears it); fall back to a timer so it can't get stuck.
 				clearTimeout(clearTimer);

@@ -4,7 +4,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
-import type { ClaudeEvent, ProjectRec, Settings, TerminalKind, Turn } from './types';
+import type { CheckpointMeta, ClaudeEvent, ProjectRec, Settings, TerminalKind, Turn } from './types';
 
 // --- Settings ---
 
@@ -166,6 +166,41 @@ export function claudeAnswer(terminalId: string, id: string, text: string): Prom
 /** Rewind a session to an earlier turn (anchorUuid = the turn's uuid). */
 export function claudeRewind(terminalId: string, anchorUuid: string): Promise<void> {
 	return invoke('claude_rewind', { terminalId, anchorUuid });
+}
+
+/** Rewind AND restore the project files to that turn's checkpoint. */
+export function claudeRewindRestore(
+	terminalId: string,
+	anchorUuid: string,
+	restore: boolean
+): Promise<void> {
+	return invoke('claude_rewind_restore', { terminalId, anchorUuid, restore });
+}
+
+// --- Code checkpoints ---
+
+/** Snapshot the project directory (kind: 'turn' | 'baseline' | …). */
+export function checkpointProject(
+	projectId: string,
+	sessionId: string,
+	turnUuid: string,
+	kind: string
+): Promise<CheckpointMeta> {
+	return invoke('checkpoint_project', { projectId, sessionId, turnUuid, kind });
+}
+
+/** Restore the project's files to a checkpoint; resolves to the safety snapshot taken first. */
+export function restoreCheckpoint(
+	projectId: string,
+	sessionId: string,
+	checkpointId: string,
+	preRestore = true
+): Promise<CheckpointMeta | null> {
+	return invoke('restore_checkpoint', { projectId, sessionId, checkpointId, preRestore });
+}
+
+export function listCheckpoints(sessionId: string): Promise<CheckpointMeta[]> {
+	return invoke('list_checkpoints', { sessionId });
 }
 
 // --- Claude transcript ---
