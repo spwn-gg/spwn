@@ -1,6 +1,6 @@
 [package]
 name = "spwn"
-version = "0.1.0"
+version = "0.1.1"
 description = "Desktop GUI for managing Claude Code sessions"
 authors = ["Mark Barta"]
 edition = "2021"
