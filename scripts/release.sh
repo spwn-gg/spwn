@@ -52,15 +52,18 @@ fi
 SLUG="$(echo "$REMOTE" | sed -E 's#^.*github\.com[:/]##; s#\.git$##')"
 echo "==> releasing $TAG to github.com/$SLUG"
 
-# Keep the baked updater endpoint in sync with the actual repo.
+# Verify the baked updater endpoint matches this repo. We don't rewrite the
+# committed config (that would reformat it every release); fail fast instead so a
+# released build can't ship pointing at the wrong place.
 ENDPOINT="https://github.com/$SLUG/releases/latest/download/latest.json"
-node -e "
-  const fs='fs', f='$CONF';
-  const c=require('./'+f);
-  c.plugins=c.plugins||{}; c.plugins.updater=c.plugins.updater||{};
-  c.plugins.updater.endpoints=['$ENDPOINT'];
-  require(fs).writeFileSync(f, JSON.stringify(c,null,2)+'\n');
-"
+BAKED="$(node -p "(require('./$CONF').plugins.updater.endpoints||[])[0]||''")"
+if [ "$BAKED" != "$ENDPOINT" ]; then
+  echo "error: updater endpoint mismatch in $CONF" >&2
+  echo "  baked:  $BAKED" >&2
+  echo "  remote: $ENDPOINT" >&2
+  echo "  Set plugins.updater.endpoints to the remote value before releasing." >&2
+  exit 1
+fi
 
 # --- build (signed updater artifacts) --------------------------------------
 export TAURI_SIGNING_PRIVATE_KEY="$(cat "$KEY")"
@@ -92,7 +95,7 @@ SIGNATURE="$(cat "$OUT/$ASSET.sig")"
 
 # --- latest.json (static endpoint the updater reads) -----------------------
 SIGNATURE="$SIGNATURE" URL="$ASSET_URL" VERSION="$VERSION" \
-NOTES="$NOTES" PUB_DATE="$PUB_DATE" node -e '
+NOTES="$NOTES" PUB_DATE="$PUB_DATE" OUT_JSON="$OUT/latest.json" node -e '
   const m = {
     version: process.env.VERSION,
     notes: process.env.NOTES,
@@ -102,7 +105,7 @@ NOTES="$NOTES" PUB_DATE="$PUB_DATE" node -e '
     }
   };
   require("fs").writeFileSync(process.env.OUT_JSON, JSON.stringify(m, null, 2) + "\n");
-' OUT_JSON="$OUT/latest.json"
+'
 
 echo "==> artifacts in $OUT:"
 ls -1 "$OUT"
