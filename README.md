@@ -76,6 +76,26 @@ The native app uses your host's own `claude` (already authenticated) and real
 to `["app"]`; the `.dmg` wrapper is skipped because its Finder/AppleScript step
 needs an interactive GUI session.
 
+## Installing a release
+
+Builds are **ad-hoc signed** (`bundle.macOS.signingIdentity: "-"`) but not
+notarized by Apple — notarization needs a paid Apple Developer ID. So a copy
+**downloaded from GitHub Releases** is quarantined by macOS and needs a one-time
+approval on first launch (the in-app auto-updater is unaffected — updates it
+installs are never quarantined):
+
+- **Recommended:** double-click, and when blocked open **System Settings →
+  Privacy & Security** and click **Open Anyway**. (On older macOS: right-click the
+  app → **Open** → **Open**.)
+- **Or** clear the quarantine flag from a terminal:
+  ```sh
+  xattr -dr com.apple.quarantine "/Applications/spwn.app"
+  ```
+
+This is only required once per download. To remove the prompt entirely, the app
+would need to be signed with a Developer ID certificate and notarized — see
+`scripts/release.sh` for where signing/notarization would hook in.
+
 ## Development (Docker)
 
 Everything runs **inside Docker**. The container compiles the Rust backend and

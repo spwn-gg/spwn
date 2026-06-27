@@ -56,7 +56,8 @@ echo "==> built: $UNIT/$APP"
 stat -f '    %Sm  %N' "$APP/Contents/MacOS/spwn"
 
 if [ "${1:-}" = "--open" ]; then
-  echo "==> launching (unsigned: if Gatekeeper blocks, run: xattr -dr com.apple.quarantine \"$APP\")"
+  echo "==> launching (ad-hoc signed, not notarized; a locally built app runs fine — a"
+  echo "    downloaded copy needs: xattr -dr com.apple.quarantine \"$APP\")"
   open "$APP"
   sleep 4
   if pgrep -f "$APP/Contents/MacOS/spwn" >/dev/null; then
