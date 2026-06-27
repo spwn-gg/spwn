@@ -1,4 +1,4 @@
-# Dev environment for Context Manager.
+# Dev environment for spwn.
 #
 # Purpose: reproducible Rust/Node builds + tests, AND running the Tauri GUI inside
 # a virtual X display exposed to the host browser over noVNC (the `gui` compose

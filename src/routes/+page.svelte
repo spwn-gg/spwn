@@ -3,8 +3,10 @@
 	import ProjectTree from '$lib/ProjectTree.svelte';
 	import PaneManager from '$lib/PaneManager.svelte';
 	import Settings from '$lib/Settings.svelte';
+	import UpdateBanner from '$lib/UpdateBanner.svelte';
 	import { showSettings, openTabs, activeTabKey, closeTab } from '$lib/stores';
 	import { onStoreError } from '$lib/ipc';
+	import { checkForUpdate } from '$lib/updater';
 	import { get } from 'svelte/store';
 
 	const MIN_W = 200;
@@ -23,6 +25,8 @@
 		collapsed = localStorage.getItem('cm.sidebarCollapsed') === '1';
 		window.addEventListener('keydown', onKey);
 		unlistenError = await onStoreError((m) => (errorMsg = m));
+		// Check GitHub for a newer release; silent if offline / endpoint unset.
+		checkForUpdate({ silent: true });
 	});
 	onDestroy(() => {
 		window.removeEventListener('keydown', onKey);
@@ -81,6 +85,7 @@
 </script>
 
 <div class="app">
+	<UpdateBanner />
 	<div class="titlebar" data-tauri-drag-region>
 		<button
 			class="collapse"

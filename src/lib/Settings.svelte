@@ -1,17 +1,25 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { getVersion } from '@tauri-apps/api/app';
 	import { getSettings, setSettings, detectClaude, pickFile } from './ipc';
 	import { showSettings } from './stores';
+	import { checkForUpdate, updateStatus } from './updater';
 
 	let claudePath = $state('');
 	let detected = $state<string | null>(null);
 	let saved = $state(false);
+	let version = $state('');
 
 	onMount(async () => {
 		const s = await getSettings();
 		claudePath = s.claudePath ?? '';
 		detected = await detectClaude();
+		version = await getVersion();
 	});
+
+	function checkUpdates() {
+		checkForUpdate({ silent: false });
+	}
 
 	async function browse() {
 		const p = await pickFile();
@@ -51,6 +59,15 @@
 					{/if}
 				</div>
 				<div class="hint">Leave blank to use the auto-detected path.</div>
+			</div>
+
+			<div class="field">
+				<div class="lbl">Updates</div>
+				<div class="row">
+					<div class="version">spwn {version ? `v${version}` : ''}</div>
+					<button class="browse" onclick={checkUpdates}>Check for updates</button>
+				</div>
+				{#if $updateStatus}<div class="hint">{$updateStatus}</div>{/if}
 			</div>
 		</div>
 
@@ -104,10 +121,21 @@
 	.body {
 		padding: 16px;
 	}
+	.field + .field {
+		margin-top: 20px;
+		padding-top: 18px;
+		border-top: 1px solid #2c2c2c;
+	}
 	.lbl {
 		font-size: 13px;
 		color: #cfcfcf;
 		margin-bottom: 6px;
+	}
+	.version {
+		flex: 1 1 auto;
+		align-self: center;
+		font-size: 13px;
+		color: #9a9a9a;
 	}
 	.row {
 		display: flex;

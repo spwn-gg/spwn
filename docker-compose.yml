@@ -15,7 +15,7 @@
 
 x-common: &common
   build: .
-  image: context-manager-dev
+  image: spwn-dev
   working_dir: /work
   volumes:
     - .:/work

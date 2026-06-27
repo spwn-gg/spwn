@@ -1,11 +1,11 @@
 ---
-name: run-context-manager
-description: Build the native macOS Context Manager.app locally (release bundle), and launch it. Use when asked to build, rebuild, bundle, package, make a release, produce the .app, or run/launch the desktop app.
+name: run-spwn
+description: Build the native macOS spwn.app locally (release bundle), and launch it. Use when asked to build, rebuild, bundle, package, make a release, produce the .app, or run/launch the desktop app.
 ---
 
-# Build the Context Manager macOS .app
+# Build the spwn macOS .app
 
-Context Manager is a **Tauri v2** desktop app (Rust backend + SvelteKit/xterm.js
+spwn is a **Tauri v2** desktop app (Rust backend + SvelteKit/xterm.js
 frontend). The deliverable is a native `.app` bundle. The driver for this skill is
 **`build-app.sh`** — it builds the frontend, esbuild-bundles the sidecar, compiles
 the Rust crate in release mode, bundles the `.app`, and (with `--open`) launches it
@@ -34,7 +34,7 @@ No `apt-get` — this is a macOS host build, not the container.
 Run the driver from the repo root:
 
 ```sh
-.claude/skills/run-context-manager/build-app.sh
+.claude/skills/run-spwn/build-app.sh
 ```
 
 It handles the two things that trip people up automatically:
@@ -50,7 +50,7 @@ main binary's mtime so you can confirm it's *this* build, not a stale one.
 **Output:**
 
 ```
-src-tauri/target/release/bundle/macos/Context Manager.app
+src-tauri/target/release/bundle/macos/spwn.app
 ```
 
 Cold build is a few minutes (Rust release compile); warm rebuild ~25s.
@@ -58,7 +58,7 @@ Cold build is a few minutes (Rust release compile); warm rebuild ~25s.
 ### Build + launch smoke check
 
 ```sh
-.claude/skills/run-context-manager/build-app.sh --open
+.claude/skills/run-spwn/build-app.sh --open
 ```
 
 Adds: `open` the bundle, wait, and assert the app process is running. On success
@@ -74,7 +74,7 @@ What the driver runs, if you need to do it by hand:
 export PATH="$HOME/.cargo/bin:$PATH"
 npm install                 # only needed if node_modules is absent
 npm run tauri build
-open "src-tauri/target/release/bundle/macos/Context Manager.app"
+open "src-tauri/target/release/bundle/macos/spwn.app"
 ```
 
 ## Test
@@ -96,12 +96,12 @@ not the macOS bundle. They're a code sanity check, not a `.app` build.
   doesn't exist` — only `rmux-aarch64-apple-darwin` / `node-aarch64-apple-darwin` are
   committed. The native host build uses those `-apple-darwin` binaries and works.
 - **Unsigned bundle → Gatekeeper.** First launch is blocked ("damaged"/"unverified
-  developer"). Right-click → Open, or `xattr -dr com.apple.quarantine "src-tauri/target/release/bundle/macos/Context Manager.app"`.
+  developer"). Right-click → Open, or `xattr -dr com.apple.quarantine "src-tauri/target/release/bundle/macos/spwn.app"`.
 - **No `.dmg`.** `bundle.targets` is `["app"]` only; the dmg wrapper's Finder/AppleScript
   step needs an interactive GUI session, so it's intentionally skipped.
 - **Stale `.app` after a code change.** Nothing rebuilds the bundle automatically —
   editing Rust/Svelte and re-running the existing `.app` runs the OLD code. Re-run
-  the driver. Confirm via the printed `context_manager` binary mtime (the bundled
+  the driver. Confirm via the printed `spwn` binary mtime (the bundled
   `node`/`rmux` sidecars keep older dates — that's expected, they're copied in
   as-is, not recompiled).
 - **`claude` still required at runtime.** The bundled app shells out to your own
@@ -110,11 +110,11 @@ not the macOS bundle. They're a code sanity check, not a `.app` build.
 
 ## Troubleshooting
 
-- **`failed to run custom build command for context_manager` →
+- **`failed to run custom build command for spwn` →
   `resource path binaries/rmux-…-linux-gnu doesn't exist`** — you're building in
   Docker / for Linux. Build on the host instead (the driver does). The committed
   sidecars are macOS-only.
-- **`Built application at … target/release/context_manager` but no `.app`** — the
+- **`Built application at … target/release/spwn` but no `.app`** — the
   raw `cargo build` was run instead of `npm run tauri build`; only `tauri build`
   invokes the bundler. Use the driver.
 - **Build "succeeds" but the app shows old behavior** — you launched a stale bundle.

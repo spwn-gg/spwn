@@ -1,5 +1,5 @@
 //! Helpers for locating Claude Code's own session files (used by the transcript
-//! panel and new-session discovery). Context Manager's project model lives in
+//! panel and new-session discovery). spwn's project model lives in
 //! `store.rs`; this only deals with `~/.claude/projects`.
 
 use serde_json::Value;

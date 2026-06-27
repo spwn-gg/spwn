@@ -1,6 +1,6 @@
 //! Tauri commands: the frontend → backend contract.
 //!
-//! Context Manager owns "projects" (a named working directory grouping terminals).
+//! spwn owns "projects" (a named working directory grouping terminals).
 //! A terminal is a shell or a `claude` TUI, both running in an rmux pty under
 //! stable, persistent ids so they reattach across restarts.
 

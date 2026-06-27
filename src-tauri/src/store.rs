@@ -1,4 +1,4 @@
-//! Context Manager's own project model: a project is a named working directory
+//! spwn's own project model: a project is a named working directory
 //! that groups terminals you've opened. Persisted to `app_data_dir/projects.json`
 //! so projects + their terminals survive restarts (terminals reattach to their
 //! still-alive rmux sessions by stable id).

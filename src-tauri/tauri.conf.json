@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Context Manager",
+  "productName": "spwn",
   "version": "0.1.0",
-  "identifier": "com.markbarta.contextmanager",
+  "identifier": "com.markbarta.spwn",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Context Manager",
+        "title": "spwn",
         "width": 1280,
         "height": 800,
         "titleBarStyle": "Overlay"
@@ -22,9 +22,18 @@
       "csp": "default-src 'self'; img-src 'self' data: asset: http://asset.localhost; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost"
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVDMTgwNDAxQTlCMkI3Q0QKUldUTnQ3S3BBUVFZN0tjclZIelBjakM1Vm54R05HZEZROEU1OUJ2TUxzQXJKVjRlZzVxNlkwaU0K",
+      "endpoints": [
+        "https://github.com/OWNER/REPO/releases/latest/download/latest.json"
+      ]
+    }
+  },
   "bundle": {
     "active": true,
     "targets": ["app"],
+    "createUpdaterArtifacts": true,
     "externalBin": ["binaries/rmux", "binaries/node"],
     "resources": ["resources/sidecar.mjs"],
     "icon": [

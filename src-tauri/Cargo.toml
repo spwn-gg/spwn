@@ -1,5 +1,5 @@
 [package]
-name = "context_manager"
+name = "spwn"
 version = "0.1.0"
 description = "Desktop GUI for managing Claude Code sessions"
 authors = ["Mark Barta"]
@@ -11,7 +11,7 @@ edition = "2021"
 # The `_lib` suffix may seem redundant but it is necessary
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
-name = "context_manager_lib"
+name = "spwn_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -21,6 +21,10 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
+# Self-update from GitHub releases (downloads + verifies a minisign-signed bundle);
+# the process plugin provides the relaunch once an update installs.
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Filesystem watching for the project/session navigation tree.

@@ -1,5 +1,5 @@
 {
-  "name": "context-manager-sidecar",
+  "name": "spwn-sidecar",
   "private": true,
   "type": "module",
   "description": "Node Agent SDK sidecar that drives Claude for the chat UI",

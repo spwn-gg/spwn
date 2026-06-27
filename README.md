@@ -1,4 +1,4 @@
-# Context Manager
+# spwn
 
 A desktop GUI for **composing context and seeding Claude Code sessions with it**,
 organized into projects, with first-class terminal support.
@@ -8,7 +8,7 @@ picked from other sessions). **Inject** assembles it into a first message and
 opens a new Claude session seeded with it (`▦` on a project → add blocks → Inject).
 
 - **Projects** — each is a name + working directory that **groups terminals** you
-  open. Context Manager owns them (persisted to `app_data_dir/projects.json`);
+  open. spwn owns them (persisted to `app_data_dir/projects.json`);
   they're not derived from Claude's own dirs.
 - **Terminals** — open a **shell** (default) or a **Claude** session in a project.
   Each runs under a named, persistent rmux session and **reattaches across app
@@ -65,10 +65,10 @@ points at it) so sessions are self-contained. The binary lives in
 `src-tauri/binaries/rmux-<target-triple>`. The only host dependency is your own
 authenticated `claude` CLI (the bundled app runs it in the pty, using your login).
 
-Output: `src-tauri/target/release/bundle/macos/Context Manager.app`. Run it with:
+Output: `src-tauri/target/release/bundle/macos/spwn.app`. Run it with:
 
 ```sh
-open "src-tauri/target/release/bundle/macos/Context Manager.app"
+open "src-tauri/target/release/bundle/macos/spwn.app"
 ```
 
 The native app uses your host's own `claude` (already authenticated) and real

@@ -13,7 +13,7 @@ use std::time::SystemTime;
 use tauri::AppHandle;
 use tokio::sync::OnceCell;
 
-/// Live in-memory state plus the persisted Context Manager project store.
+/// Live in-memory state plus the persisted spwn project store.
 #[derive(Default)]
 pub struct AppState {
     /// Lazily-connected rmux daemon handle.

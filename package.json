@@ -1,5 +1,5 @@
 {
-  "name": "context-manager",
+  "name": "spwn",
   "version": "0.1.0",
   "description": "Desktop GUI for managing Claude Code sessions",
   "type": "module",
@@ -16,23 +16,25 @@
   "license": "MIT",
   "dependencies": {
     "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-opener": "^2",
     "@tauri-apps/plugin-dialog": "^2",
-    "@xterm/xterm": "^5.5.0",
+    "@tauri-apps/plugin-opener": "^2",
+    "@tauri-apps/plugin-process": "^2.3.1",
+    "@tauri-apps/plugin-updater": "^2.10.1",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/addon-webgl": "^0.18.0",
-    "marked": "^14.1.0",
-    "dompurify": "^3.1.6"
+    "@xterm/xterm": "^5.5.0",
+    "dompurify": "^3.1.6",
+    "marked": "^14.1.0"
   },
   "devDependencies": {
     "@sveltejs/adapter-static": "^3.0.6",
     "@sveltejs/kit": "^2.9.0",
     "@sveltejs/vite-plugin-svelte": "^5.0.0",
+    "@tauri-apps/cli": "^2",
+    "esbuild": "^0.24.0",
     "svelte": "^5.0.0",
     "svelte-check": "^4.0.0",
-    "esbuild": "^0.24.0",
     "typescript": "~5.6.2",
-    "vite": "^6.0.3",
-    "@tauri-apps/cli": "^2"
+    "vite": "^6.0.3"
   }
 }
