@@ -1,0 +1,10 @@
+# Code owners for spwn.
+#
+# @bartam owns everything: any pull request that changes any file requires
+# review/approval from @bartam before it can be merged into a protected branch.
+# (Enforced by branch protection on `main` — "Require review from Code Owners".)
+#
+# The last matching pattern wins, so this catch-all gives @bartam ownership of
+# the whole tree. Add more specific lines below to delegate sub-paths later.
+
+* @bartam
