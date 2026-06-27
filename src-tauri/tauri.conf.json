@@ -26,7 +26,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVDMTgwNDAxQTlCMkI3Q0QKUldUTnQ3S3BBUVFZN0tjclZIelBjakM1Vm54R05HZEZROEU1OUJ2TUxzQXJKVjRlZzVxNlkwaU0K",
       "endpoints": [
-        "https://github.com/OWNER/REPO/releases/latest/download/latest.json"
+        "https://github.com/spwn-gg/spwn/releases/latest/download/latest.json"
       ]
     }
   },
