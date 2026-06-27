@@ -12,3 +12,6 @@ vite.config.ts.timestamp-*
 # Generated/vendored Tauri sidecar artifacts
 /src-tauri/binaries/
 /src-tauri/resources/sidecar.mjs
+
+# Release artifacts produced by scripts/release.sh (uploaded to GitHub, not committed)
+/release/
