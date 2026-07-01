@@ -49,6 +49,19 @@ if [ ! -d "$APP" ]; then
   exit 1
 fi
 
+# Backstop: guarantee the bundled `node` sidecar carries JIT entitlements. Tauri
+# signs it with the hardened runtime; without allow-jit, V8 aborts at startup
+# ("Failed to reserve virtual memory for CodeRange") and the chat sidecar never
+# streams — the chat just shows "..." forever. tauri.conf.json points macOS
+# signing at entitlements.plist, but re-sign node directly so this holds even if
+# the bundler doesn't apply app entitlements to an externalBin.
+NODE_BIN="$APP/Contents/MacOS/node"
+ENTS="src-tauri/entitlements.plist"
+if [ -f "$NODE_BIN" ] && [ -f "$ENTS" ]; then
+  echo "==> ensuring bundled node has JIT entitlements"
+  codesign --force --sign - --options runtime --entitlements "$ENTS" "$NODE_BIN"
+fi
+
 echo
 echo "==> built: $UNIT/$APP"
 # Show the freshly-compiled main binary's mtime so you can confirm it's THIS build,

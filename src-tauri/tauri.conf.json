@@ -35,7 +35,8 @@
     "targets": ["app"],
     "createUpdaterArtifacts": true,
     "macOS": {
-      "signingIdentity": "-"
+      "signingIdentity": "-",
+      "entitlements": "entitlements.plist"
     },
     "externalBin": ["binaries/rmux", "binaries/node"],
     "resources": ["resources/sidecar.mjs"],
