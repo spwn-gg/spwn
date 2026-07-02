@@ -7,6 +7,7 @@
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter};
 
 pub struct ClaudeAgent {
@@ -58,21 +59,44 @@ pub fn spawn_claude_agent(
     if fork {
         cmd.arg("--fork");
     }
+    // Capture stderr (was /dev/null). A sidecar that crashes at startup — e.g. the
+    // bundled node aborting under the hardened runtime — writes its reason here and
+    // emits nothing on stdout, which used to leave the chat spinning with no signal.
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        .stderr(Stdio::piped());
 
     let mut child = cmd.spawn()?;
     let stdin = child.stdin.take().expect("piped stdin");
     let stdout = child.stdout.take().expect("piped stdout");
+    let stderr = child.stderr.take().expect("piped stderr");
+
+    // Drain stderr on its own thread, logging each line and keeping the tail so we
+    // can attach it to an error if the sidecar dies without responding.
+    let err_tail: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let err_tail_reader = Arc::clone(&err_tail);
+    let err_thread = std::thread::spawn(move || {
+        let reader = std::io::BufReader::new(stderr);
+        for line in reader.lines().map_while(Result::ok) {
+            eprintln!("[claude-sidecar] {line}");
+            let mut tail = err_tail_reader.lock().unwrap();
+            tail.push(line);
+            let overflow = tail.len().saturating_sub(40);
+            if overflow > 0 {
+                tail.drain(0..overflow);
+            }
+        }
+    });
 
     let event = format!("claude://event/{terminal_id}");
     let exit_event = format!("claude://exit/{terminal_id}");
     std::thread::spawn(move || {
         let reader = std::io::BufReader::new(stdout);
+        let mut emitted = 0usize;
         for line in reader.lines() {
             match line {
                 Ok(l) if !l.is_empty() => {
+                    emitted += 1;
                     if app.emit(&event, l).is_err() {
                         break;
                     }
@@ -80,6 +104,21 @@ pub fn spawn_claude_agent(
                 Ok(_) => {}
                 Err(_) => break,
             }
+        }
+        // stdout closed → the sidecar is done. If it never produced a single event,
+        // it died before responding; surface stderr as an error the chat can render
+        // instead of hanging on the typing indicator forever.
+        let _ = err_thread.join();
+        if emitted == 0 {
+            let tail = err_tail.lock().unwrap().join("\n");
+            let message = if tail.trim().is_empty() {
+                "The Claude sidecar exited before responding.".to_string()
+            } else {
+                format!("The Claude sidecar exited before responding:\n{tail}")
+            };
+            let payload =
+                serde_json::json!({ "t": "error", "message": message }).to_string();
+            let _ = app.emit(&event, payload);
         }
         let _ = app.emit(&exit_event, ());
     });

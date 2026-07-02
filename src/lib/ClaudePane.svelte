@@ -8,6 +8,7 @@
 	import {
 		openTerminal,
 		setTerminalSession,
+		claudeSend,
 		claudePermission,
 		claudeAnswer,
 		checkpointProject,
@@ -66,6 +67,26 @@
 	let lastAssistantUuid: string | null = null;
 	let clearTimer: ReturnType<typeof setTimeout> | undefined;
 	let exited = $state(false);
+	let lastError = $state<string | null>(null);
+
+	// Watchdog: if a turn goes fully silent (no events at all) for this long, the
+	// sidecar's child has likely stalled with its pipes open — which produces no
+	// exit/error, so nothing else would ever clear the indicator. Free the UI and
+	// tell the user. A genuinely streaming turn re-arms this on every event.
+	const STALL_MS = 120_000;
+	let stallTimer: ReturnType<typeof setTimeout> | undefined;
+	function armStall() {
+		clearTimeout(stallTimer);
+		stallTimer = setTimeout(() => {
+			if (!busy) return;
+			busy = false;
+			lastError =
+				'No response for 2 minutes — the assistant may have stalled. Send another message to retry, or rewind the turn.';
+		}, STALL_MS);
+	}
+	function disarmStall() {
+		clearTimeout(stallTimer);
+	}
 
 	let unlisten: Array<() => void> = [];
 
@@ -93,6 +114,7 @@
 		unlisten.push(
 			await onClaudeExit(id, () => {
 				busy = false;
+				disarmStall();
 				exited = true;
 			})
 		);
@@ -100,6 +122,7 @@
 
 	onDestroy(() => {
 		clearTimeout(clearTimer);
+		disarmStall();
 		unlisten.forEach((u) => u());
 		if (liveSession) setSessionBusy(liveSession, false);
 	});
@@ -148,6 +171,9 @@
 	}
 
 	function handleEvent(ev: ClaudeEvent) {
+		// Any event means the sidecar is alive and progressing — reset the watchdog.
+		// Terminal events (result/error) disarm it explicitly below.
+		armStall();
 		switch (ev.t) {
 			case 'init':
 				liveSession = ev.sessionId;
@@ -188,6 +214,7 @@
 				break;
 			case 'result':
 				busy = false;
+				disarmStall();
 				// A background session finished its turn.
 				markAttention(tabKey);
 				// Snapshot the project's files at this turn (for undo / rewind-restore).
@@ -206,6 +233,8 @@
 				break;
 			case 'error':
 				busy = false;
+				disarmStall();
+				lastError = ev.message;
 				console.error('[claude]', ev.message);
 				break;
 		}
@@ -230,9 +259,20 @@
 	}
 
 	function onSend(text: string) {
+		if (!id) return;
 		pendingUserText = text;
 		resetLive();
+		lastError = null;
 		busy = true;
+		armStall();
+		// Own the send here so a rejected invoke (e.g. the sidecar already exited)
+		// surfaces and clears the indicator instead of leaving it spinning.
+		claudeSend(id, text).catch((e) => {
+			busy = false;
+			disarmStall();
+			lastError = `Couldn't send message: ${e?.message ?? e}`;
+			console.error('[claude] send failed', e);
+		});
 	}
 
 	function answerQuestion(qid: string, text: string) {
@@ -244,8 +284,10 @@
 	// The session's sidecar was just restarted (rewind) — drop stale live state.
 	function onRewound() {
 		clearTimeout(clearTimer);
+		disarmStall();
 		busy = false;
 		resetLive();
+		lastError = null;
 		pendingUserText = null;
 		pendingPermissions = [];
 		pendingQuestions = [];
@@ -276,6 +318,12 @@
 			{onReload}
 			{onRewound} />
 	</div>
+	{#if lastError}
+		<div class="cerror" role="alert">
+			<span class="msg">{lastError}</span>
+			<button class="dismiss" onclick={() => (lastError = null)} aria-label="Dismiss">×</button>
+		</div>
+	{/if}
 	{#if exited}
 		<div class="ended">Session ended — send a message to resume.</div>
 	{/if}
@@ -305,5 +353,33 @@
 		font-size: 12px;
 		color: var(--text-dim);
 		border-top: 1px solid var(--border);
+	}
+	.cerror {
+		display: flex;
+		align-items: flex-start;
+		gap: 8px;
+		padding: 8px 12px;
+		font-size: 12px;
+		color: #fca5a5;
+		background: rgba(220, 38, 38, 0.1);
+		border-top: 1px solid rgba(220, 38, 38, 0.4);
+		white-space: pre-wrap;
+	}
+	.cerror .msg {
+		flex: 1 1 auto;
+		min-width: 0;
+	}
+	.cerror .dismiss {
+		flex: 0 0 auto;
+		background: none;
+		border: none;
+		color: inherit;
+		cursor: pointer;
+		font-size: 14px;
+		line-height: 1;
+		opacity: 0.7;
+	}
+	.cerror .dismiss:hover {
+		opacity: 1;
 	}
 </style>
