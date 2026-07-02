@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { claudeSend, claudeSetMode, claudeInterrupt } from './ipc';
+	import { claudeSetMode, claudeInterrupt } from './ipc';
 	import { pasteToInput } from './stores';
 
 	let {
@@ -53,7 +53,8 @@
 	function send() {
 		const t = text.trim();
 		if (!t || !terminalId) return;
-		claudeSend(terminalId, t);
+		// onSend (in ClaudePane) owns the actual claudeSend so a failed send can
+		// clear the busy indicator and surface the error in one place.
 		onSend(t);
 		text = '';
 		queueMicrotask(autogrow);
