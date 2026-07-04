@@ -31,7 +31,7 @@ jobs:
         uses: withastro/action@v3
         with:
           path: docs           # the docs project lives in ./docs
-          node-version: 20
+          node-version: 22     # Astro requires >=22.12
           package-manager: npm
 
   deploy:
