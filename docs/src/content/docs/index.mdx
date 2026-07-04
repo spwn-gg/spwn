@@ -1,0 +1,66 @@
+---
+title: spwn
+description: A desktop app that gives Claude Code a per-project context space, persistent sessions, and scheduled runs.
+template: splash
+hero:
+  tagline: Give every project a reusable context, seed Claude Code sessions with it, and keep those sessions running — plus schedule read-only runs that report back on their own.
+  image:
+    file: ../../assets/screenshots/app-main.png
+  actions:
+    - text: Get started
+      link: /spwn/getting-started/introduction/
+      icon: right-arrow
+    - text: View on GitHub
+      link: https://github.com/spwn-gg/spwn
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+## What is spwn?
+
+Claude Code is powerful, but every session starts from scratch and lives and dies
+in one terminal window. spwn fixes both. It's a desktop app that organizes your work
+into **projects**, lets you build a **reusable context** for each one, and starts new
+Claude sessions already primed with it — so you stop re-explaining your project every
+time. Sessions keep running even after you close the app, and you can schedule
+read-only runs to check in on a project while you're away.
+
+<CardGrid stagger>
+	<Card title="Projects" icon="open-book">
+		Group your work by folder. Each project keeps its own sessions and context
+		together, so switching between projects is one click, not a mental reset.
+	</Card>
+	<Card title="Sessions that survive restarts" icon="laptop">
+		Open a shell or a Claude session in a project and it keeps running in the
+		background. Quit spwn, reopen it, and your sessions are still there — output,
+		history, and running programs intact.
+	</Card>
+	<Card title="Chat, without losing the terminal" icon="comment">
+		Work with Claude in a clean, scrollable conversation while the full Claude
+		experience — every slash-command and tool prompt — stays available beside it.
+	</Card>
+	<Card title="Fork & Rewind" icon="random">
+		Branch a promising session to explore a different direction without losing the
+		original, or roll a session back to an earlier point and try again.
+	</Card>
+	<Card title="Reusable context" icon="document">
+		Collect notes, files, and useful answers into a per-project context, then seed a
+		fresh session with all of it in one click instead of starting cold.
+	</Card>
+	<Card title="Scheduled tasks" icon="rocket">
+		Have Claude run a read-only task on a schedule — a daily status report, a nightly
+		review — using your project's context. Results wait for you as ready-to-read
+		sessions.
+	</Card>
+</CardGrid>
+
+## Next steps
+
+<CardGrid>
+	<LinkCard title="Introduction" href="/spwn/getting-started/introduction/" description="What spwn is and how it fits into your workflow." />
+	<LinkCard title="Installation" href="/spwn/getting-started/installation/" description="Get spwn running on your Mac." />
+	<LinkCard title="Quick Start" href="/spwn/getting-started/quick-start/" description="Create a project and seed your first session." />
+	<LinkCard title="How it works & your data" href="/spwn/reference/architecture/" description="What spwn touches, and where your data lives." />
+</CardGrid>

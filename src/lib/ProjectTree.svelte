@@ -6,6 +6,8 @@
 		deleteTerminal,
 		pickDirectory,
 		onProjectsChanged,
+		onScheduledTaskFired,
+		clearTerminalAttention,
 		openInVscode
 	} from './ipc';
 	import { projects, openTab, closeTab, refreshProjects, openTabs, activeTab } from './stores';
@@ -15,19 +17,21 @@
 	let collapsed = $state(new Set<string>());
 	let openMenuId = $state<string | null>(null);
 	let menuPos = $state({ x: 0, y: 0 });
-	let unlisten: (() => void) | undefined;
+	let unlisten: Array<() => void> = [];
 
 	const closeMenu = () => (openMenuId = null);
 
 	onMount(async () => {
 		await refreshProjects();
 		// Claude's ai-title evolves as a session runs; refresh names live.
-		unlisten = await onProjectsChanged(() => refreshProjects());
+		unlisten.push(await onProjectsChanged(() => refreshProjects()));
+		// A scheduled run finished (or bound its session) — surface it in the tree.
+		unlisten.push(await onScheduledTaskFired(() => refreshProjects()));
 		window.addEventListener('click', closeMenu);
 		window.addEventListener('keydown', onKey);
 	});
 	onDestroy(() => {
-		unlisten?.();
+		unlisten.forEach((u) => u());
 		window.removeEventListener('click', closeMenu);
 		window.removeEventListener('keydown', onKey);
 	});
@@ -103,7 +107,21 @@
 		openTab({ projectId: p.id, kind: 'context', title: `Context · ${p.name}`, projectName: p.name });
 	}
 
+	function openSchedule(p: ProjectRec, e: Event) {
+		e.stopPropagation();
+		openTab({
+			projectId: p.id,
+			kind: 'schedule',
+			title: `Schedule · ${p.name}`,
+			projectName: p.name
+		});
+	}
+
 	function openExisting(p: ProjectRec, t: TerminalRec) {
+		// Viewing a session clears its persisted attention flag (from a headless run).
+		if (t.needsAttention) {
+			clearTerminalAttention(t.id).then(() => refreshProjects());
+		}
 		openTab({
 			projectId: p.id,
 			kind: t.kind,
@@ -183,10 +201,15 @@
 
 	// Highlight the row backing the currently-focused tab.
 	const isActiveTerm = (t: TerminalRec) => $activeTab?.terminalId === t.id;
-	// A background tab for this session needs attention (permission / turn done).
-	const attnFor = (t: TerminalRec) => $openTabs.some((tab) => tab.terminalId === t.id && tab.needsAttention);
+	// A session needs attention: either a background tab flagged it (permission /
+	// turn done) or a windowless scheduled run persisted the flag on the record.
+	const attnFor = (t: TerminalRec) =>
+		t.needsAttention === true ||
+		$openTabs.some((tab) => tab.terminalId === t.id && tab.needsAttention);
 	const isActiveCtx = (p: ProjectRec) =>
 		$activeTab?.kind === 'context' && $activeTab?.projectId === p.id;
+	const isActiveSchedule = (p: ProjectRec) =>
+		$activeTab?.kind === 'schedule' && $activeTab?.projectId === p.id;
 </script>
 
 {#snippet termRow(p: ProjectRec, t: TerminalRec, nested: boolean)}
@@ -247,6 +270,13 @@
 							<span class="t-icon ctx">▦</span>
 							<span class="t-title">Context</span>
 							{#if p.context?.length}<span class="count">{p.context.length}</span>{/if}
+						</button>
+					</div>
+					<div class="row ctx-row" class:active={isActiveSchedule(p)}>
+						<button class="row-main" onclick={(e) => openSchedule(p, e)}>
+							<span class="t-icon ctx">◷</span>
+							<span class="t-title">Scheduled Tasks</span>
+							{#if p.scheduledTasks?.length}<span class="count">{p.scheduledTasks.length}</span>{/if}
 						</button>
 					</div>
 					{#each shells(p) as t (t.id)}

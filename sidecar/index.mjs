@@ -31,6 +31,14 @@ const resumeAt = arg('resume-at', undefined); // branch/rewind: truncate at this
 const fork = process.argv.includes('--fork');
 const claudePath = arg('claude-path', undefined);
 const model = arg('model', undefined);
+// Initial permission mode: 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions'.
+// Set at construction so the first turn can't run under the wrong mode (a race a
+// post-spawn set_mode would lose).
+const permissionMode = arg('permission-mode', 'default');
+// Headless (scheduled) runs have no UI to answer prompts, so a blocking
+// permission/question would hang forever. In headless mode we resolve every
+// permission decision synchronously: allow a read-only allowlist, decline the rest.
+const headless = process.argv.includes('--headless');
 
 function emit(obj) {
 	process.stdout.write(JSON.stringify(obj) + '\n');
@@ -73,6 +81,18 @@ const pendingPermissions = new Map(); // toolUseID -> resolve fn
 // so Claude presents the plan as plain text instead.
 const INTERACTIVE_TOOLS = new Set(['ExitPlanMode']);
 
+// Tools that only read state — safe to auto-approve in a headless read-only run.
+const READ_ONLY_TOOLS = new Set([
+	'Read',
+	'Glob',
+	'Grep',
+	'LS',
+	'NotebookRead',
+	'WebFetch',
+	'WebSearch',
+	'TodoWrite'
+]);
+
 // AskUserQuestion gets a real picker: we hold the permission call open, show the
 // options in the UI, and resolve it once the user answers. The SDK can't return
 // the answer via `updatedInput` (TUI-only), but a deny `message` becomes the
@@ -88,10 +108,21 @@ const q = query({
 		forkSession: fork,
 		model,
 		includePartialMessages: true,
-		permissionMode: 'default',
+		permissionMode,
 		pathToClaudeCodeExecutable: claudePath,
 		canUseTool: (toolName, input, opts) => {
 			const id = opts?.toolUseID ?? `perm-${Date.now()}`;
+			// Headless: never block on a UI. Allow read-only tools; decline the rest
+			// (plan mode already prevents edits — this just avoids a deadlock).
+			if (headless) {
+				if (READ_ONLY_TOOLS.has(toolName)) {
+					return Promise.resolve({ behavior: 'allow' });
+				}
+				return Promise.resolve({
+					behavior: 'deny',
+					message: `Skipped in a read-only scheduled run: ${toolName} is not permitted. Continue using read-only tools and summarize your findings as text.`
+				});
+			}
 			// Interactive multiple-choice question → show a picker; resolve when answered.
 			if (toolName === 'AskUserQuestion') {
 				emit({ t: 'question', id, questions: input?.questions ?? [] });

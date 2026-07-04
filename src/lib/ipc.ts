@@ -4,7 +4,15 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
-import type { CheckpointMeta, ClaudeEvent, ProjectRec, Settings, TerminalKind, Turn } from './types';
+import type {
+	CheckpointMeta,
+	ClaudeEvent,
+	ProjectRec,
+	ScheduledTask,
+	Settings,
+	TerminalKind,
+	Turn
+} from './types';
 
 // --- Settings ---
 
@@ -75,6 +83,61 @@ export function reorderContext(projectId: string, order: string[]): Promise<void
 
 export function clearContext(projectId: string): Promise<void> {
 	return invoke('clear_context', { projectId });
+}
+
+// --- Scheduled tasks ---
+
+export function addScheduledTask(
+	projectId: string,
+	name: string,
+	prompt: string,
+	time: string,
+	weekdays: number[],
+	useContext: boolean
+): Promise<ScheduledTask> {
+	return invoke('add_scheduled_task', { projectId, name, prompt, time, weekdays, useContext });
+}
+
+export function updateScheduledTask(
+	projectId: string,
+	taskId: string,
+	name: string,
+	prompt: string,
+	time: string,
+	weekdays: number[],
+	useContext: boolean,
+	enabled: boolean
+): Promise<void> {
+	return invoke('update_scheduled_task', {
+		projectId,
+		taskId,
+		name,
+		prompt,
+		time,
+		weekdays,
+		useContext,
+		enabled
+	});
+}
+
+export function setScheduledTaskEnabled(
+	projectId: string,
+	taskId: string,
+	enabled: boolean
+): Promise<void> {
+	return invoke('set_scheduled_task_enabled', { projectId, taskId, enabled });
+}
+
+export function removeScheduledTask(projectId: string, taskId: string): Promise<void> {
+	return invoke('remove_scheduled_task', { projectId, taskId });
+}
+
+export function runScheduledTaskNow(projectId: string, taskId: string): Promise<void> {
+	return invoke('run_scheduled_task_now', { projectId, taskId });
+}
+
+export function clearTerminalAttention(terminalId: string): Promise<void> {
+	return invoke('clear_terminal_attention', { terminalId });
 }
 
 /** Native folder picker; returns the chosen path or null. */
@@ -250,6 +313,16 @@ export function onProjectsChanged(cb: (changed: string[]) => void): Promise<Unli
 /** Fires when the backend fails to persist the project store to disk. */
 export function onStoreError(cb: (message: string) => void): Promise<UnlistenFn> {
 	return listen<string>('store://error', (e) => cb(e.payload));
+}
+
+/** Fires when a scheduled task's headless run finishes (ok=false on failure). */
+export interface ScheduleFired {
+	projectId: string;
+	terminalId: string;
+	ok: boolean;
+}
+export function onScheduledTaskFired(cb: (e: ScheduleFired) => void): Promise<UnlistenFn> {
+	return listen<ScheduleFired>('schedule://fired', (e) => cb(e.payload));
 }
 
 function base64ToBytes(b64: string): Uint8Array {

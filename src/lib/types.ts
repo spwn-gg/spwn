@@ -11,6 +11,8 @@ export interface TerminalRec {
 	groupId?: string | null;
 	/** The terminal this was forked from (its parent in the branch tree). */
 	parentId?: string | null;
+	/** Persisted attention flag (set by a windowless scheduled run). */
+	needsAttention?: boolean;
 }
 
 export interface ContextBlock {
@@ -20,12 +22,27 @@ export interface ContextBlock {
 	text: string;
 }
 
+/** A per-project scheduled task: a headless read-only run on a daily/weekly cadence. */
+export interface ScheduledTask {
+	id: string;
+	name: string;
+	prompt: string;
+	/** Local "HH:MM" (24h). */
+	time: string;
+	/** Weekdays it may fire on: 0=Sun..6=Sat. Empty = every day. */
+	weekdays: number[];
+	enabled: boolean;
+	useContext: boolean;
+	lastRun?: number | null;
+}
+
 export interface ProjectRec {
 	id: string;
 	name: string;
 	directory: string;
 	terminals: TerminalRec[];
 	context: ContextBlock[];
+	scheduledTasks: ScheduledTask[];
 }
 
 export interface Settings {

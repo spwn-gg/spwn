@@ -3,13 +3,25 @@ mod claude;
 mod commands;
 mod projects;
 mod pty;
+mod scheduler;
 mod settings;
 mod state;
 mod store;
 mod transcript;
 
 use state::AppState;
+use std::sync::atomic::Ordering;
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::Manager;
+
+/// Show and focus the main window (recreating nothing — it's hidden, not closed).
+fn show_main(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -56,6 +68,59 @@ pub fn run() {
                 Ok(w) => *app.state::<AppState>().watcher.lock() = Some(w),
                 Err(e) => eprintln!("failed to start projects watcher: {e}"),
             }
+
+            // Menu-bar tray: keeps the app alive when the window is closed so the
+            // scheduler keeps ticking. Left-click or "Show" reopens the window;
+            // "Quit" is the only real exit (sets the quitting flag first).
+            let show = MenuItem::with_id(app, "show", "Show spwn", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "Quit spwn", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&show, &quit])?;
+            // macOS has no "window icon", so default_window_icon() is None here —
+            // decode the bundled PNG for the menu-bar icon instead.
+            let tray_icon = match app.default_window_icon() {
+                Some(icon) => icon.clone(),
+                None => tauri::image::Image::from_bytes(include_bytes!("../icons/128x128.png"))?,
+            };
+            let _tray = TrayIconBuilder::with_id("main")
+                .icon(tray_icon)
+                .menu(&menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "show" => show_main(app),
+                    "quit" => {
+                        app.state::<AppState>().quitting.store(true, Ordering::SeqCst);
+                        app.exit(0);
+                    }
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        show_main(tray.app_handle());
+                    }
+                })
+                .build(app)?;
+
+            // Closing the window hides it (background/tray) instead of quitting,
+            // unless a real quit is in progress.
+            if let Some(window) = app.get_webview_window("main") {
+                let w = window.clone();
+                window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        if !w.app_handle().state::<AppState>().quitting.load(Ordering::SeqCst) {
+                            api.prevent_close();
+                            let _ = w.hide();
+                        }
+                    }
+                });
+            }
+
+            // Start the per-project scheduled-task loop.
+            scheduler::start_scheduler(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -72,6 +137,12 @@ pub fn run() {
             commands::update_context_block,
             commands::reorder_context,
             commands::clear_context,
+            commands::add_scheduled_task,
+            commands::update_scheduled_task,
+            commands::set_scheduled_task_enabled,
+            commands::remove_scheduled_task,
+            commands::run_scheduled_task_now,
+            commands::clear_terminal_attention,
             commands::open_terminal,
             commands::close_terminal,
             commands::delete_terminal,
@@ -92,13 +163,21 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app_handle, event| {
+        .run(|app_handle, event| match event {
+            // Safety net: if an exit is requested (e.g. Cmd-Q) but we're not really
+            // quitting, stay alive in the background so the scheduler keeps running.
+            tauri::RunEvent::ExitRequested { api, .. } => {
+                if !app_handle.state::<AppState>().quitting.load(Ordering::SeqCst) {
+                    api.prevent_exit();
+                }
+            }
             // Don't leave orphaned sidecar node processes when the app quits.
-            if let tauri::RunEvent::Exit = event {
+            tauri::RunEvent::Exit => {
                 let state = app_handle.state::<AppState>();
                 for (_, mut agent) in state.claude_agents.lock().drain() {
                     agent.kill();
                 }
             }
+            _ => {}
         });
 }

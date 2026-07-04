@@ -18,7 +18,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 # Self-update from GitHub releases (downloads + verifies a minisign-signed bundle);
@@ -41,6 +41,8 @@ uuid = { version = "1", features = ["v4"] }
 # Ergonomic error handling.
 anyhow = "1"
 thiserror = "1"
+# Local time / weekday math for the daily/weekly task scheduler.
+chrono = { version = "0.4", features = ["clock"] }
 # Encode raw pty bytes for IPC (avoids corrupting UTF-8 split across read chunks).
 base64 = "0.22"
 # rmux: programmable terminal multiplexer SDK. Backs claude sessions with
