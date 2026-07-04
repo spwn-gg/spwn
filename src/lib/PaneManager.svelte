@@ -2,6 +2,7 @@
 	import Terminal from './Terminal.svelte';
 	import ClaudePane from './ClaudePane.svelte';
 	import ContextComposer from './ContextComposer.svelte';
+	import ScheduledTasks from './ScheduledTasks.svelte';
 	import { openTabs, activeTabKey, closeTab } from './stores';
 
 	function close(key: string, e: Event) {
@@ -19,9 +20,9 @@
 					onclick={() => activeTabKey.set(tab.key)}
 					title={tab.projectName ? `${tab.title} — ${tab.projectName}` : tab.title}>
 					{#if tab.needsAttention}<span class="attn-dot" title="Needs attention"></span>{/if}
-					<span class="tab-icon">{tab.kind === 'claude' ? '✦' : tab.kind === 'context' ? '▦' : '$'}</span>
+					<span class="tab-icon">{tab.kind === 'claude' ? '✦' : tab.kind === 'context' ? '▦' : tab.kind === 'schedule' ? '◷' : '$'}</span>
 					<span class="tab-title">{tab.title}</span>
-					{#if tab.projectName && tab.kind !== 'context'}
+					{#if tab.projectName && tab.kind !== 'context' && tab.kind !== 'schedule'}
 						<span class="tab-proj">· {tab.projectName}</span>
 					{/if}
 				</button>
@@ -38,6 +39,8 @@
 			<div class="pane" class:active={tab.key === $activeTabKey}>
 				{#if tab.kind === 'context'}
 					<ContextComposer projectId={tab.projectId} />
+				{:else if tab.kind === 'schedule'}
+					<ScheduledTasks projectId={tab.projectId} />
 				{:else if tab.kind === 'claude'}
 					<ClaudePane
 						tabKey={tab.key}

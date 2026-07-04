@@ -8,7 +8,7 @@ use crate::checkpoints::{self, CheckpointMeta};
 use crate::pty::{default_shell, find_claude_bin, spawn_rmux_session};
 use crate::settings::Settings;
 use crate::state::AppState;
-use crate::store::{rmux_session_name, ContextBlock, ProjectRec, TerminalRec};
+use crate::store::{rmux_session_name, ContextBlock, ProjectRec, ScheduledTask, TerminalRec};
 use crate::transcript::{read_transcript as parse_transcript, Turn};
 use rmux_sdk::{EnsureSession, EnsureSessionPolicy, Rmux, RmuxBuilder, SessionName, TerminalSizeSpec};
 use serde::Deserialize;
@@ -73,6 +73,7 @@ pub fn create_project(
         directory,
         terminals: Vec::new(),
         context: Vec::new(),
+        scheduled_tasks: Vec::new(),
     };
     state.store.lock().projects.push(rec.clone());
     persist(&state);
@@ -331,6 +332,7 @@ pub async fn open_terminal(
                     session_id: None,
                     group_id,
                     parent_id,
+                    needs_attention: false,
                 });
             }
         } else if kind == "claude" {
@@ -426,6 +428,18 @@ pub async fn delete_terminal(
     Ok(())
 }
 
+/// Persist a discovered claude session id onto a terminal (looked up by id across
+/// all projects, so headless/scheduled runs can bind without knowing the project).
+pub(crate) fn bind_session(state: &AppState, terminal_id: &str, session_id: &str) {
+    {
+        let mut store = state.store.lock();
+        if let Some(t) = store.terminal_mut(terminal_id) {
+            t.session_id = Some(session_id.to_string());
+        }
+    }
+    persist(state);
+}
+
 /// Persist a discovered claude session id onto a terminal.
 #[tauri::command]
 pub fn set_terminal_session(
@@ -434,12 +448,134 @@ pub fn set_terminal_session(
     terminal_id: String,
     session_id: String,
 ) -> Result<(), String> {
+    let _ = project_id; // terminal ids are globally unique; kept for the FE contract
+    bind_session(state.inner(), &terminal_id, &session_id);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Scheduled tasks (per-project, headless read-only runs on a daily/weekly cadence)
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn add_scheduled_task(
+    state: State<AppState>,
+    project_id: String,
+    name: String,
+    prompt: String,
+    time: String,
+    weekdays: Vec<u8>,
+    use_context: bool,
+) -> Result<ScheduledTask, String> {
+    let task = ScheduledTask {
+        id: Uuid::new_v4().to_string(),
+        name,
+        prompt,
+        time,
+        weekdays,
+        enabled: true,
+        use_context,
+        last_run: None,
+    };
+    {
+        let mut store = state.store.lock();
+        let p = store
+            .project_mut(&project_id)
+            .ok_or_else(|| "no such project".to_string())?;
+        p.scheduled_tasks.push(task.clone());
+    }
+    persist(&state);
+    Ok(task)
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn update_scheduled_task(
+    state: State<AppState>,
+    project_id: String,
+    task_id: String,
+    name: String,
+    prompt: String,
+    time: String,
+    weekdays: Vec<u8>,
+    use_context: bool,
+    enabled: bool,
+) -> Result<(), String> {
+    {
+        let mut store = state.store.lock();
+        let p = store
+            .project_mut(&project_id)
+            .ok_or_else(|| "no such project".to_string())?;
+        let t = p
+            .scheduled_tasks
+            .iter_mut()
+            .find(|t| t.id == task_id)
+            .ok_or_else(|| "no such task".to_string())?;
+        t.name = name;
+        t.prompt = prompt;
+        t.time = time;
+        t.weekdays = weekdays;
+        t.use_context = use_context;
+        t.enabled = enabled;
+    }
+    persist(&state);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_scheduled_task_enabled(
+    state: State<AppState>,
+    project_id: String,
+    task_id: String,
+    enabled: bool,
+) -> Result<(), String> {
     {
         let mut store = state.store.lock();
         if let Some(p) = store.project_mut(&project_id) {
-            if let Some(t) = p.terminals.iter_mut().find(|t| t.id == terminal_id) {
-                t.session_id = Some(session_id);
+            if let Some(t) = p.scheduled_tasks.iter_mut().find(|t| t.id == task_id) {
+                t.enabled = enabled;
             }
+        }
+    }
+    persist(&state);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn remove_scheduled_task(
+    state: State<AppState>,
+    project_id: String,
+    task_id: String,
+) -> Result<(), String> {
+    {
+        let mut store = state.store.lock();
+        if let Some(p) = store.project_mut(&project_id) {
+            p.scheduled_tasks.retain(|t| t.id != task_id);
+        }
+    }
+    persist(&state);
+    Ok(())
+}
+
+/// Fire a scheduled task immediately (the "Run now" button). Reuses the same
+/// headless path as the scheduler tick.
+#[tauri::command]
+pub fn run_scheduled_task_now(
+    app: AppHandle,
+    project_id: String,
+    task_id: String,
+) -> Result<(), String> {
+    crate::scheduler::fire(&app, &project_id, &task_id);
+    Ok(())
+}
+
+/// Clear the persisted attention flag on a terminal (called when its session is viewed).
+#[tauri::command]
+pub fn clear_terminal_attention(state: State<AppState>, terminal_id: String) -> Result<(), String> {
+    {
+        let mut store = state.store.lock();
+        if let Some(t) = store.terminal_mut(&terminal_id) {
+            t.needs_attention = false;
         }
     }
     persist(&state);
@@ -601,7 +737,7 @@ pub fn claude_rewind_restore(
 // ---------------------------------------------------------------------------
 
 /// The app data dir (parent of projects.json).
-fn app_data_dir(state: &AppState) -> Option<PathBuf> {
+pub(crate) fn app_data_dir(state: &AppState) -> Option<PathBuf> {
     state
         .store_path
         .lock()
@@ -735,7 +871,7 @@ pub fn set_settings(state: State<AppState>, settings: Settings) -> Result<(), St
 }
 
 /// The `claude` binary to use: the configured override (if it exists), else auto-detect.
-fn resolved_claude(state: &AppState) -> Option<PathBuf> {
+pub(crate) fn resolved_claude(state: &AppState) -> Option<PathBuf> {
     let configured = state.settings.lock().claude_path.clone();
     if let Some(p) = configured.filter(|s| !s.trim().is_empty()) {
         let pb = PathBuf::from(p);
@@ -800,7 +936,7 @@ async fn kill_terminals(state: &AppState, terminal_ids: &[String]) {
     }
 }
 
-fn persist(state: &AppState) {
+pub(crate) fn persist(state: &AppState) {
     let Some(path) = state.store_path.lock().clone() else {
         return;
     };

@@ -29,6 +29,25 @@ impl ClaudeAgent {
     }
 }
 
+/// Control events a headless (scheduled) run needs to observe from the sidecar's
+/// stdout, in addition to the raw lines still forwarded to the frontend.
+pub enum HeadlessEvent {
+    /// The session id arrived — bind it to the terminal so the run is resumable.
+    Init { session_id: String },
+    /// The turn finished (`ok` false on an error subtype).
+    Result { ok: bool },
+    /// The run failed / the sidecar died before finishing.
+    Error { message: String },
+}
+
+/// How the stdout reader thread behaves. `Forward` is the interactive default
+/// (raw lines → frontend, unchanged). `Observed` additionally parses lines and
+/// fires `HeadlessEvent`s so a windowless run can drive itself from Rust.
+enum ReaderMode {
+    Forward,
+    Observed(Box<dyn Fn(HeadlessEvent) + Send + 'static>),
+}
+
 /// Spawn a sidecar for a Claude session (optionally resuming/forking one). Drives
 /// the Agent SDK; the chat UI sends user turns / permission answers over stdin and
 /// renders the streamed events forwarded from stdout.
@@ -40,6 +59,58 @@ pub fn spawn_claude_agent(
     resume_at: Option<&str>,
     fork: bool,
     claude_path: &Path,
+) -> anyhow::Result<ClaudeAgent> {
+    spawn_inner(
+        app,
+        terminal_id,
+        cwd,
+        resume,
+        resume_at,
+        fork,
+        claude_path,
+        None,
+        false,
+        ReaderMode::Forward,
+    )
+}
+
+/// Spawn a headless (read-only, no-UI) sidecar for a scheduled run. Still forwards
+/// events to `claude://event/<id>` (so an open window renders the run live) and
+/// additionally invokes `on_event` for init/result/error so the scheduler can bind
+/// the session id, flag completion, and tear the agent down.
+pub fn spawn_claude_agent_headless(
+    app: AppHandle,
+    terminal_id: &str,
+    cwd: &Path,
+    claude_path: &Path,
+    on_event: impl Fn(HeadlessEvent) + Send + 'static,
+) -> anyhow::Result<ClaudeAgent> {
+    spawn_inner(
+        app,
+        terminal_id,
+        cwd,
+        None,
+        None,
+        false,
+        claude_path,
+        Some("plan"),
+        true,
+        ReaderMode::Observed(Box::new(on_event)),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_inner(
+    app: AppHandle,
+    terminal_id: &str,
+    cwd: &Path,
+    resume: Option<&str>,
+    resume_at: Option<&str>,
+    fork: bool,
+    claude_path: &Path,
+    permission_mode: Option<&str>,
+    headless: bool,
+    mode: ReaderMode,
 ) -> anyhow::Result<ClaudeAgent> {
     let node = find_node_bin().ok_or_else(|| anyhow::anyhow!("node binary not found"))?;
     let script = sidecar_script().ok_or_else(|| anyhow::anyhow!("sidecar script not found"))?;
@@ -58,6 +129,12 @@ pub fn spawn_claude_agent(
     }
     if fork {
         cmd.arg("--fork");
+    }
+    if let Some(pm) = permission_mode {
+        cmd.arg("--permission-mode").arg(pm);
+    }
+    if headless {
+        cmd.arg("--headless");
     }
     // Capture stderr (was /dev/null). A sidecar that crashes at startup — e.g. the
     // bundled node aborting under the hardened runtime — writes its reason here and
@@ -93,10 +170,20 @@ pub fn spawn_claude_agent(
     std::thread::spawn(move || {
         let reader = std::io::BufReader::new(stdout);
         let mut emitted = 0usize;
+        let mut saw_result = false;
         for line in reader.lines() {
             match line {
                 Ok(l) if !l.is_empty() => {
                     emitted += 1;
+                    // Observed runs also inspect the line for control events.
+                    if let ReaderMode::Observed(cb) = &mode {
+                        if let Some(ev) = parse_headless(&l) {
+                            if matches!(ev, HeadlessEvent::Result { .. }) {
+                                saw_result = true;
+                            }
+                            cb(ev);
+                        }
+                    }
                     if app.emit(&event, l).is_err() {
                         break;
                     }
@@ -116,14 +203,47 @@ pub fn spawn_claude_agent(
             } else {
                 format!("The Claude sidecar exited before responding:\n{tail}")
             };
-            let payload =
-                serde_json::json!({ "t": "error", "message": message }).to_string();
+            let payload = serde_json::json!({ "t": "error", "message": message }).to_string();
             let _ = app.emit(&event, payload);
+        }
+        // An observed run that closed without a result never finished — tell the
+        // scheduler so it can finalize (clear "running", flag the session).
+        if let ReaderMode::Observed(cb) = &mode {
+            if !saw_result {
+                let tail = err_tail.lock().unwrap().join("\n");
+                let message = if tail.trim().is_empty() {
+                    "The scheduled run ended before completing.".to_string()
+                } else {
+                    format!("The scheduled run ended before completing:\n{tail}")
+                };
+                cb(HeadlessEvent::Error { message });
+            }
         }
         let _ = app.emit(&exit_event, ());
     });
 
     Ok(ClaudeAgent { child, stdin })
+}
+
+/// Parse one sidecar stdout JSON line into a control event, if it is one.
+fn parse_headless(line: &str) -> Option<HeadlessEvent> {
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    match v.get("t").and_then(|t| t.as_str())? {
+        "init" => Some(HeadlessEvent::Init {
+            session_id: v.get("sessionId")?.as_str()?.to_string(),
+        }),
+        "result" => Some(HeadlessEvent::Result {
+            ok: v.get("subtype").and_then(|s| s.as_str()) == Some("success"),
+        }),
+        "error" => Some(HeadlessEvent::Error {
+            message: v
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("unknown error")
+                .to_string(),
+        }),
+        _ => None,
+    }
 }
 
 /// The directory containing the running executable (Contents/MacOS in a bundle).

@@ -7,8 +7,9 @@ use crate::settings::Settings;
 use crate::store::ProjectStore;
 use rmux_sdk::Rmux;
 use parking_lot::Mutex;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::time::SystemTime;
 use tauri::AppHandle;
 use tokio::sync::OnceCell;
@@ -37,4 +38,11 @@ pub struct AppState {
     /// Cache of Claude session titles keyed by session id → (file mtime, title),
     /// so list_projects doesn't re-read every transcript on each refresh.
     pub title_cache: Mutex<HashMap<String, (SystemTime, String)>>,
+    /// Scheduled-task ids currently mid-run, so the scheduler (and Run-now) never
+    /// start a second instance of the same task while one is in flight.
+    pub running_tasks: Mutex<HashSet<String>>,
+    /// Set true only for a real quit (tray Quit / updater relaunch) so the
+    /// ExitRequested handler knows to let the process die instead of staying
+    /// alive in the background for the scheduler.
+    pub quitting: AtomicBool,
 }

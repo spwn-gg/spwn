@@ -25,6 +25,40 @@ pub struct TerminalRec {
     /// tree). None for a root session. Lets the nav render true fork lineage.
     #[serde(default)]
     pub parent_id: Option<String>,
+    /// A persisted attention flag. Interactive attention is in-memory (frontend
+    /// tab state), but a windowless scheduled run has no tab to flag — so the
+    /// nav reflects this on next open. Cleared when the session is viewed.
+    #[serde(default)]
+    pub needs_attention: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// A per-project scheduled task: a prompt run headlessly on a daily/weekly
+/// cadence, optionally reusing the project's assembled context.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledTask {
+    pub id: String,
+    pub name: String,
+    /// The task instruction sent as the session's first turn.
+    pub prompt: String,
+    /// Local time of day, "HH:MM" (24h).
+    pub time: String,
+    /// Weekdays it may fire on: 0=Sun..6=Sat. Empty = every day.
+    #[serde(default)]
+    pub weekdays: Vec<u8>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Prepend the project's assembled context to the prompt.
+    #[serde(default = "default_true")]
+    pub use_context: bool,
+    /// Epoch ms of the scheduled instant last fired (not wall-clock of the run) —
+    /// gates no-double-fire and single-shot catch-up.
+    #[serde(default)]
+    pub last_run: Option<i64>,
 }
 
 /// A block in a project's context space: a manual note, a file's contents, or a
@@ -51,6 +85,9 @@ pub struct ProjectRec {
     /// The project's context space (composed, then injected into a new session).
     #[serde(default)]
     pub context: Vec<ContextBlock>,
+    /// Scheduled tasks that fire headless Claude runs on a cadence.
+    #[serde(default)]
+    pub scheduled_tasks: Vec<ScheduledTask>,
 }
 
 #[derive(Serialize, Deserialize, Default, Clone, Debug)]
