@@ -46,7 +46,7 @@ Rather than starting a Claude session cold, seed it with the context that matter
 spwn opens a **new Claude session** that starts with exactly the context you
 composed, so you skip re-explaining the project.
 
-![Composing context before injecting](../../../assets/screenshots/context-composer.png)
+![The Context view: add Note and File blocks, then Inject to open a new Claude session seeded with them](../../../assets/screenshots/context-composer.png)
 
 ## 4. Fork or rewind as you go
 

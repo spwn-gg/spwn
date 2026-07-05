@@ -6,7 +6,7 @@ description: What spwn is, the problem it solves, and how it fits into your work
 **spwn** is a desktop app that organizes your Claude Code work into projects, gives
 each one a reusable context, and keeps your sessions running in the background.
 
-![The spwn app](../../../assets/screenshots/app-main.png)
+![The spwn window: the Projects sidebar on the left listing a project with its Context, Scheduled Tasks, and Claude session rows, and the main pane on the right](../../../assets/screenshots/app-main.png)
 
 ## The idea
 

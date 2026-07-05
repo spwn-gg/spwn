@@ -8,7 +8,7 @@ saved from other sessions**. **Inject** turns it into a first message and opens 
 Claude session seeded with it — so you stop re-explaining the same background every
 time.
 
-![Composing context before injecting](../../../assets/screenshots/context-composer.png)
+![The Context view for a project, with Note and File buttons for adding blocks and an "Inject → new Claude session" button](../../../assets/screenshots/context-composer.png)
 
 ## Open the Context view
 

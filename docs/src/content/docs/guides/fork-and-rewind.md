@@ -6,7 +6,7 @@ description: Branch a session to explore an alternative, or roll one back to an 
 spwn gives you two ways to move through a session's history: **Fork** to branch into
 a new session, and **Rewind** to roll the current one back to an earlier point.
 
-![Fork and Rewind on a session](../../../assets/screenshots/fork-rewind.png)
+![A forked Claude session nested under its parent session in the project tree](../../../assets/screenshots/fork-rewind.png)
 
 ## Fork
 
