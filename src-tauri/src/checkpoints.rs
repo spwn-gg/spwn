@@ -17,7 +17,7 @@ pub const TURN_CAP: usize = 20;
 pub const SYNTH_CAP: usize = 6;
 
 /// Dirs removed from each clone (top-level) to keep snapshots small.
-const PRUNE_DIRS: &[&str] = &[
+pub const PRUNE_DIRS: &[&str] = &[
     ".git",
     "node_modules",
     ".venv",
@@ -196,6 +196,16 @@ pub fn list(app_data: &Path, session_id: &str) -> Vec<CheckpointMeta> {
     let mut idx = load_index(app_data, session_id);
     idx.reverse(); // newest first for display
     idx
+}
+
+/// Absolute path to a checkpoint's snapshot directory (may not exist on disk).
+pub fn checkpoint_dir(app_data: &Path, session_id: &str, checkpoint_id: &str) -> PathBuf {
+    session_dir(app_data, session_id).join(checkpoint_id)
+}
+
+/// The most recent checkpoint captured for a session, if any.
+pub fn latest(app_data: &Path, session_id: &str) -> Option<CheckpointMeta> {
+    load_index(app_data, session_id).into_iter().last()
 }
 
 /// The newest checkpoint captured for a given assistant turn, if any.

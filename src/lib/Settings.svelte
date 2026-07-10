@@ -6,6 +6,7 @@
 	import { checkForUpdate, updateStatus } from './updater';
 
 	let claudePath = $state('');
+	let diffCommand = $state('');
 	let detected = $state<string | null>(null);
 	let saved = $state(false);
 	let version = $state('');
@@ -13,6 +14,7 @@
 	onMount(async () => {
 		const s = await getSettings();
 		claudePath = s.claudePath ?? '';
+		diffCommand = s.diffCommand ?? '';
 		detected = await detectClaude();
 		version = await getVersion();
 	});
@@ -27,7 +29,10 @@
 	}
 
 	async function save() {
-		await setSettings({ claudePath: claudePath.trim() || null });
+		await setSettings({
+			claudePath: claudePath.trim() || null,
+			diffCommand: diffCommand.trim() || null
+		});
 		saved = true;
 		setTimeout(() => (saved = false), 1500);
 	}
@@ -59,6 +64,21 @@
 					{/if}
 				</div>
 				<div class="hint">Leave blank to use the auto-detected path.</div>
+			</div>
+
+			<div class="field">
+				<div class="lbl">Diff viewer command</div>
+				<div class="row">
+					<input bind:value={diffCommand} placeholder="code --wait --diff" spellcheck="false" />
+				</div>
+				<div class="hint">
+					Used to open git diffs. The two file paths are appended automatically — keep
+					<code>--wait</code> so files open one at a time and temp files survive.
+				</div>
+				<div class="hint">
+					Leave blank for the default (<code>code --wait --diff</code>). Use an absolute path
+					if the tool isn't on your PATH.
+				</div>
 			</div>
 
 			<div class="field">
