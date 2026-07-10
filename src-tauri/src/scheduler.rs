@@ -4,11 +4,12 @@
 //! a missed occurrence is caught up exactly once.
 
 use crate::claude::HeadlessEvent;
-use crate::commands::{bind_session, persist, resolved_claude};
+use crate::commands::{bind_session, persist, resolved_claude, worktrees_dir};
+use crate::gitwt;
 use crate::state::AppState;
 use crate::store::{ContextBlock, ScheduledTask, TerminalRec};
 use chrono::{DateTime, Datelike, Duration as ChronoDuration, Local, LocalResult, NaiveTime, TimeZone};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
@@ -103,6 +104,8 @@ pub fn fire(app: &AppHandle, project_id: &str, task_id: &str) {
                 session_id: None,
                 group_id: None,
                 parent_id: None,
+                branch: None,
+                base_branch: None,
                 needs_attention: false,
             });
             Some((terminal_id, directory, context, task))
@@ -114,6 +117,32 @@ pub fn fire(app: &AppHandle, project_id: &str, task_id: &str) {
         return;
     };
     persist(&state);
+
+    // A scheduled run gets its own worktree+branch too, so it's isolated from (and
+    // concurrency-safe with) any interactive session. Falls back to the project dir
+    // on a non-git project or if the worktree can't be created. The worktree is kept
+    // after the run (the flagged session stays viewable) and removed on delete.
+    let mut run_dir = directory.clone();
+    if let Some(repo) = gitwt::repo_root(Path::new(&directory)) {
+        if let (Some(base), Some(wt_root)) = (gitwt::current_branch(&repo), worktrees_dir(&state)) {
+            let short = terminal_id.split('-').next().unwrap_or(terminal_id.as_str());
+            let branch = format!("cm/{short}");
+            let wt_path = wt_root.join(&terminal_id);
+            if gitwt::add_worktree(&repo, &wt_path, &branch, &base).is_ok() {
+                gitwt::seed_heavy_dirs(Path::new(&directory), &wt_path);
+                run_dir = wt_path.to_string_lossy().into_owned();
+                {
+                    let mut store = state.store.lock();
+                    if let Some(t) = store.terminal_mut(&terminal_id) {
+                        t.cwd = run_dir.clone();
+                        t.branch = Some(branch);
+                        t.base_branch = Some(base);
+                    }
+                }
+                persist(&state);
+            }
+        }
+    }
 
     // Assemble the first turn: project context (optional) then the task prompt.
     let mut first_turn = String::new();
@@ -127,7 +156,7 @@ pub fn fire(app: &AppHandle, project_id: &str, task_id: &str) {
         finalize(app, project_id, &terminal_id, task_id, false);
         return;
     };
-    let cwd_path = std::fs::canonicalize(&directory).unwrap_or_else(|_| PathBuf::from(&directory));
+    let cwd_path = std::fs::canonicalize(&run_dir).unwrap_or_else(|_| PathBuf::from(&run_dir));
 
     // Callback observes the sidecar: bind the session id on init, finalize on end.
     let app_cb = app.clone();

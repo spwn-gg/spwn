@@ -8,6 +8,7 @@
 		claudeRewindRestore,
 		listCheckpoints
 	} from './ipc';
+	import MergePanel from './MergePanel.svelte';
 	import { openTab, refreshProjects, projects, pasteToInput } from './stores';
 	import CheckpointList from './CheckpointList.svelte';
 	import type { Turn, QuestionSpec } from './types';
@@ -275,6 +276,12 @@
 		setStatus('Pasted into the parent session’s input.');
 	}
 
+	// This session's terminal record (for its worktree branch chip + merge panel).
+	const term = $derived(
+		$projects.find((p) => p.id === projectId)?.terminals.find((t) => t.id === terminalId)
+	);
+	let showMerge = $state(false);
+
 	function fork() {
 		if (!sessionId) return;
 		openTab({
@@ -328,6 +335,12 @@
 	<div class="bar">
 		<span class="title">Conversation</span>
 		<button class="act" class:on={showCheckpoints} disabled={!sessionId} onclick={() => (showCheckpoints = !showCheckpoints)} title="Code checkpoints — undo file changes">⟲ Checkpoints</button>
+		{#if term?.branch}
+			<button
+				class="act"
+				onclick={() => (showMerge = true)}
+				title="Merge this session's branch ({term.branch}) into {term.baseBranch}">⤵ Merge</button>
+		{/if}
 		<button class="act" disabled={!sessionId} onclick={fork} title="Fork this whole session">⑂ Fork</button>
 	</div>
 	{#if showCheckpoints && sessionId}
@@ -426,6 +439,10 @@
 			Conversation + restore files
 		</button>
 	</div>
+{/if}
+
+{#if showMerge && term?.branch && terminalId}
+	<MergePanel {projectId} terminalId={terminalId} onClose={() => (showMerge = false)} />
 {/if}
 
 <style>

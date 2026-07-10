@@ -7,6 +7,7 @@ import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import type {
 	CheckpointMeta,
 	ClaudeEvent,
+	MergeStatus,
 	ProjectRec,
 	ScheduledTask,
 	Settings,
@@ -175,6 +176,21 @@ export function closeTerminal(terminalId: string): Promise<void> {
 /** Permanently delete a terminal (kills its rmux session). */
 export function deleteTerminal(projectId: string, terminalId: string): Promise<void> {
 	return invoke('delete_terminal', { projectId, terminalId });
+}
+
+/** Merge a session's worktree branch back into its base branch; resolves to a summary. */
+export function mergeSession(projectId: string, terminalId: string): Promise<string> {
+	return invoke('merge_session', { projectId, terminalId });
+}
+
+/** Preview what merging a session's branch into its base would do. */
+export function sessionMergeStatus(projectId: string, terminalId: string): Promise<MergeStatus> {
+	return invoke('session_merge_status', { projectId, terminalId });
+}
+
+/** Commit a session's changes onto its worktree branch (no-op if it has no branch). */
+export function commitSessionTurn(terminalId: string, message: string): Promise<void> {
+	return invoke('commit_session_turn', { terminalId, message });
 }
 
 /** Persist a discovered claude session id onto a terminal record. */

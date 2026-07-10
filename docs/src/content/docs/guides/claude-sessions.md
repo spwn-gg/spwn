@@ -20,6 +20,10 @@ The working side is Claude Code itself, not a stripped-down copy. That means:
 
 Nothing is reimplemented or held back; you get everything Claude Code can do.
 
+In a git project, each session also works on **its own branch**, isolated from the
+others — so you can run several at once and merge the results back. See
+[Parallel Sessions](/spwn/guides/parallel-sessions/).
+
 ## The conversation view
 
 Beside it, spwn shows a clean, scrollable view of the conversation. It stays in sync
@@ -38,4 +42,5 @@ first message of a new session. See [Composing Context](/spwn/guides/context-com
 ## Next
 
 - [Fork & Rewind](/spwn/guides/fork-and-rewind/)
+- [Parallel Sessions](/spwn/guides/parallel-sessions/)
 - [Composing Context](/spwn/guides/context-composer/)

@@ -1,6 +1,7 @@
 mod checkpoints;
 mod claude;
 mod commands;
+mod gitwt;
 mod projects;
 mod pty;
 mod scheduler;
@@ -146,6 +147,9 @@ pub fn run() {
             commands::open_terminal,
             commands::close_terminal,
             commands::delete_terminal,
+            commands::merge_session,
+            commands::session_merge_status,
+            commands::commit_session_turn,
             commands::set_terminal_session,
             commands::claude_send,
             commands::claude_permission,

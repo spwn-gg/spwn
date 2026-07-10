@@ -4,7 +4,6 @@
 	import InputBar from './InputBar.svelte';
 	import PermissionPrompt from './PermissionPrompt.svelte';
 	import QuestionPicker from './QuestionPicker.svelte';
-	import { get } from 'svelte/store';
 	import {
 		openTerminal,
 		setTerminalSession,
@@ -12,8 +11,7 @@
 		claudePermission,
 		claudeAnswer,
 		checkpointProject,
-		listCheckpoints,
-		restoreCheckpoint,
+		commitSessionTurn,
 		onClaudeEvent,
 		onClaudeExit
 	} from './ipc';
@@ -22,10 +20,7 @@
 		setTabSession,
 		refreshProjects,
 		markAttention,
-		setSessionBusy,
-		busySessions,
-		activeCodeSession,
-		activeTabKey
+		setSessionBusy
 	} from './stores';
 	import type { ClaudeEvent, PendingQuestion, PermissionReq, Turn } from './types';
 
@@ -127,42 +122,15 @@
 		if (liveSession) setSessionBusy(liveSession, false);
 	});
 
-	// Publish this session's busy state so restores can gate on "no agent writing".
+	// Publish this session's busy state (used by manual restore/rewind gating).
 	$effect(() => {
 		if (liveSession) setSessionBusy(liveSession, busy);
 	});
 
-	// Auto-restore the project to a session's code when you switch to it (user choice).
-	// Guards: only when this pane is active, the session has a checkpoint, and NO
-	// session is mid-turn (avoid racing a background write). A pre-switch snapshot of
-	// the outgoing session preserves its on-disk state.
-	let switchingCode = false;
-	$effect(() => {
-		const active = $activeTabKey === tabKey;
-		const sid = liveSession;
-		const anyBusy = $busySessions.size > 0;
-		if (!active || !sid || busy || anyBusy || switchingCode) return;
-		if ($activeCodeSession[projectId] === sid) return;
-		autoRestoreOnSwitch(sid);
-	});
-
-	async function autoRestoreOnSwitch(sid: string) {
-		switchingCode = true;
-		try {
-			const current = get(activeCodeSession)[projectId];
-			if (current && current !== sid) {
-				// Preserve the outgoing session's current files so switching back restores them.
-				await checkpointProject(projectId, current, 'pre-switch', 'pre-switch').catch(() => {});
-			}
-			activeCodeSession.update((m) => ({ ...m, [projectId]: sid }));
-			const cps = await listCheckpoints(sid);
-			if (cps.length) await restoreCheckpoint(projectId, sid, cps[0].id, false);
-		} catch (e) {
-			console.error('auto-restore on switch', e);
-		} finally {
-			switchingCode = false;
-		}
-	}
+	// No file swapping on session switch: each session runs in its own git worktree,
+	// so switching tabs is a pure UI focus change. (Swapping the shared project dir
+	// in place would corrupt any autonomous session running concurrently.) Per-turn
+	// undo checkpoints still snapshot each session's own worktree.
 
 	function resetLive() {
 		streamingText = '';
@@ -222,6 +190,13 @@
 					checkpointProject(projectId, liveSession, lastAssistantUuid, 'turn').catch((e) =>
 						console.error('checkpoint failed', e)
 					);
+					// Commit onto the session's worktree branch so it carries mergeable
+					// history (no-op if this session has no branch). Keyed by terminal id.
+					if (id) {
+						commitSessionTurn(id, `spwn turn ${lastAssistantUuid.slice(0, 8)}`).catch((e) =>
+							console.error('commit failed', e)
+						);
+					}
 				}
 				// Keep the overlay until the JSONL reload brings the finished turn in
 				// (onReload clears it); fall back to a timer so it can't get stuck.

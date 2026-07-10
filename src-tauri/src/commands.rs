@@ -5,13 +5,14 @@
 //! stable, persistent ids so they reattach across restarts.
 
 use crate::checkpoints::{self, CheckpointMeta};
+use crate::gitwt;
 use crate::pty::{default_shell, find_claude_bin, spawn_rmux_session};
 use crate::settings::Settings;
 use crate::state::AppState;
 use crate::store::{rmux_session_name, ContextBlock, ProjectRec, ScheduledTask, TerminalRec};
 use crate::transcript::{read_transcript as parse_transcript, Turn};
 use rmux_sdk::{EnsureSession, EnsureSessionPolicy, Rmux, RmuxBuilder, SessionName, TerminalSizeSpec};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, State};
@@ -265,7 +266,7 @@ pub async fn open_terminal(
     state: State<'_, AppState>,
     spec: OpenTerminalSpec,
 ) -> Result<String, String> {
-    let (terminal_id, kind, cwd, resume_src, fork) = {
+    let (terminal_id, kind, cwd, resume_src, fork, is_new, project_dir, fork_base) = {
         let mut store = state.store.lock();
         let project = store
             .project(&spec.project_id)
@@ -276,6 +277,12 @@ pub async fn open_terminal(
             .terminal_id
             .as_deref()
             .and_then(|tid| store.terminal(tid).cloned());
+        // A fork's worktree branches from its parent session's branch, so the code
+        // tree mirrors the conversation tree.
+        let fork_base = spec
+            .parent_terminal_id
+            .as_deref()
+            .and_then(|pid| store.terminal(pid).and_then(|t| t.branch.clone()));
         let terminal_id = spec
             .terminal_id
             .clone()
@@ -284,17 +291,13 @@ pub async fn open_terminal(
             .as_ref()
             .map(|t| t.kind.clone())
             .unwrap_or_else(|| spec.kind.clone());
-        // Sessions work in the project directory itself. (Claude sessions briefly
-        // ran in per-session git worktrees; that's been dropped, so reattaching an
-        // old one migrates its cwd back to the project dir.)
-        let cwd = if kind == "claude" {
-            project.directory.clone()
-        } else {
-            existing
-                .as_ref()
-                .map(|t| t.cwd.clone())
-                .unwrap_or_else(|| project.directory.clone())
-        };
+        // Reattaching uses the stored cwd (a Claude session's own worktree, if it
+        // has one); a fresh session starts from the project dir until its worktree
+        // is created below.
+        let cwd = existing
+            .as_ref()
+            .map(|t| t.cwd.clone())
+            .unwrap_or_else(|| project.directory.clone());
         let saved_session = existing.as_ref().and_then(|t| t.session_id.clone());
 
         // Claude resume/fork resolution. Fork resumes its source then branches; a
@@ -332,18 +335,65 @@ pub async fn open_terminal(
                     session_id: None,
                     group_id,
                     parent_id,
+                    branch: None,
+                    base_branch: None,
                     needs_attention: false,
                 });
             }
-        } else if kind == "claude" {
-            // Migrate an old worktree-backed session's cwd back to the project dir.
-            if let Some(t) = store.terminal_mut(&terminal_id) {
-                t.cwd = cwd.clone();
-            }
         }
-        (terminal_id, kind, cwd, resume_src, fork)
+        let is_new = existing.is_none();
+        (
+            terminal_id,
+            kind,
+            cwd,
+            resume_src,
+            fork,
+            is_new,
+            project.directory.clone(),
+            fork_base,
+        )
     };
     persist(&state);
+
+    // A fresh Claude session in a git repo gets its own isolated worktree+branch, so
+    // sessions can run concurrently without clobbering each other's files. Heavy
+    // gitignored build dirs are COW-cloned in so the agent can build immediately.
+    // Falls back to the project dir if it's not a git repo or the worktree fails.
+    let mut cwd = cwd;
+    if is_new && kind == "claude" {
+        if let Some(repo) = gitwt::repo_root(Path::new(&project_dir)) {
+            let base = fork_base.or_else(|| gitwt::current_branch(&repo));
+            if let (Some(base), Some(wt_root)) = (base, worktrees_dir(&state)) {
+                let short = terminal_id.split('-').next().unwrap_or(terminal_id.as_str());
+                let branch = format!("cm/{short}");
+                let wt_path = wt_root.join(&terminal_id);
+                match gitwt::add_worktree(&repo, &wt_path, &branch, &base) {
+                    Ok(()) => {
+                        gitwt::seed_heavy_dirs(Path::new(&project_dir), &wt_path);
+                        cwd = wt_path.to_string_lossy().into_owned();
+                        {
+                            let mut store = state.store.lock();
+                            if let Some(t) = store.terminal_mut(&terminal_id) {
+                                t.cwd = cwd.clone();
+                                t.branch = Some(branch);
+                                t.base_branch = Some(base);
+                            }
+                        }
+                        persist(&state);
+                    }
+                    Err(e) => {
+                        eprintln!("worktree create failed (using project dir): {e}");
+                        if let Some(app2) = state.app.lock().as_ref() {
+                            let _ = app2.emit(
+                                "store://error",
+                                format!("Couldn't create a git worktree for the session; using the project folder. {e}"),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     let cwd_path = std::fs::canonicalize(&cwd).unwrap_or_else(|_| PathBuf::from(&cwd));
 
@@ -409,12 +459,20 @@ pub async fn delete_terminal(
     terminal_id: String,
 ) -> Result<(), String> {
     kill_terminals(&state, std::slice::from_ref(&terminal_id)).await;
-    // Capture the session id before dropping the record, to prune its checkpoints.
-    let session_id = state
-        .store
-        .lock()
-        .terminal(&terminal_id)
-        .and_then(|t| t.session_id.clone());
+    // Capture the session id (to prune checkpoints) and its worktree (to remove it,
+    // keeping the branch so its commits survive for a manual merge) before dropping
+    // the record.
+    let (session_id, worktree) = {
+        let store = state.store.lock();
+        let proj_dir = store.project(&project_id).map(|p| p.directory.clone());
+        let t = store.terminal(&terminal_id);
+        let sid = t.and_then(|t| t.session_id.clone());
+        let wt = t.and_then(|t| {
+            t.branch.as_ref()?;
+            Some((proj_dir?, t.cwd.clone()))
+        });
+        (sid, wt)
+    };
     {
         let mut store = state.store.lock();
         if let Some(p) = store.project_mut(&project_id) {
@@ -422,10 +480,137 @@ pub async fn delete_terminal(
         }
     }
     persist(&state);
+    if let Some((proj_dir, wt_path)) = worktree {
+        if let Some(repo) = gitwt::repo_root(Path::new(&proj_dir)) {
+            if let Err(e) = gitwt::remove_worktree(&repo, Path::new(&wt_path)) {
+                eprintln!("worktree remove failed: {e}");
+            }
+        }
+    }
     if let (Some(sid), Some(app_data)) = (session_id, app_data_dir(&state)) {
         checkpoints::remove_session(&app_data, &sid);
     }
     Ok(())
+}
+
+/// Merge a session's branch back into its base branch (manual, user-triggered).
+#[tauri::command]
+pub fn merge_session(
+    state: State<AppState>,
+    project_id: String,
+    terminal_id: String,
+) -> Result<String, String> {
+    let (proj_dir, branch, base) = {
+        let store = state.store.lock();
+        let proj_dir = store
+            .project(&project_id)
+            .map(|p| p.directory.clone())
+            .ok_or_else(|| "no such project".to_string())?;
+        let t = store
+            .terminal(&terminal_id)
+            .ok_or_else(|| "no such session".to_string())?;
+        let branch = t
+            .branch
+            .clone()
+            .ok_or_else(|| "this session has no git branch to merge".to_string())?;
+        let base = t
+            .base_branch
+            .clone()
+            .ok_or_else(|| "this session has no base branch to merge into".to_string())?;
+        (proj_dir, branch, base)
+    };
+    let repo = gitwt::repo_root(Path::new(&proj_dir))
+        .ok_or_else(|| "project is not a git repository".to_string())?;
+    gitwt::merge_into_base(&repo, &base, &branch)
+}
+
+/// A preview of what merging a session's branch into its base would do.
+#[derive(Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeStatus {
+    /// The session's branch (None if it has no worktree branch — nothing to merge).
+    pub branch: Option<String>,
+    /// The branch it would merge into (its parent/base branch).
+    pub base_branch: Option<String>,
+    /// Commits on the session branch not yet in the base.
+    pub ahead: u32,
+    /// Files the session branch introduces relative to the base.
+    pub changed_files: Vec<String>,
+    /// The session worktree has uncommitted changes (they won't be part of the merge
+    /// until the next turn commits them).
+    pub uncommitted: bool,
+    /// A human-readable reason the merge can't proceed right now (base branch isn't
+    /// checked out, or its checkout is dirty). None when the merge is ready.
+    pub blocker: Option<String>,
+}
+
+/// Compute a merge preview for a session: target branch, how far ahead it is, which
+/// files it changes, and whether anything blocks the merge.
+#[tauri::command]
+pub fn session_merge_status(
+    state: State<AppState>,
+    project_id: String,
+    terminal_id: String,
+) -> Result<MergeStatus, String> {
+    let (proj_dir, branch, base, cwd) = {
+        let store = state.store.lock();
+        let proj_dir = store
+            .project(&project_id)
+            .map(|p| p.directory.clone())
+            .ok_or_else(|| "no such project".to_string())?;
+        let t = store
+            .terminal(&terminal_id)
+            .ok_or_else(|| "no such session".to_string())?;
+        (proj_dir, t.branch.clone(), t.base_branch.clone(), t.cwd.clone())
+    };
+    // No worktree branch → nothing to merge.
+    let (Some(branch), Some(base)) = (branch, base) else {
+        return Ok(MergeStatus::default());
+    };
+    let Some(repo) = gitwt::repo_root(Path::new(&proj_dir)) else {
+        return Ok(MergeStatus::default());
+    };
+    let wt = Path::new(&cwd);
+    let ahead = gitwt::count_commits(wt, &format!("{base}..{branch}"));
+    let changed_files = gitwt::changed_files(wt, &base, &branch);
+    let uncommitted = !gitwt::is_clean(wt);
+    // Mirror merge_into_base's preconditions so the panel can warn ahead of time.
+    let blocker = match gitwt::worktree_for_branch(&repo, &base) {
+        None => Some(format!(
+            "'{base}' isn't checked out anywhere — check it out (e.g. in your project folder) to merge into it."
+        )),
+        Some(base_wt) if !gitwt::is_clean(&base_wt) => Some(format!(
+            "The checkout of '{base}' has uncommitted changes — commit or stash them first."
+        )),
+        Some(_) => None,
+    };
+    Ok(MergeStatus {
+        branch: Some(branch),
+        base_branch: Some(base),
+        ahead,
+        changed_files,
+        uncommitted,
+        blocker,
+    })
+}
+
+/// Commit a session's working changes onto its worktree branch, so the branch
+/// carries real history to merge/fork from. No-op (Ok) if the session has no
+/// worktree branch or nothing changed.
+#[tauri::command]
+pub fn commit_session_turn(
+    state: State<AppState>,
+    terminal_id: String,
+    message: String,
+) -> Result<(), String> {
+    let cwd = {
+        let store = state.store.lock();
+        match store.terminal(&terminal_id) {
+            Some(t) if t.branch.is_some() => t.cwd.clone(),
+            _ => return Ok(()),
+        }
+    };
+    gitwt::commit_all(Path::new(&cwd), &message).map(|_| ())
 }
 
 /// Persist a discovered claude session id onto a terminal (looked up by id across
@@ -745,6 +930,25 @@ pub(crate) fn app_data_dir(state: &AppState) -> Option<PathBuf> {
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
 }
 
+/// Where per-session worktrees live (under the app data dir, keyed by terminal id).
+pub(crate) fn worktrees_dir(state: &AppState) -> Option<PathBuf> {
+    app_data_dir(state).map(|d| d.join("worktrees"))
+}
+
+/// The working dir a session's checkpoints target: the owning terminal's worktree
+/// `cwd` if it has one, else the project directory. Checkpoints are keyed by session
+/// id, so we resolve the owning terminal by session id.
+fn session_checkpoint_dir(state: &AppState, project_id: &str, session_id: &str) -> Option<String> {
+    let store = state.store.lock();
+    store
+        .projects
+        .iter()
+        .flat_map(|p| p.terminals.iter())
+        .find(|t| t.session_id.as_deref() == Some(session_id))
+        .map(|t| t.cwd.clone())
+        .or_else(|| store.project(project_id).map(|p| p.directory.clone()))
+}
+
 /// Snapshot the project directory (kind: "turn" | "baseline" | ...).
 #[tauri::command]
 pub fn checkpoint_project(
@@ -754,11 +958,7 @@ pub fn checkpoint_project(
     turn_uuid: String,
     kind: String,
 ) -> Result<CheckpointMeta, String> {
-    let project_dir = state
-        .store
-        .lock()
-        .project(&project_id)
-        .map(|p| p.directory.clone())
+    let project_dir = session_checkpoint_dir(&state, &project_id, &session_id)
         .ok_or_else(|| "no such project".to_string())?;
     let app_data = app_data_dir(&state).ok_or_else(|| "no app data dir".to_string())?;
     checkpoints::capture(&app_data, Path::new(&project_dir), &session_id, &turn_uuid, &kind)
@@ -775,11 +975,7 @@ pub fn restore_checkpoint(
     checkpoint_id: String,
     pre_restore: bool,
 ) -> Result<Option<CheckpointMeta>, String> {
-    let project_dir = state
-        .store
-        .lock()
-        .project(&project_id)
-        .map(|p| p.directory.clone())
+    let project_dir = session_checkpoint_dir(&state, &project_id, &session_id)
         .ok_or_else(|| "no such project".to_string())?;
     let app_data = app_data_dir(&state).ok_or_else(|| "no app data dir".to_string())?;
     let pd = Path::new(&project_dir);
