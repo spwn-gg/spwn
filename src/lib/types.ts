@@ -47,6 +47,8 @@ export interface ProjectRec {
 
 export interface Settings {
 	claudePath?: string | null;
+	/** Command template for the external diff viewer (git appends the two file paths). */
+	diffCommand?: string | null;
 }
 
 export interface Block {

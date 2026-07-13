@@ -131,6 +131,8 @@ pub fn run() {
             commands::create_project,
             commands::delete_project,
             commands::open_in_vscode,
+            commands::open_working_diff,
+            commands::open_checkpoint_diff,
             commands::add_context_block,
             commands::add_context_file,
             commands::remove_context_block,

@@ -98,6 +98,152 @@ pub fn open_in_vscode(path: String) -> Result<(), String> {
     Err("Visual Studio Code not found".to_string())
 }
 
+// ---------------------------------------------------------------------------
+// External diff viewer (git difftool → VS Code, or a configured tool)
+// ---------------------------------------------------------------------------
+
+/// A `git difftool --extcmd` wrapper that runs the configured diff command (read
+/// from `$SPWN_DIFF`) per changed file, but silently skips any file living under a
+/// pruned/ephemeral dir. Essential for the checkpoint `--no-index` diff, whose
+/// snapshot side has those dirs stripped (else the current side's `node_modules`,
+/// `.git`, `target`, … would each open as thousands of spurious "added" files).
+/// git appends `"$LOCAL" "$REMOTE"`, so inside the inner shell $1=old, $2=new.
+fn guard_extcmd() -> String {
+    let dirs = checkpoints::PRUNE_DIRS.join(" ");
+    format!(
+        "sh -c 'for d in {dirs}; do \
+case \"/$1/\" in *\"/$d/\"*) exit 0;; esac; \
+case \"/$2/\" in *\"/$d/\"*) exit 0;; esac; \
+done; exec $SPWN_DIFF \"$1\" \"$2\"' _"
+    )
+}
+
+/// PATH for the spawned git/diff-tool child. GUI apps launch with a minimal PATH,
+/// so we prepend VS Code's `bin` dir plus the usual locations to let a bare `code`
+/// (or `code-insiders`) template resolve without the user typing an absolute path.
+fn augmented_path() -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(dir) = crate::pty::find_code_dir() {
+        parts.push(dir.to_string_lossy().into_owned());
+    }
+    for p in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"] {
+        parts.push(p.to_string());
+    }
+    if let Ok(existing) = std::env::var("PATH") {
+        parts.push(existing);
+    }
+    parts.join(":")
+}
+
+/// Friendly pre-flight: if the template starts with a bare `code`/`code-insiders`
+/// but VS Code isn't installed, fail with actionable text instead of silently
+/// spawning a git child that can't find the tool.
+fn preflight_tool(template: &str) -> Result<(), String> {
+    let first = template.split_whitespace().next().unwrap_or("");
+    if matches!(first, "code" | "code-insiders") && crate::pty::find_code_dir().is_none() {
+        return Err(
+            "VS Code's `code` command wasn't found. Install it (VS Code → \
+            “Shell Command: Install 'code' command in PATH”) or set a diff command \
+            in Settings."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Ensure `dir` is inside a git work tree (and that git is available), so the
+/// working-tree diff fails with a clear message instead of hanging/erroring.
+fn ensure_git_worktree(dir: &Path) -> Result<(), String> {
+    let out = std::process::Command::new("/usr/bin/git")
+        .arg("-C")
+        .arg(dir)
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .output()
+        .map_err(|_| "git wasn't found on this system".to_string())?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err("this folder isn't a git repository".to_string())
+    }
+}
+
+/// Spawn `git <args>` in `cwd` on a detached thread (reaping the child so it isn't
+/// left a zombie) — the review can last minutes, so we never block the command.
+fn spawn_difftool(args: Vec<String>, cwd: PathBuf, template: &str) -> Result<(), String> {
+    let path = augmented_path();
+    let template = template.to_string();
+    // Probe once that git is spawnable, surfacing a clear error to the caller.
+    let child = std::process::Command::new("/usr/bin/git")
+        .args(&args)
+        .current_dir(&cwd)
+        .env("PATH", &path)
+        .env("SPWN_DIFF", &template)
+        .spawn()
+        .map_err(|e| format!("failed to launch diff: {e}"))?;
+    // Reap in the background so the file-by-file review doesn't hold the command
+    // and the child never becomes a zombie.
+    std::thread::spawn(move || {
+        let mut child = child;
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
+/// Open the session's uncommitted working-tree changes (vs HEAD) in the configured
+/// external diff viewer.
+#[tauri::command]
+pub fn open_working_diff(state: State<AppState>, cwd: String) -> Result<(), String> {
+    let template = state.settings.lock().diff_command_or_default();
+    preflight_tool(&template)?;
+    let dir = PathBuf::from(&cwd);
+    ensure_git_worktree(&dir)?;
+    let args = vec![
+        "difftool".to_string(),
+        "--no-prompt".to_string(),
+        format!("--extcmd={}", guard_extcmd()),
+        "HEAD".to_string(),
+    ];
+    spawn_difftool(args, dir, &template)
+}
+
+/// Diff a checkpoint snapshot (left/old) against the current working files
+/// (right/new). `checkpoint_id = None` uses the session's most recent checkpoint.
+#[tauri::command]
+pub fn open_checkpoint_diff(
+    state: State<AppState>,
+    session_id: String,
+    checkpoint_id: Option<String>,
+) -> Result<(), String> {
+    let template = state.settings.lock().diff_command_or_default();
+    preflight_tool(&template)?;
+    let app_data = app_data_dir(&state).ok_or_else(|| "no app data dir".to_string())?;
+    let meta = match checkpoint_id {
+        Some(id) => checkpoints::list(&app_data, &session_id)
+            .into_iter()
+            .find(|m| m.id == id)
+            .ok_or_else(|| "that checkpoint no longer exists".to_string())?,
+        None => checkpoints::latest(&app_data, &session_id)
+            .ok_or_else(|| "no checkpoints for this session yet — run a turn first".to_string())?,
+    };
+    let left = checkpoints::checkpoint_dir(&app_data, &session_id, &meta.id);
+    if !left.is_dir() {
+        return Err("that checkpoint no longer exists".to_string());
+    }
+    let right = PathBuf::from(&meta.project_dir);
+    if !right.is_dir() {
+        return Err("the project directory no longer exists".to_string());
+    }
+    let args = vec![
+        "difftool".to_string(),
+        "--no-index".to_string(),
+        "--no-prompt".to_string(),
+        format!("--extcmd={}", guard_extcmd()),
+        left.to_string_lossy().into_owned(),
+        right.to_string_lossy().into_owned(),
+    ];
+    spawn_difftool(args, right, &template)
+}
+
 #[tauri::command]
 pub async fn delete_project(state: State<'_, AppState>, project_id: String) -> Result<(), String> {
     let terminal_ids: Vec<String> = {

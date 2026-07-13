@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { listCheckpoints, restoreCheckpoint } from './ipc';
+	import { listCheckpoints, restoreCheckpoint, openCheckpointDiff } from './ipc';
 	import { refreshProjects } from './stores';
 	import type { CheckpointMeta } from './types';
 
@@ -64,6 +64,15 @@
 		}
 	}
 
+	async function diff(c: CheckpointMeta) {
+		if (!sessionId) return;
+		try {
+			await openCheckpointDiff(sessionId, c.id);
+		} catch (e) {
+			onStatus(String(e));
+		}
+	}
+
 	// "Undo last change" = restore the turn checkpoint before the most recent one.
 	const undoTarget = $derived.by(() => {
 		const turns = checkpoints.filter((c) => c.kind === 'turn');
@@ -91,6 +100,8 @@
 						<span class="lbl">{label(c)}</span>
 						<span class="time">{ago(c.createdMs)}</span>
 					</div>
+					<button class="diff" title="Open this checkpoint's diff vs current files" onclick={() => diff(c)}
+						>Diff</button>
 					<button class="restore" disabled={disabled || restoring} onclick={() => restore(c)}
 						>Restore</button>
 				</div>
@@ -170,6 +181,19 @@
 	.time {
 		color: var(--text-muted);
 		font-size: 10px;
+	}
+	.diff {
+		flex: 0 0 auto;
+		background: none;
+		border: 1px solid var(--border-strong);
+		color: #9bbce0;
+		border-radius: 5px;
+		padding: 3px 10px;
+		cursor: pointer;
+	}
+	.diff:hover {
+		border-color: var(--accent-line);
+		background: #1b2230;
 	}
 	.restore {
 		flex: 0 0 auto;
