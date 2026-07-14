@@ -403,6 +403,9 @@ pub struct OpenTerminalSpec {
     pub claude_fork: Option<String>,
     /// The terminal a fork/branch originated from (to inherit its group).
     pub parent_terminal_id: Option<String>,
+    /// Initial permission/execution mode for a new Claude session (seeds the
+    /// sidecar at construction so the first turn runs under the chosen mode).
+    pub permission_mode: Option<String>,
 }
 
 #[tauri::command]
@@ -507,6 +510,7 @@ pub async fn open_terminal(
             None, // resume_at: per-turn rewind is a v2 feature
             fork,
             &claude_bin,
+            spec.permission_mode.as_deref(),
         )
         .map_err(|e| e.to_string())?;
         state.claude_agents.lock().insert(terminal_id.clone(), agent);
@@ -819,6 +823,7 @@ pub fn claude_rewind(
         Some(anchor_uuid.as_str()),
         false,
         &claude_bin,
+        None,
     )
     .map_err(|e| e.to_string())?;
     state.claude_agents.lock().insert(terminal_id, agent);
@@ -872,6 +877,7 @@ pub fn claude_rewind_restore(
         Some(anchor_uuid.as_str()),
         false,
         &claude_bin,
+        None,
     )
     .map_err(|e| e.to_string())?;
     state.claude_agents.lock().insert(terminal_id, agent);

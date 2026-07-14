@@ -170,6 +170,8 @@ export interface OpenTerminalArgs {
 	parentTerminalId?: string;
 	/** Seed a new Claude session: pasted into the input box (not auto-submitted). */
 	initialPrompt?: string;
+	/** Initial permission/execution mode for a new Claude session. */
+	permissionMode?: string;
 }
 
 /** Open or reattach a terminal; resolves to its terminal id. */
