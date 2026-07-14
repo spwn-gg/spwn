@@ -78,6 +78,24 @@ activeTabKey.subscribe((key) => {
 	);
 });
 
+/** Claude permission/execution mode. Kept in sync with InputBar's local union. */
+export type PermMode = 'default' | 'acceptEdits' | 'plan' | 'auto';
+const CLAUDE_MODE_KEY = 'cm.claudeMode';
+const VALID_MODES: PermMode[] = ['default', 'acceptEdits', 'plan', 'auto'];
+
+function loadClaudeMode(): PermMode {
+	if (typeof localStorage === 'undefined') return 'default';
+	const v = localStorage.getItem(CLAUDE_MODE_KEY) as PermMode | null;
+	return v && VALID_MODES.includes(v) ? v : 'default';
+}
+
+/** The last execution mode the user selected — seeds new Claude panes so the
+ * choice sticks across panes and app restarts. */
+export const claudeMode = writable<PermMode>(loadClaudeMode());
+claudeMode.subscribe((m) => {
+	if (typeof localStorage !== 'undefined') localStorage.setItem(CLAUDE_MODE_KEY, m);
+});
+
 /** Whether the settings panel is shown. */
 export const showSettings = writable(false);
 

@@ -9,6 +9,7 @@
 		openTerminal,
 		setTerminalSession,
 		claudeSend,
+		claudeSetMode,
 		claudePermission,
 		claudeAnswer,
 		checkpointProject,
@@ -25,7 +26,8 @@
 		setSessionBusy,
 		busySessions,
 		activeCodeSession,
-		activeTabKey
+		activeTabKey,
+		claudeMode
 	} from './stores';
 	import type { ClaudeEvent, PendingQuestion, PermissionReq, Turn } from './types';
 
@@ -51,7 +53,12 @@
 
 	let id = $state<string | undefined>(terminalId);
 	let liveSession = $state<string | undefined>(sessionId);
-	let mode = $state<'default' | 'acceptEdits' | 'plan' | 'auto'>('default');
+	// Seed from the last-selected mode so the user's choice sticks across panes
+	// and restarts; persist any change back as the new default.
+	let mode = $state<'default' | 'acceptEdits' | 'plan' | 'auto'>(get(claudeMode));
+	$effect(() => {
+		claudeMode.set(mode);
+	});
 	// A brand-new tab (no terminalId yet) gets a pre-edit "baseline" checkpoint.
 	const isFreshSession = terminalId === undefined;
 	let baselineDone = false;
@@ -100,13 +107,18 @@
 				rows: 24,
 				claudeResume,
 				claudeFork,
-				parentTerminalId
+				parentTerminalId,
+				// Seed the sidecar with the user's last-chosen mode so the first turn
+				// runs under it (a post-spawn set_mode would lose that race). 'auto' is
+				// not an SDK spawn mode — engage it live below, like a Shift-Tab cycle.
+				permissionMode: mode === 'auto' ? undefined : mode
 			});
 		} catch (e) {
 			console.error('open claude session failed', e);
 			return;
 		}
 		setTabTerminalId(tabKey, id);
+		if (mode === 'auto') claudeSetMode(id, 'auto');
 		refreshProjects();
 		// The sidecar's `init` only fires after the first user turn, long after this
 		// listener attaches — so there is no init race.

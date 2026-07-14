@@ -51,6 +51,7 @@ enum ReaderMode {
 /// Spawn a sidecar for a Claude session (optionally resuming/forking one). Drives
 /// the Agent SDK; the chat UI sends user turns / permission answers over stdin and
 /// renders the streamed events forwarded from stdout.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_claude_agent(
     app: AppHandle,
     terminal_id: &str,
@@ -59,6 +60,7 @@ pub fn spawn_claude_agent(
     resume_at: Option<&str>,
     fork: bool,
     claude_path: &Path,
+    permission_mode: Option<&str>,
 ) -> anyhow::Result<ClaudeAgent> {
     spawn_inner(
         app,
@@ -68,7 +70,7 @@ pub fn spawn_claude_agent(
         resume_at,
         fork,
         claude_path,
-        None,
+        permission_mode,
         false,
         ReaderMode::Forward,
     )
