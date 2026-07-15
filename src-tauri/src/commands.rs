@@ -5,6 +5,7 @@
 //! stable, persistent ids so they reattach across restarts.
 
 use crate::checkpoints::{self, CheckpointMeta};
+use crate::compose;
 use crate::gitwt;
 use crate::pty::{default_shell, find_claude_bin, spawn_rmux_session};
 use crate::settings::{Settings, WorktreeLocation};
@@ -486,6 +487,7 @@ pub async fn open_terminal(
                     parent_id,
                     branch: None,
                     base_branch: None,
+                    compose_project: None,
                     needs_attention: false,
                 });
             }
@@ -530,6 +532,9 @@ pub async fn open_terminal(
                             }
                         }
                         persist(&state);
+                        // If this worktree has a spwn.yaml, register (and, per its
+                        // lifecycle, bring up) its per-session compose stack.
+                        compose_bring_up_for(&state, &terminal_id, &project_dir, &wt_path);
                     }
                     Err(e) => {
                         eprintln!("worktree create failed (using project dir): {e}");
@@ -613,16 +618,17 @@ pub async fn delete_terminal(
     // Capture the session id (to prune checkpoints) and its worktree (to remove it,
     // keeping the branch so its commits survive for a manual merge) before dropping
     // the record.
-    let (session_id, worktree) = {
+    let (session_id, worktree, compose_project) = {
         let store = state.store.lock();
         let proj_dir = store.project(&project_id).map(|p| p.directory.clone());
         let t = store.terminal(&terminal_id);
         let sid = t.and_then(|t| t.session_id.clone());
+        let cp = t.and_then(|t| t.compose_project.clone());
         let wt = t.and_then(|t| {
             t.branch.as_ref()?;
             Some((proj_dir?, t.cwd.clone()))
         });
-        (sid, wt)
+        (sid, wt, cp)
     };
     {
         let mut store = state.store.lock();
@@ -632,6 +638,11 @@ pub async fn delete_terminal(
     }
     persist(&state);
     if let Some((proj_dir, wt_path)) = worktree {
+        // Tear down the session's compose stack BEFORE removing the worktree (the
+        // compose file lives inside it), releasing any shared-services ref.
+        if compose_project.is_some() {
+            compose_tear_down(&state, &terminal_id, &proj_dir, Path::new(&wt_path));
+        }
         if let Some(repo) = gitwt::repo_root(Path::new(&proj_dir)) {
             if let Err(e) = gitwt::remove_worktree(&repo, Path::new(&wt_path)) {
                 eprintln!("worktree remove failed: {e}");
@@ -1107,6 +1118,251 @@ pub(crate) fn session_worktree_path(
         WorktreeLocation::AppData => worktrees_dir(state)?,
     };
     Some(base.join(terminal_id))
+}
+
+// ---------------------------------------------------------------------------
+// Per-session docker-compose integration (opt-in via a committed spwn.yaml)
+// ---------------------------------------------------------------------------
+
+/// A docker-safe repo slug from a project directory's name (stable across the
+/// repo's sessions — used for the shared-stack project name and image tags).
+fn repo_slug_for(project_dir: &str) -> String {
+    let name = Path::new(project_dir)
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    compose::slug(&name)
+}
+
+/// Build a compose SessionCtx + parsed config for a session's worktree, or None if
+/// the worktree has no spwn.yaml (feature is opt-in).
+fn compose_ctx(
+    state: &AppState,
+    terminal_id: &str,
+    project_dir: &str,
+    worktree: &Path,
+) -> Option<(compose::SessionCtx, compose::SpwnConfig)> {
+    let cfg = compose::read_config(worktree)?;
+    let data_dir = app_data_dir(state)?;
+    let ctx = compose::SessionCtx {
+        terminal_id: terminal_id.to_string(),
+        repo_slug: repo_slug_for(project_dir),
+        worktree: worktree.to_path_buf(),
+        data_dir,
+    };
+    Some((ctx, cfg))
+}
+
+/// Resolve a session's worktree + owning project dir from the store by terminal id.
+fn compose_ctx_by_id(
+    state: &AppState,
+    terminal_id: &str,
+) -> Option<(compose::SessionCtx, compose::SpwnConfig)> {
+    let (cwd, project_dir) = {
+        let store = state.store.lock();
+        let cwd = store.terminal(terminal_id)?.cwd.clone();
+        let project_dir = store
+            .projects
+            .iter()
+            .find(|p| p.terminals.iter().any(|t| t.id == terminal_id))
+            .map(|p| p.directory.clone())?;
+        (cwd, project_dir)
+    };
+    compose_ctx(state, terminal_id, &project_dir, &PathBuf::from(&cwd))
+}
+
+/// Mark a session's stack as active (resets its idle-stop timer) and clear any
+/// prior idle-stopped mark so the next sweep can stop it again after fresh idleness.
+fn mark_compose_active(state: &AppState, terminal_id: &str) {
+    state
+        .compose_activity
+        .lock()
+        .insert(terminal_id.to_string(), std::time::Instant::now());
+    state.compose_stopped.lock().remove(terminal_id);
+}
+
+/// Register a session's compose stack (persist its project name) and, if its
+/// lifecycle is `on-session-start`, bring it up now. Never fails the session — any
+/// error is surfaced as an advisory `store://error`.
+pub(crate) fn compose_bring_up_for(
+    state: &AppState,
+    terminal_id: &str,
+    project_dir: &str,
+    worktree: &Path,
+) {
+    let Some((ctx, cfg)) = compose_ctx(state, terminal_id, project_dir, worktree) else {
+        return;
+    };
+    let project = compose::project_name(terminal_id);
+    {
+        let mut store = state.store.lock();
+        if let Some(t) = store.terminal_mut(terminal_id) {
+            t.compose_project = Some(project.clone());
+        }
+    }
+    persist(state);
+
+    if !compose::available() {
+        emit_store_error(
+            state,
+            "spwn.yaml found but Docker isn't running — services skipped for this session.",
+        );
+        return;
+    }
+
+    if cfg.lifecycle.up == "on-session-start" {
+        mark_compose_active(state, terminal_id);
+        if let Err(e) = compose::up(&ctx, &cfg) {
+            emit_store_error(state, &format!("Couldn't start services for this session: {e}"));
+        }
+    }
+    emit_compose_event(state, terminal_id);
+}
+
+/// Tear down a session's compose stack (`down -v` + release shared ref).
+fn compose_tear_down(state: &AppState, terminal_id: &str, project_dir: &str, worktree: &Path) {
+    if !compose::available() {
+        return;
+    }
+    if let Some((ctx, cfg)) = compose_ctx(state, terminal_id, project_dir, worktree) {
+        compose::down(&ctx, &cfg);
+    }
+    state.compose_activity.lock().remove(terminal_id);
+    state.compose_stopped.lock().remove(terminal_id);
+}
+
+fn emit_store_error(state: &AppState, msg: &str) {
+    if let Some(app) = state.app.lock().as_ref() {
+        let _ = app.emit("store://error", msg.to_string());
+    }
+}
+
+fn emit_compose_event(state: &AppState, terminal_id: &str) {
+    if let Some(app) = state.app.lock().as_ref() {
+        let _ = app.emit(&format!("compose://event/{terminal_id}"), ());
+    }
+}
+
+/// Parse an idle-stop duration like "15m", "30s", "2h" into a Duration.
+fn parse_idle(s: &str) -> Option<std::time::Duration> {
+    let s = s.trim();
+    let (num, unit) = s.split_at(s.find(|c: char| !c.is_ascii_digit())?);
+    let n: u64 = num.parse().ok()?;
+    let secs = match unit {
+        "s" => n,
+        "m" => n * 60,
+        "h" => n * 3600,
+        _ => return None,
+    };
+    Some(std::time::Duration::from_secs(secs))
+}
+
+/// Idle-stop sweep (called on the scheduler tick): `stop` any session stack idle
+/// past its `idle_stop` threshold, freeing CPU/RAM while keeping volumes warm.
+pub(crate) fn compose_idle_sweep(state: &AppState) {
+    if !compose::available() {
+        return;
+    }
+    // Snapshot candidate sessions (those with a compose stack) without holding the
+    // store lock across docker calls.
+    let candidates: Vec<(String, String, String)> = {
+        let store = state.store.lock();
+        store
+            .projects
+            .iter()
+            .flat_map(|p| p.terminals.iter().map(move |t| (t, p.directory.clone())))
+            .filter(|(t, _)| t.compose_project.is_some())
+            .map(|(t, dir)| (t.id.clone(), dir, t.cwd.clone()))
+            .collect()
+    };
+    let now = std::time::Instant::now();
+    for (terminal_id, project_dir, cwd) in candidates {
+        if state.compose_stopped.lock().contains(&terminal_id) {
+            continue;
+        }
+        let Some(last) = state.compose_activity.lock().get(&terminal_id).copied() else {
+            continue;
+        };
+        let Some((ctx, cfg)) = compose_ctx(state, &terminal_id, &project_dir, &PathBuf::from(&cwd))
+        else {
+            continue;
+        };
+        let Some(threshold) = cfg.lifecycle.idle_stop.as_deref().and_then(parse_idle) else {
+            continue;
+        };
+        if now.duration_since(last) >= threshold && compose::stop(&ctx, &cfg).is_ok() {
+            state.compose_stopped.lock().insert(terminal_id.clone());
+            emit_compose_event(state, &terminal_id);
+        }
+    }
+}
+
+/// Current compose status for a session (available, project, per-service state+URL).
+#[tauri::command]
+pub async fn compose_status(
+    state: State<'_, AppState>,
+    terminal_id: String,
+) -> Result<compose::ComposeStatus, String> {
+    match compose_ctx_by_id(&state, &terminal_id) {
+        Some((ctx, cfg)) => {
+            mark_compose_active(&state, &terminal_id);
+            Ok(compose::status(&ctx, &cfg))
+        }
+        None => Ok(compose::ComposeStatus {
+            available: compose::available(),
+            project: None,
+            services: Vec::new(),
+        }),
+    }
+}
+
+/// Bring a session's stack up (or resume it if idle-stopped) on demand.
+#[tauri::command]
+pub async fn compose_up(
+    state: State<'_, AppState>,
+    terminal_id: String,
+) -> Result<(), String> {
+    let (ctx, cfg) = compose_ctx_by_id(&state, &terminal_id)
+        .ok_or_else(|| "this session has no spwn.yaml services".to_string())?;
+    // A previously idle-stopped stack resumes fast via `start`; otherwise full `up`.
+    let was_stopped = state.compose_stopped.lock().contains(&terminal_id);
+    mark_compose_active(&state, &terminal_id);
+    let r = if was_stopped {
+        compose::start(&ctx, &cfg).or_else(|_| compose::up(&ctx, &cfg))
+    } else {
+        compose::up(&ctx, &cfg)
+    };
+    emit_compose_event(&state, &terminal_id);
+    r
+}
+
+/// Tear a session's stack down manually (`down -v`).
+#[tauri::command]
+pub async fn compose_down(
+    state: State<'_, AppState>,
+    terminal_id: String,
+) -> Result<(), String> {
+    let (ctx, cfg) = compose_ctx_by_id(&state, &terminal_id)
+        .ok_or_else(|| "this session has no spwn.yaml services".to_string())?;
+    compose::down(&ctx, &cfg);
+    state.compose_activity.lock().remove(&terminal_id);
+    state.compose_stopped.lock().remove(&terminal_id);
+    emit_compose_event(&state, &terminal_id);
+    Ok(())
+}
+
+/// Recent logs for one service in a session's stack (last `tail` lines).
+#[tauri::command]
+pub async fn compose_logs(
+    state: State<'_, AppState>,
+    terminal_id: String,
+    service: String,
+    tail: Option<u32>,
+) -> Result<String, String> {
+    let (ctx, cfg) = compose_ctx_by_id(&state, &terminal_id)
+        .ok_or_else(|| "this session has no spwn.yaml services".to_string())?;
+    mark_compose_active(&state, &terminal_id);
+    compose::logs(&ctx, &cfg, &service, tail.unwrap_or(200))
 }
 
 /// The working dir a session's checkpoints target: the owning terminal's worktree

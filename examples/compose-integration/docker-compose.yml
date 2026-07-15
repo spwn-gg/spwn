@@ -1,0 +1,43 @@
+# Example docker-compose.yml paired with spwn.yaml. spwn never edits this file — it
+# layers a generated .spwn/override.gen.yml (pinned image tags, resource caps,
+# shared-network wiring) on top. Publish CONTAINER-ONLY ports (no host side) so
+# Docker assigns a free host port per session; spwn surfaces it as a live URL.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: dev
+      POSTGRES_DB: app
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres']
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build: .
+    command: npm run dev
+    environment:
+      DATABASE_URL: postgres://postgres:dev@db:5432/app
+    volumes:
+      - .:/app          # bind-mount the worktree so edits hot-reload
+    ports:
+      - '3000'          # container-only → ephemeral host port (surfaced as a URL)
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://localhost:3000/health || exit 1']
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  test:
+    build: .
+    command: npm run test:watch
+    environment:
+      DATABASE_URL: postgres://postgres:dev@db:5432/app
+    volumes:
+      - .:/app
+    depends_on:
+      - app

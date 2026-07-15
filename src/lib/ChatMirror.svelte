@@ -11,6 +11,7 @@
 	import MergePanel from './MergePanel.svelte';
 	import { openTab, refreshProjects, projects, pasteToInput } from './stores';
 	import CheckpointList from './CheckpointList.svelte';
+	import ServicesPanel from './ServicesPanel.svelte';
 	import type { Turn, QuestionSpec } from './types';
 	import { marked } from 'marked';
 	import DOMPurify from 'dompurify';
@@ -281,6 +282,7 @@
 		$projects.find((p) => p.id === projectId)?.terminals.find((t) => t.id === terminalId)
 	);
 	let showMerge = $state(false);
+	let showServices = $state(false);
 
 	function fork() {
 		if (!sessionId) return;
@@ -341,8 +343,18 @@
 				onclick={() => (showMerge = true)}
 				title="Merge this session's branch ({term.branch}) into {term.baseBranch}">⤵ Merge</button>
 		{/if}
+		{#if term?.composeProject}
+			<button
+				class="act"
+				class:on={showServices}
+				onclick={() => (showServices = !showServices)}
+				title="This session's docker-compose services (spwn.yaml)">▸ Services</button>
+		{/if}
 		<button class="act" disabled={!sessionId} onclick={fork} title="Fork this whole session">⑂ Fork</button>
 	</div>
+	{#if showServices && term?.composeProject && terminalId}
+		<ServicesPanel {terminalId} onStatus={setStatus} />
+	{/if}
 	{#if showCheckpoints && sessionId}
 		<CheckpointList {projectId} {sessionId} disabled={busy} onStatus={setStatus} />
 	{/if}

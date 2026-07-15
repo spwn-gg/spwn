@@ -27,6 +27,8 @@ tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Parse the per-session docker-compose integration config (spwn.yaml).
+serde_yaml = "0.9"
 # Filesystem watching for the project/session navigation tree.
 notify = "6"
 notify-debouncer-full = "0.3"
