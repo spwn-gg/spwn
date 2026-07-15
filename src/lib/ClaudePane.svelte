@@ -20,7 +20,8 @@
 		setTabSession,
 		refreshProjects,
 		markAttention,
-		setSessionBusy
+		setSessionBusy,
+		pasteToInput
 	} from './stores';
 	import type { ClaudeEvent, PendingQuestion, PermissionReq, Turn } from './types';
 
@@ -47,6 +48,18 @@
 	let id = $state<string | undefined>(terminalId);
 	let liveSession = $state<string | undefined>(sessionId);
 	let mode = $state<'default' | 'acceptEdits' | 'plan' | 'auto'>('default');
+	// Auto-seed: text that should be sent into this conversation (from "start with
+	// context" / initialPrompt, or a "→ parent" paste) rather than parked in the
+	// composer. Flushed via onSend once the terminal is live and any in-flight turn
+	// has finished — see the flush effect below.
+	let ready = $state(false);
+	let pendingSeed = $state<string | null>(null);
+	function seed(text: string | undefined) {
+		const t = text?.trim();
+		if (!t) return;
+		// Append/coalesce so multiple seeds arriving while busy aren't lost.
+		pendingSeed = pendingSeed ? `${pendingSeed}\n\n${t}` : t;
+	}
 	// A brand-new tab (no terminalId yet) gets a pre-edit "baseline" checkpoint.
 	const isFreshSession = terminalId === undefined;
 	let baselineDone = false;
@@ -113,6 +126,10 @@
 				exited = true;
 			})
 		);
+		// Listeners are attached and `id` is assigned — safe to flush seeds now
+		// (their init/delta/result events will be captured).
+		ready = true;
+		if (initialPrompt) seed(initialPrompt);
 	});
 
 	onDestroy(() => {
@@ -125,6 +142,27 @@
 	// Publish this session's busy state (used by manual restore/rewind gating).
 	$effect(() => {
 		if (liveSession) setSessionBusy(liveSession, busy);
+	});
+
+	// Consume a "→ parent" paste targeted at this session and queue it as a seed.
+	// Only the pane whose id matches claims the slot; others see null and no-op.
+	$effect(() => {
+		const inj = $pasteToInput;
+		if (inj && id && inj.terminalId === id) {
+			pasteToInput.set(null); // consume immediately (re-triggers with null → no-op)
+			seed(inj.text);
+		}
+	});
+
+	// Flush a queued seed via onSend once the terminal is live and idle. If a turn
+	// is in flight (busy), the seed waits here until `result` flips busy → false,
+	// then this effect re-runs and sends — no interleaving, no drop.
+	$effect(() => {
+		if (ready && id && !busy && pendingSeed) {
+			const t = pendingSeed;
+			pendingSeed = null; // clear BEFORE onSend so this can't re-fire and double-send
+			onSend(t);
+		}
 	});
 
 	// No file swapping on session switch: each session runs in its own git worktree,
@@ -308,7 +346,7 @@
 	{#each pendingPermissions as p (p.id)}
 		<PermissionPrompt req={p} onAllow={allow} onDeny={deny} />
 	{/each}
-	<InputBar terminalId={id} {busy} bind:mode {initialPrompt} {onSend} />
+	<InputBar terminalId={id} {busy} bind:mode {onSend} />
 </div>
 
 <style>
