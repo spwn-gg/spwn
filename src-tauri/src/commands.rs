@@ -7,7 +7,7 @@
 use crate::checkpoints::{self, CheckpointMeta};
 use crate::gitwt;
 use crate::pty::{default_shell, find_claude_bin, spawn_rmux_session};
-use crate::settings::Settings;
+use crate::settings::{Settings, WorktreeLocation};
 use crate::state::AppState;
 use crate::store::{rmux_session_name, ContextBlock, ProjectRec, ScheduledTask, TerminalRec};
 use crate::transcript::{read_transcript as parse_transcript, Turn};
@@ -363,10 +363,11 @@ pub async fn open_terminal(
     if is_new && kind == "claude" {
         if let Some(repo) = gitwt::repo_root(Path::new(&project_dir)) {
             let base = fork_base.or_else(|| gitwt::current_branch(&repo));
-            if let (Some(base), Some(wt_root)) = (base, worktrees_dir(&state)) {
+            if let (Some(base), Some(wt_path)) =
+                (base, session_worktree_path(&state, &repo, &terminal_id))
+            {
                 let short = terminal_id.split('-').next().unwrap_or(terminal_id.as_str());
                 let branch = format!("cm/{short}");
-                let wt_path = wt_root.join(&terminal_id);
                 match gitwt::add_worktree(&repo, &wt_path, &branch, &base) {
                     Ok(()) => {
                         gitwt::seed_heavy_dirs(Path::new(&project_dir), &wt_path);
@@ -930,9 +931,30 @@ pub(crate) fn app_data_dir(state: &AppState) -> Option<PathBuf> {
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
 }
 
-/// Where per-session worktrees live (under the app data dir, keyed by terminal id).
+/// Where per-session worktrees live under the app data dir (the legacy `appData`
+/// layout), keyed by terminal id.
 pub(crate) fn worktrees_dir(state: &AppState) -> Option<PathBuf> {
     app_data_dir(state).map(|d| d.join("worktrees"))
+}
+
+/// The full worktree path for a session in `repo`, honoring the configured
+/// `worktreeLocation` setting. Performs any side effects the chosen layout needs
+/// (registering the in-repo dir in `.git/info/exclude` for the `internal` layout).
+/// Returns None only when the legacy app-data dir can't be resolved.
+pub(crate) fn session_worktree_path(
+    state: &AppState,
+    repo: &Path,
+    terminal_id: &str,
+) -> Option<PathBuf> {
+    let base = match state.settings.lock().worktree_location {
+        WorktreeLocation::Sibling => gitwt::sibling_worktrees_dir(repo),
+        WorktreeLocation::Internal => {
+            gitwt::ensure_git_excludes(repo, "/.spwn/");
+            gitwt::internal_worktrees_dir(repo)
+        }
+        WorktreeLocation::AppData => worktrees_dir(state)?,
+    };
+    Some(base.join(terminal_id))
 }
 
 /// The working dir a session's checkpoints target: the owning terminal's worktree
