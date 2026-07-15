@@ -61,3 +61,18 @@ It applies to new sessions only — existing worktrees stay where they were crea
 | **Sibling** (default) | `<repo-parent>/.<repo-name>-worktrees/<id>/` | A dot-prefixed folder *beside* the repo. Outside the working tree, so builds, file watchers, and IDE indexers never recurse into it. |
 | **Inside repo** | `<repo>/.spwn/worktrees/<id>/` | Registered in the repo's `.git/info/exclude` (the tracked `.gitignore` is untouched). The `.spwn/` dot-prefix keeps most tooling from scanning it, but tools with explicit include globs (e.g. a `tsc` `include: ["src"]`) may still pick it up. |
 | **App data** | `…/com.markbarta.spwn/worktrees/<id>/` | Under the app data dir, away from your repos entirely (the original layout). |
+
+### Per-session services (Docker)
+
+Agents working autonomously on parallel branches often need more than files — a
+*running* service and a live test harness. Doing that by hand doesn't scale: one full
+stack per branch is wasteful, and the branches collide on ports and databases.
+
+With an optional **`spwn.yaml`** at your repo root, spwn brings up **each session's own
+service + test harness** in an isolated **docker-compose** stack. Per-session project
+names and ephemeral host ports (surfaced as a clickable live URL) let many sessions run
+at once without colliding; heavy backing services (a database, say) run **once, shared**
+and ref-counted across sessions; forks reuse their parent's image; and idle stacks stop
+themselves to save resources. It's a thin wrapper over your own `docker-compose.yml`
+(never mutated) and fully opt-in — no `spwn.yaml`, no change. See the **Per-Session
+Services** guide in the docs, or `examples/compose-integration/` for a runnable sample.
