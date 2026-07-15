@@ -1,6 +1,7 @@
 mod checkpoints;
 mod claude;
 mod commands;
+mod compose;
 mod gitwt;
 mod projects;
 mod pty;
@@ -120,6 +121,23 @@ pub fn run() {
                 });
             }
 
+            // Reap orphaned per-session compose stacks (sessions deleted while the
+            // app was closed). Off-thread so docker latency doesn't delay startup;
+            // live sessions' stacks are left running for autonomy.
+            {
+                let live: std::collections::HashSet<String> = app
+                    .state::<AppState>()
+                    .store
+                    .lock()
+                    .projects
+                    .iter()
+                    .flat_map(|p| p.terminals.iter())
+                    .filter_map(|t| t.compose_project.clone())
+                    .filter_map(|proj| proj.strip_prefix("spwn-").map(|s| s.to_string()))
+                    .collect();
+                std::thread::spawn(move || compose::reap_orphans(&live));
+            }
+
             // Start the per-project scheduled-task loop.
             scheduler::start_scheduler(app.handle().clone());
             Ok(())
@@ -164,6 +182,10 @@ pub fn run() {
             commands::write_to_pty,
             commands::resize_pty,
             commands::read_transcript,
+            commands::compose_status,
+            commands::compose_up,
+            commands::compose_down,
+            commands::compose_logs,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

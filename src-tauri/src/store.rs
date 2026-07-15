@@ -33,6 +33,11 @@ pub struct TerminalRec {
     /// The branch this session's branch should merge back into.
     #[serde(default)]
     pub base_branch: Option<String>,
+    /// The docker-compose project name for this session's service stack
+    /// (`spwn-<short>`), set when the session's worktree has a `spwn.yaml`. Lets
+    /// teardown + the startup reconciler find the stack. None = no compose stack.
+    #[serde(default)]
+    pub compose_project: Option<String>,
     /// A persisted attention flag. Interactive attention is in-memory (frontend
     /// tab state), but a windowless scheduled run has no tab to flag — so the
     /// nav reflects this on next open. Cleared when the session is viewed.

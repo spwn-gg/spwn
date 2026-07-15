@@ -15,8 +15,30 @@ export interface TerminalRec {
 	branch?: string | null;
 	/** The branch this session merges back into. */
 	baseBranch?: string | null;
+	/** docker-compose project name for this session's service stack (null = none). */
+	composeProject?: string | null;
 	/** Persisted attention flag (set by a windowless scheduled run). */
 	needsAttention?: boolean;
+}
+
+/** One service in a session's compose stack (mirrors compose::ServiceState). */
+export interface ServiceState {
+	name: string;
+	/** "service" (long-running) | "harness" (test watcher) | null. */
+	role?: string | null;
+	/** "session" (forked per session) | "shared" (one instance across sessions). */
+	scope: string;
+	/** Compose container state: "running" | "exited" | "-" (not created), … */
+	state: string;
+	/** Live host URL for a published port, when running. */
+	url?: string | null;
+}
+
+/** A session's compose status (mirrors compose::ComposeStatus). */
+export interface ComposeStatus {
+	available: boolean;
+	project?: string | null;
+	services: ServiceState[];
 }
 
 /** Preview of what merging a session's branch into its base would do. */

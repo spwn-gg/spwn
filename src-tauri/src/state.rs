@@ -10,7 +10,7 @@ use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 use tauri::AppHandle;
 use tokio::sync::OnceCell;
 
@@ -45,4 +45,10 @@ pub struct AppState {
     /// ExitRequested handler knows to let the process die instead of staying
     /// alive in the background for the scheduler.
     pub quitting: AtomicBool,
+    /// Last-activity timestamp per session's compose stack (terminal id → instant),
+    /// driving idle-stop. Updated on up/status/logs.
+    pub compose_activity: Mutex<HashMap<String, Instant>>,
+    /// Session stacks currently idle-stopped, so the idle sweep doesn't re-`stop`
+    /// them every tick. Cleared when the stack is marked active again.
+    pub compose_stopped: Mutex<HashSet<String>>,
 }

@@ -1,0 +1,45 @@
+# Example spwn.yaml — per-session docker-compose integration (opt-in).
+#
+# Commit this at your project's repo root. Because a spwn session works in a git
+# worktree (which checks out tracked files), this file — and the docker-compose.yml
+# it points at — travel into every session automatically. spwn drives compose per
+# session with COMPOSE_PROJECT_NAME=spwn-<short>, so N sessions never collide.
+version: 1
+
+# The compose file spwn drives, relative to the worktree root.
+compose: docker-compose.yml
+
+services:
+  db:
+    # ONE ref-counted instance shared across all sessions (shared data). Use
+    # scope: session instead whenever a branch needs its own isolated copy.
+    scope: shared
+
+  app:
+    scope: session            # forked per session (the default)
+    role: service             # long-running; spwn surfaces its live URL
+    wait_for_healthy: true    # gate "ready" on the compose healthcheck (up --wait)
+    ports: [3000]             # CONTAINER ports to publish ephemerally + show as URLs
+
+  test:
+    scope: session
+    role: harness             # live test watcher; view its output via "Logs"
+
+volumes:
+  # "host" (default) relies on the worktree's COW-cloned node_modules. Switch to
+  # "per-session" for a macOS host → Linux container with native addons.
+  node_modules: host
+  # Content-addressed caches shared (as external volumes) across all sessions.
+  caches:
+    - { path: /root/.npm, volume: spwn-npm-cache }
+
+lifecycle:
+  up: on-demand               # start on first URL click / Up button (or on-session-start / manual)
+  idle_stop: 15m              # `docker compose stop` after inactivity; resumes on demand
+
+resources:                    # per-session caps, injected via the generated override
+  memory: 1g
+  cpus: 1.5
+
+image:
+  reuse: lineage              # reuse the parent's built image until deps diverge

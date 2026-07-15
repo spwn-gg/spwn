@@ -7,6 +7,7 @@ import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import type {
 	CheckpointMeta,
 	ClaudeEvent,
+	ComposeStatus,
 	MergeStatus,
 	ProjectRec,
 	ScheduledTask,
@@ -254,6 +255,33 @@ export function claudeRewindRestore(
 	restore: boolean
 ): Promise<void> {
 	return invoke('claude_rewind_restore', { terminalId, anchorUuid, restore });
+}
+
+// --- Per-session docker-compose services ---
+
+/** Current compose status for a session (availability, project, services + URLs). */
+export function composeStatus(terminalId: string): Promise<ComposeStatus> {
+	return invoke('compose_status', { terminalId });
+}
+
+/** Bring a session's service stack up (or resume it if idle-stopped). */
+export function composeUp(terminalId: string): Promise<void> {
+	return invoke('compose_up', { terminalId });
+}
+
+/** Tear a session's service stack down (down -v). */
+export function composeDown(terminalId: string): Promise<void> {
+	return invoke('compose_down', { terminalId });
+}
+
+/** Recent logs for one service in a session's stack. */
+export function composeLogs(terminalId: string, service: string, tail = 200): Promise<string> {
+	return invoke('compose_logs', { terminalId, service, tail });
+}
+
+/** Fires when a session's compose stack changes state (up/down/idle-stop). */
+export function onComposeEvent(terminalId: string, cb: () => void): Promise<UnlistenFn> {
+	return listen(`compose://event/${terminalId}`, () => cb());
 }
 
 // --- Code checkpoints ---
