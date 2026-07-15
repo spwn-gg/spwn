@@ -8,7 +8,9 @@
 		onProjectsChanged,
 		onScheduledTaskFired,
 		clearTerminalAttention,
-		openInVscode
+		openInVscode,
+		openWorkingDiff,
+		openCheckpointDiff
 	} from './ipc';
 	import { projects, openTab, closeTab, refreshProjects, openTabs, activeTab } from './stores';
 	import { get } from 'svelte/store';
@@ -17,9 +19,14 @@
 	let collapsed = $state(new Set<string>());
 	let openMenuId = $state<string | null>(null);
 	let menuPos = $state({ x: 0, y: 0 });
+	let sessionMenu = $state<TerminalRec | null>(null);
+	let sessionMenuPos = $state({ x: 0, y: 0 });
 	let unlisten: Array<() => void> = [];
 
-	const closeMenu = () => (openMenuId = null);
+	const closeMenu = () => {
+		openMenuId = null;
+		sessionMenu = null;
+	};
 
 	onMount(async () => {
 		await refreshProjects();
@@ -99,6 +106,41 @@
 			await openInVscode(t.cwd);
 		} catch (err) {
 			console.error(err);
+		}
+	}
+
+	function toggleSessionMenu(t: TerminalRec, e: MouseEvent) {
+		e.stopPropagation();
+		if (sessionMenu?.id === t.id) {
+			sessionMenu = null;
+			return;
+		}
+		openMenuId = null;
+		const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+		const estHeight = 92; // ~2 rows; flip above if it would overflow the viewport
+		const y = r.bottom + estHeight > window.innerHeight ? r.top - estHeight : r.bottom + 2;
+		sessionMenuPos = { x: Math.min(r.left, window.innerWidth - 220), y: Math.max(8, y) };
+		sessionMenu = t;
+	}
+
+	async function diffWorking(t: TerminalRec, e: Event) {
+		e.stopPropagation();
+		sessionMenu = null;
+		try {
+			await openWorkingDiff(t.cwd);
+		} catch (err) {
+			alert(String(err));
+		}
+	}
+
+	async function diffCheckpoint(t: TerminalRec, e: Event) {
+		e.stopPropagation();
+		sessionMenu = null;
+		if (!t.sessionId) return;
+		try {
+			await openCheckpointDiff(t.sessionId);
+		} catch (err) {
+			alert(String(err));
 		}
 	}
 
@@ -218,6 +260,7 @@
 			<span class="t-icon">{t.kind === 'claude' ? '✦' : '$'}</span>
 			<span class="t-title">{t.title}</span>
 		</button>
+		<button class="icon-btn diff" title="Open working-tree diff" onclick={(e) => diffWorking(t, e)}>⇄</button>
 		<button class="icon-btn t-del" title="Delete terminal" onclick={(e) => removeTerminal(p, t, e)}>×</button>
 	</div>
 {/snippet}
@@ -240,6 +283,7 @@
 		</button>
 		<button class="icon-btn fork" title={t.sessionId ? 'Branch a new session from here' : 'Send a message first to enable branching'} disabled={!t.sessionId} onclick={(e) => forkSession(p, t, e)}>⑂</button>
 		<button class="icon-btn code" title="Open project in VS Code" onclick={(e) => openSessionCode(t, e)}>{'</>'}</button>
+		<button class="icon-btn diff" title="Diff this session's changes" onclick={(e) => toggleSessionMenu(t, e)}>⇄</button>
 		<button class="icon-btn t-del" title="Delete session" onclick={(e) => removeTerminal(p, t, e)}>×</button>
 	</div>
 	{#if node.children.length && open}
@@ -311,6 +355,21 @@
 			<button class="danger" onclick={(e) => menuDelete(p, e)}>Delete project</button>
 		</div>
 	{/if}
+{/if}
+
+{#if sessionMenu}
+	{@const t = sessionMenu}
+	<div
+		class="menu"
+		role="menu"
+		tabindex="-1"
+		style="left: {sessionMenuPos.x}px; top: {sessionMenuPos.y}px">
+		<button onclick={(e) => diffWorking(t, e)}>Diff working changes</button>
+		<button
+			disabled={!t.sessionId}
+			title={t.sessionId ? 'Diff the latest checkpoint against current files' : 'Send a message first to create a checkpoint'}
+			onclick={(e) => diffCheckpoint(t, e)}>Diff last checkpoint</button>
+	</div>
 {/if}
 
 <style>
@@ -443,9 +502,13 @@
 		cursor: pointer;
 		font-size: 13px;
 	}
-	.menu button:hover {
+	.menu button:hover:not(:disabled) {
 		background: var(--accent-soft);
 		color: #fff;
+	}
+	.menu button:disabled {
+		opacity: 0.4;
+		cursor: default;
 	}
 	.menu button.danger {
 		color: var(--danger);
@@ -537,6 +600,13 @@
 		font-family: ui-monospace, Menlo, monospace;
 	}
 	.code:hover {
+		color: #9bbce0;
+		background: #1b2230;
+	}
+	.diff {
+		font-size: 14px;
+	}
+	.diff:hover {
 		color: #9bbce0;
 		background: #1b2230;
 	}

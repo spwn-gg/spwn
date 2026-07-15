@@ -64,6 +64,8 @@ export type WorktreeLocation = 'sibling' | 'internal' | 'appData';
 export interface Settings {
 	claudePath?: string | null;
 	worktreeLocation?: WorktreeLocation;
+	/** Command template for the external diff viewer (git appends the two file paths). */
+	diffCommand?: string | null;
 }
 
 export interface Block {

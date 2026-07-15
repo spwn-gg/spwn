@@ -38,6 +38,23 @@ pub fn find_rmux_bin() -> Option<PathBuf> {
     })
 }
 
+/// Directory holding VS Code's `code` CLI shim, if VS Code is installed. GUI
+/// processes launch with a minimal `$PATH` that usually omits it, so we probe the
+/// well-known bundle locations to make a bare `code …` diff template resolve.
+pub fn find_code_dir() -> Option<PathBuf> {
+    const CANDIDATES: &[&str] = &[
+        "/Applications/Visual Studio Code.app/Contents/Resources/app/bin",
+        "/Applications/Visual Studio Code - Insiders.app/Contents/Resources/app/bin",
+    ];
+    for dir in CANDIDATES {
+        let pb = PathBuf::from(dir);
+        if pb.join("code").exists() || pb.join("code-insiders").exists() {
+            return Some(pb);
+        }
+    }
+    None
+}
+
 fn probe(env_var: &str, name: &str, home_rel: &[&str]) -> Option<PathBuf> {
     if let Ok(p) = std::env::var(env_var) {
         let pb = PathBuf::from(p);

@@ -54,6 +54,16 @@ export function openInVscode(path: string): Promise<void> {
 	return invoke('open_in_vscode', { path });
 }
 
+/** Open a session's uncommitted working-tree changes (vs HEAD) in the diff viewer. */
+export function openWorkingDiff(cwd: string): Promise<void> {
+	return invoke('open_working_diff', { cwd });
+}
+
+/** Diff a checkpoint (defaults to the session's most recent) against current files. */
+export function openCheckpointDiff(sessionId: string, checkpointId?: string): Promise<void> {
+	return invoke('open_checkpoint_diff', { sessionId, checkpointId: checkpointId ?? null });
+}
+
 // --- Context space ---
 
 export function addContextBlock(
@@ -161,6 +171,8 @@ export interface OpenTerminalArgs {
 	parentTerminalId?: string;
 	/** Seed a new Claude session: pasted into the input box (not auto-submitted). */
 	initialPrompt?: string;
+	/** Initial permission/execution mode for a new Claude session. */
+	permissionMode?: string;
 }
 
 /** Open or reattach a terminal; resolves to its terminal id. */

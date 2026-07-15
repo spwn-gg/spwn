@@ -8,6 +8,7 @@
 
 	let claudePath = $state('');
 	let worktreeLocation = $state<WorktreeLocation>('sibling');
+	let diffCommand = $state('');
 	let detected = $state<string | null>(null);
 	let saved = $state(false);
 	let version = $state('');
@@ -16,6 +17,7 @@
 		const s = await getSettings();
 		claudePath = s.claudePath ?? '';
 		worktreeLocation = s.worktreeLocation ?? 'sibling';
+		diffCommand = s.diffCommand ?? '';
 		detected = await detectClaude();
 		version = await getVersion();
 	});
@@ -30,7 +32,11 @@
 	}
 
 	async function save() {
-		await setSettings({ claudePath: claudePath.trim() || null, worktreeLocation });
+		await setSettings({
+			claudePath: claudePath.trim() || null,
+			worktreeLocation,
+			diffCommand: diffCommand.trim() || null
+		});
 		saved = true;
 		setTimeout(() => (saved = false), 1500);
 	}
@@ -85,6 +91,20 @@
 					{/if}
 				</div>
 				<div class="hint">Applies to new sessions; existing worktrees stay where they are.</div>
+			</div>
+			<div class="field">
+				<div class="lbl">Diff viewer command</div>
+				<div class="row">
+					<input bind:value={diffCommand} placeholder="code --wait --diff" spellcheck="false" />
+				</div>
+				<div class="hint">
+					Used to open git diffs. The two file paths are appended automatically — keep
+					<code>--wait</code> so files open one at a time and temp files survive.
+				</div>
+				<div class="hint">
+					Leave blank for the default (<code>code --wait --diff</code>). Use an absolute path
+					if the tool isn't on your PATH.
+				</div>
 			</div>
 
 			<div class="field">
