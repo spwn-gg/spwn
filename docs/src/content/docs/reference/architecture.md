@@ -30,6 +30,16 @@ closing the app**. That's why reopening spwn brings everything back exactly wher
 left it, including running programs. Fork and Rewind build on this: a fork is a real
 branched session, and a rewind rolls a session back to an earlier point.
 
+## Sessions work on their own branch
+
+In a git project, each Claude session works on **its own branch in your real repo**
+(named `cm/…`), with its own checkout kept in the app's data folder. This is what lets
+sessions run in parallel without clashing, and it keeps their work off to the side
+until you merge it back. Your project folder stays on whatever branch you had checked
+out; spwn only ever adds `cm/…` branches and never moves your branch or rewrites your
+history. Non-git projects run in the project folder directly, with no branches. See
+[Parallel Sessions](/spwn/guides/parallel-sessions/).
+
 ## Your data stays local
 
 - **Projects, context, and scheduled tasks** you create in spwn are stored **locally

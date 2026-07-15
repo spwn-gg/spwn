@@ -25,6 +25,14 @@ pub struct TerminalRec {
     /// tree). None for a root session. Lets the nav render true fork lineage.
     #[serde(default)]
     pub parent_id: Option<String>,
+    /// Git branch this session works on in its own worktree (None if the project
+    /// isn't a git repo, or the worktree couldn't be created). `cwd` points at the
+    /// worktree when set.
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// The branch this session's branch should merge back into.
+    #[serde(default)]
+    pub base_branch: Option<String>,
     /// A persisted attention flag. Interactive attention is in-memory (frontend
     /// tab state), but a windowless scheduled run has no tab to flag — so the
     /// nav reflects this on next open. Cleared when the session is viewed.

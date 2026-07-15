@@ -11,8 +11,22 @@ export interface TerminalRec {
 	groupId?: string | null;
 	/** The terminal this was forked from (its parent in the branch tree). */
 	parentId?: string | null;
+	/** Git branch this session works on in its own worktree (null = no worktree). */
+	branch?: string | null;
+	/** The branch this session merges back into. */
+	baseBranch?: string | null;
 	/** Persisted attention flag (set by a windowless scheduled run). */
 	needsAttention?: boolean;
+}
+
+/** Preview of what merging a session's branch into its base would do. */
+export interface MergeStatus {
+	branch?: string | null;
+	baseBranch?: string | null;
+	ahead: number;
+	changedFiles: string[];
+	uncommitted: boolean;
+	blocker?: string | null;
 }
 
 export interface ContextBlock {
@@ -45,8 +59,11 @@ export interface ProjectRec {
 	scheduledTasks: ScheduledTask[];
 }
 
+export type WorktreeLocation = 'sibling' | 'internal' | 'appData';
+
 export interface Settings {
 	claudePath?: string | null;
+	worktreeLocation?: WorktreeLocation;
 	/** Command template for the external diff viewer (git appends the two file paths). */
 	diffCommand?: string | null;
 }

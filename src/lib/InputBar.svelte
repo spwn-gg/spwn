@@ -1,18 +1,15 @@
 <script lang="ts">
 	import { claudeSetMode, claudeInterrupt } from './ipc';
-	import { pasteToInput } from './stores';
 
 	let {
 		terminalId,
 		busy = false,
 		mode = $bindable('default'),
-		initialPrompt = '',
 		onSend = () => {}
 	}: {
 		terminalId: string | undefined;
 		busy?: boolean;
 		mode?: PermMode;
-		initialPrompt?: string;
 		onSend?: (text: string) => void;
 	} = $props();
 
@@ -28,21 +25,8 @@
 		auto: 'auto'
 	};
 
-	let text = $state(initialPrompt ?? '');
+	let text = $state('');
 	let ta: HTMLTextAreaElement | undefined;
-
-	// Consume a response pasted in from a child session (e.g. "→ parent").
-	$effect(() => {
-		const inj = $pasteToInput;
-		if (inj && inj.terminalId === terminalId) {
-			text = text.trim() ? `${text.trimEnd()}\n\n${inj.text}` : inj.text;
-			pasteToInput.set(null);
-			queueMicrotask(() => {
-				autogrow();
-				ta?.focus();
-			});
-		}
-	});
 
 	function autogrow() {
 		if (!ta) return;

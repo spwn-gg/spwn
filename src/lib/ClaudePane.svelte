@@ -1,10 +1,10 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
+	import { get } from 'svelte/store';
 	import ChatMirror from './ChatMirror.svelte';
 	import InputBar from './InputBar.svelte';
 	import PermissionPrompt from './PermissionPrompt.svelte';
 	import QuestionPicker from './QuestionPicker.svelte';
-	import { get } from 'svelte/store';
 	import {
 		openTerminal,
 		setTerminalSession,
@@ -13,8 +13,7 @@
 		claudePermission,
 		claudeAnswer,
 		checkpointProject,
-		listCheckpoints,
-		restoreCheckpoint,
+		commitSessionTurn,
 		onClaudeEvent,
 		onClaudeExit
 	} from './ipc';
@@ -24,9 +23,7 @@
 		refreshProjects,
 		markAttention,
 		setSessionBusy,
-		busySessions,
-		activeCodeSession,
-		activeTabKey,
+		pasteToInput,
 		claudeMode
 	} from './stores';
 	import type { ClaudeEvent, PendingQuestion, PermissionReq, Turn } from './types';
@@ -59,6 +56,18 @@
 	$effect(() => {
 		claudeMode.set(mode);
 	});
+	// Auto-seed: text that should be sent into this conversation (from "start with
+	// context" / initialPrompt, or a "→ parent" paste) rather than parked in the
+	// composer. Flushed via onSend once the terminal is live and any in-flight turn
+	// has finished — see the flush effect below.
+	let ready = $state(false);
+	let pendingSeed = $state<string | null>(null);
+	function seed(text: string | undefined) {
+		const t = text?.trim();
+		if (!t) return;
+		// Append/coalesce so multiple seeds arriving while busy aren't lost.
+		pendingSeed = pendingSeed ? `${pendingSeed}\n\n${t}` : t;
+	}
 	// A brand-new tab (no terminalId yet) gets a pre-edit "baseline" checkpoint.
 	const isFreshSession = terminalId === undefined;
 	let baselineDone = false;
@@ -130,6 +139,10 @@
 				exited = true;
 			})
 		);
+		// Listeners are attached and `id` is assigned — safe to flush seeds now
+		// (their init/delta/result events will be captured).
+		ready = true;
+		if (initialPrompt) seed(initialPrompt);
 	});
 
 	onDestroy(() => {
@@ -139,42 +152,36 @@
 		if (liveSession) setSessionBusy(liveSession, false);
 	});
 
-	// Publish this session's busy state so restores can gate on "no agent writing".
+	// Publish this session's busy state (used by manual restore/rewind gating).
 	$effect(() => {
 		if (liveSession) setSessionBusy(liveSession, busy);
 	});
 
-	// Auto-restore the project to a session's code when you switch to it (user choice).
-	// Guards: only when this pane is active, the session has a checkpoint, and NO
-	// session is mid-turn (avoid racing a background write). A pre-switch snapshot of
-	// the outgoing session preserves its on-disk state.
-	let switchingCode = false;
+	// Consume a "→ parent" paste targeted at this session and queue it as a seed.
+	// Only the pane whose id matches claims the slot; others see null and no-op.
 	$effect(() => {
-		const active = $activeTabKey === tabKey;
-		const sid = liveSession;
-		const anyBusy = $busySessions.size > 0;
-		if (!active || !sid || busy || anyBusy || switchingCode) return;
-		if ($activeCodeSession[projectId] === sid) return;
-		autoRestoreOnSwitch(sid);
+		const inj = $pasteToInput;
+		if (inj && id && inj.terminalId === id) {
+			pasteToInput.set(null); // consume immediately (re-triggers with null → no-op)
+			seed(inj.text);
+		}
 	});
 
-	async function autoRestoreOnSwitch(sid: string) {
-		switchingCode = true;
-		try {
-			const current = get(activeCodeSession)[projectId];
-			if (current && current !== sid) {
-				// Preserve the outgoing session's current files so switching back restores them.
-				await checkpointProject(projectId, current, 'pre-switch', 'pre-switch').catch(() => {});
-			}
-			activeCodeSession.update((m) => ({ ...m, [projectId]: sid }));
-			const cps = await listCheckpoints(sid);
-			if (cps.length) await restoreCheckpoint(projectId, sid, cps[0].id, false);
-		} catch (e) {
-			console.error('auto-restore on switch', e);
-		} finally {
-			switchingCode = false;
+	// Flush a queued seed via onSend once the terminal is live and idle. If a turn
+	// is in flight (busy), the seed waits here until `result` flips busy → false,
+	// then this effect re-runs and sends — no interleaving, no drop.
+	$effect(() => {
+		if (ready && id && !busy && pendingSeed) {
+			const t = pendingSeed;
+			pendingSeed = null; // clear BEFORE onSend so this can't re-fire and double-send
+			onSend(t);
 		}
-	}
+	});
+
+	// No file swapping on session switch: each session runs in its own git worktree,
+	// so switching tabs is a pure UI focus change. (Swapping the shared project dir
+	// in place would corrupt any autonomous session running concurrently.) Per-turn
+	// undo checkpoints still snapshot each session's own worktree.
 
 	function resetLive() {
 		streamingText = '';
@@ -234,6 +241,13 @@
 					checkpointProject(projectId, liveSession, lastAssistantUuid, 'turn').catch((e) =>
 						console.error('checkpoint failed', e)
 					);
+					// Commit onto the session's worktree branch so it carries mergeable
+					// history (no-op if this session has no branch). Keyed by terminal id.
+					if (id) {
+						commitSessionTurn(id, `spwn turn ${lastAssistantUuid.slice(0, 8)}`).catch((e) =>
+							console.error('commit failed', e)
+						);
+					}
 				}
 				// Keep the overlay until the JSONL reload brings the finished turn in
 				// (onReload clears it); fall back to a timer so it can't get stuck.
@@ -345,7 +359,7 @@
 	{#each pendingPermissions as p (p.id)}
 		<PermissionPrompt req={p} onAllow={allow} onDeny={deny} />
 	{/each}
-	<InputBar terminalId={id} {busy} bind:mode {initialPrompt} {onSend} />
+	<InputBar terminalId={id} {busy} bind:mode {onSend} />
 </div>
 
 <style>

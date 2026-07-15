@@ -18,6 +18,10 @@ conversation you have — both sessions continue to exist and run independently.
 ideal for "what if we tried it this other way?" moments: branch, explore, and keep
 whichever result you like.
 
+In a git project, the fork also gets its **own git branch**, created from the parent
+session's branch — so its files start where the parent left off and then diverge. See
+[Parallel Sessions](/spwn/guides/parallel-sessions/).
+
 ## Rewind
 
 **Rewind** rolls a session back to an earlier checkpoint. You pick the point to
@@ -37,4 +41,5 @@ and retry than start over.
 ## Next
 
 - [Claude Sessions](/spwn/guides/claude-sessions/)
+- [Parallel Sessions](/spwn/guides/parallel-sessions/)
 - [Composing Context](/spwn/guides/context-composer/)
