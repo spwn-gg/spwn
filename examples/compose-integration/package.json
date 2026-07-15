@@ -1,0 +1,12 @@
+{
+  "name": "spwn-compose-example",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch server.js",
+    "start": "node server.js",
+    "test:watch": "node --test --watch"
+  },
+  "dependencies": {}
+}
