@@ -59,8 +59,11 @@ export interface ProjectRec {
 	scheduledTasks: ScheduledTask[];
 }
 
+export type WorktreeLocation = 'sibling' | 'internal' | 'appData';
+
 export interface Settings {
 	claudePath?: string | null;
+	worktreeLocation?: WorktreeLocation;
 }
 
 export interface Block {

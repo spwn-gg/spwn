@@ -51,6 +51,58 @@ pub fn current_branch(dir: &Path) -> Option<String> {
     (b != "HEAD" && !b.is_empty()).then_some(b)
 }
 
+/// The dot-prefixed sibling directory that holds all of `repo`'s worktrees:
+/// `<repo-parent>/.<repo-name>-worktrees/`. It lives *outside* the working tree, so no
+/// build tool, file watcher, or IDE indexer ever recurses into it. Falls back to the
+/// in-repo layout if `repo` has no parent (a filesystem root).
+pub fn sibling_worktrees_dir(repo: &Path) -> PathBuf {
+    let name = repo
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "repo".to_string());
+    match repo.parent() {
+        Some(parent) => parent.join(format!(".{name}-worktrees")),
+        None => internal_worktrees_dir(repo),
+    }
+}
+
+/// The in-repo directory that holds all of `repo`'s worktrees: `<repo>/.spwn/worktrees/`.
+/// The `.spwn/` dot-prefix keeps most tooling from scanning it; pair with
+/// [`ensure_git_excludes`] so git treats it as ignored too.
+pub fn internal_worktrees_dir(repo: &Path) -> PathBuf {
+    repo.join(".spwn").join("worktrees")
+}
+
+/// Ensure `pattern` (gitignore syntax) is present in `repo`'s local `.git/info/exclude`,
+/// so an in-repo worktree dir reads as ignored without touching the tracked
+/// `.gitignore`. Best-effort: a failure just means `git status` shows the dir.
+pub fn ensure_git_excludes(repo: &Path, pattern: &str) {
+    // `--git-common-dir` points at the shared `.git` even from inside a worktree.
+    let Ok(common) = git(repo, &["rev-parse", "--git-common-dir"]) else {
+        return;
+    };
+    let mut git_dir = PathBuf::from(&common);
+    if git_dir.is_relative() {
+        git_dir = repo.join(git_dir);
+    }
+    let exclude = git_dir.join("info").join("exclude");
+    let existing = std::fs::read_to_string(&exclude).unwrap_or_default();
+    if existing.lines().any(|l| l.trim() == pattern) {
+        return; // already excluded
+    }
+    if let Some(parent) = exclude.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let mut content = existing;
+    if !content.is_empty() && !content.ends_with('\n') {
+        content.push('\n');
+    }
+    content.push_str("# spwn session worktrees\n");
+    content.push_str(pattern);
+    content.push('\n');
+    let _ = std::fs::write(&exclude, content);
+}
+
 /// Create a new worktree at `path` on a new `branch` forked from `base`.
 pub fn add_worktree(repo: &Path, path: &Path, branch: &str, base: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {

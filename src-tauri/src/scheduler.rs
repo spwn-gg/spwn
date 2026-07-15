@@ -4,7 +4,7 @@
 //! a missed occurrence is caught up exactly once.
 
 use crate::claude::HeadlessEvent;
-use crate::commands::{bind_session, persist, resolved_claude, worktrees_dir};
+use crate::commands::{bind_session, persist, resolved_claude, session_worktree_path};
 use crate::gitwt;
 use crate::state::AppState;
 use crate::store::{ContextBlock, ScheduledTask, TerminalRec};
@@ -124,10 +124,12 @@ pub fn fire(app: &AppHandle, project_id: &str, task_id: &str) {
     // after the run (the flagged session stays viewable) and removed on delete.
     let mut run_dir = directory.clone();
     if let Some(repo) = gitwt::repo_root(Path::new(&directory)) {
-        if let (Some(base), Some(wt_root)) = (gitwt::current_branch(&repo), worktrees_dir(&state)) {
+        if let (Some(base), Some(wt_path)) = (
+            gitwt::current_branch(&repo),
+            session_worktree_path(&state, &repo, &terminal_id),
+        ) {
             let short = terminal_id.split('-').next().unwrap_or(terminal_id.as_str());
             let branch = format!("cm/{short}");
-            let wt_path = wt_root.join(&terminal_id);
             if gitwt::add_worktree(&repo, &wt_path, &branch, &base).is_ok() {
                 gitwt::seed_heavy_dirs(Path::new(&directory), &wt_path);
                 run_dir = wt_path.to_string_lossy().into_owned();

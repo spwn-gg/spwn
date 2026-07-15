@@ -4,8 +4,10 @@
 	import { getSettings, setSettings, detectClaude, pickFile } from './ipc';
 	import { showSettings } from './stores';
 	import { checkForUpdate, updateStatus } from './updater';
+	import type { WorktreeLocation } from './types';
 
 	let claudePath = $state('');
+	let worktreeLocation = $state<WorktreeLocation>('sibling');
 	let detected = $state<string | null>(null);
 	let saved = $state(false);
 	let version = $state('');
@@ -13,6 +15,7 @@
 	onMount(async () => {
 		const s = await getSettings();
 		claudePath = s.claudePath ?? '';
+		worktreeLocation = s.worktreeLocation ?? 'sibling';
 		detected = await detectClaude();
 		version = await getVersion();
 	});
@@ -27,7 +30,7 @@
 	}
 
 	async function save() {
-		await setSettings({ claudePath: claudePath.trim() || null });
+		await setSettings({ claudePath: claudePath.trim() || null, worktreeLocation });
 		saved = true;
 		setTimeout(() => (saved = false), 1500);
 	}
@@ -59,6 +62,29 @@
 					{/if}
 				</div>
 				<div class="hint">Leave blank to use the auto-detected path.</div>
+			</div>
+
+			<div class="field">
+				<div class="lbl">Session worktree location</div>
+				<select bind:value={worktreeLocation}>
+					<option value="sibling">Sibling folder (recommended)</option>
+					<option value="internal">Inside repo (.spwn/worktrees)</option>
+					<option value="appData">App data folder</option>
+				</select>
+				<div class="hint">
+					{#if worktreeLocation === 'sibling'}
+						Worktrees go in a dot-prefixed folder beside each repo
+						(<code>../.&lt;repo&gt;-worktrees</code>) — outside the working tree, so builds,
+						file watchers, and IDE indexers never see them.
+					{:else if worktreeLocation === 'internal'}
+						Worktrees go in <code>.spwn/worktrees</code> inside the repo, registered in
+						<code>.git/info/exclude</code>. The dot-prefix keeps most tooling from scanning
+						them, but tools with explicit include globs may still pick them up.
+					{:else}
+						Worktrees go under the app's data folder, away from your repos entirely.
+					{/if}
+				</div>
+				<div class="hint">Applies to new sessions; existing worktrees stay where they are.</div>
 			</div>
 
 			<div class="field">
@@ -150,6 +176,16 @@
 		padding: 8px 10px;
 		font-family: ui-monospace, Menlo, monospace;
 		font-size: 13px;
+	}
+	.body select {
+		width: 100%;
+		background: #161616;
+		border: 1px solid #3a3a3a;
+		border-radius: 6px;
+		color: #e6e6e6;
+		padding: 8px 10px;
+		font-size: 13px;
+		cursor: pointer;
 	}
 	.browse {
 		background: #2a2a2a;
