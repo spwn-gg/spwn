@@ -273,7 +273,7 @@
 			projectName: $projects.find((p) => p.id === projectId)?.name
 		});
 		pasteToInput.set({ terminalId: parent.id, text });
-		setStatus('Pasted into the parent session’s input.');
+		setStatus('Sent to the parent session.');
 	}
 
 	// This session's terminal record (for its worktree branch chip + merge panel).
