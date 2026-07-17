@@ -165,10 +165,21 @@ pub fn commit_all(dir: &Path, message: &str) -> Result<bool, String> {
     }
 }
 
-/// Remove a worktree (force, so uncommitted changes don't block it). The branch
-/// itself is kept (so its commits aren't lost — the user merges manually).
+/// Remove a worktree (force, so uncommitted changes don't block it). Pair with
+/// [`delete_branch`] to also drop the branch it had checked out.
 pub fn remove_worktree(repo: &Path, path: &Path) -> Result<(), String> {
     git(repo, &["worktree", "remove", "--force", &path.to_string_lossy()]).map(|_| ())
+}
+
+/// Delete `branch`, **including commits it alone carries** (`-D`, not `-d`), so a
+/// deleted session doesn't leave a `cm/*` branch behind forever.
+///
+/// Call this only *after* [`remove_worktree`]: git refuses to delete a branch that's
+/// still checked out somewhere, so the order isn't optional. Unmerged commits become
+/// unreachable and are eventually GC'd — callers must warn first (the UI checks
+/// [`count_commits`]/[`is_clean`] via `session_merge_status` before confirming).
+pub fn delete_branch(repo: &Path, branch: &str) -> Result<(), String> {
+    git(repo, &["branch", "-D", branch]).map(|_| ())
 }
 
 /// The worktree path that currently has `branch` checked out, if any.
