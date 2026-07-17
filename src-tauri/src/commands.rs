@@ -615,9 +615,8 @@ pub async fn delete_terminal(
     terminal_id: String,
 ) -> Result<(), String> {
     kill_terminals(&state, std::slice::from_ref(&terminal_id)).await;
-    // Capture the session id (to prune checkpoints) and its worktree (to remove it,
-    // keeping the branch so its commits survive for a manual merge) before dropping
-    // the record.
+    // Capture the session id (to prune checkpoints) and its worktree + branch (to
+    // remove both) before dropping the record.
     let (session_id, worktree, compose_project) = {
         let store = state.store.lock();
         let proj_dir = store.project(&project_id).map(|p| p.directory.clone());
@@ -625,8 +624,8 @@ pub async fn delete_terminal(
         let sid = t.and_then(|t| t.session_id.clone());
         let cp = t.and_then(|t| t.compose_project.clone());
         let wt = t.and_then(|t| {
-            t.branch.as_ref()?;
-            Some((proj_dir?, t.cwd.clone()))
+            let branch = t.branch.clone()?;
+            Some((proj_dir?, t.cwd.clone(), branch))
         });
         (sid, wt, cp)
     };
@@ -637,7 +636,7 @@ pub async fn delete_terminal(
         }
     }
     persist(&state);
-    if let Some((proj_dir, wt_path)) = worktree {
+    if let Some((proj_dir, wt_path, branch)) = worktree {
         // Tear down the session's compose stack BEFORE removing the worktree (the
         // compose file lives inside it), releasing any shared-services ref.
         if compose_project.is_some() {
@@ -646,6 +645,12 @@ pub async fn delete_terminal(
         if let Some(repo) = gitwt::repo_root(Path::new(&proj_dir)) {
             if let Err(e) = gitwt::remove_worktree(&repo, Path::new(&wt_path)) {
                 eprintln!("worktree remove failed: {e}");
+            }
+            // Then the branch, so deleted sessions don't leave `cm/*` behind forever.
+            // Strictly after the removal above — git won't delete a checked-out branch.
+            // The UI has already warned about any unmerged commits by this point.
+            if let Err(e) = gitwt::delete_branch(&repo, &branch) {
+                eprintln!("branch delete failed: {e}");
             }
         }
     }

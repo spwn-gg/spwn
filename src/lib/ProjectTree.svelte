@@ -10,7 +10,8 @@
 		clearTerminalAttention,
 		openInVscode,
 		openWorkingDiff,
-		openCheckpointDiff
+		openCheckpointDiff,
+		sessionMergeStatus
 	} from './ipc';
 	import { projects, openTab, closeTab, refreshProjects, openTabs, activeTab } from './stores';
 	import { get } from 'svelte/store';
@@ -174,9 +175,32 @@
 		});
 	}
 
+	/** Name the work a delete would destroy, so the confirm can spell it out. Deleting a
+	 * session drops its worktree *and* branch, so unmerged commits are gone for good. */
+	async function unmergedWarning(p: ProjectRec, t: TerminalRec): Promise<string> {
+		try {
+			const s = await sessionMergeStatus(p.id, t.id);
+			if (!s.branch) return '';
+			const bits: string[] = [];
+			if (s.ahead > 0)
+				bits.push(`${s.ahead} commit${s.ahead === 1 ? '' : 's'} not in “${s.baseBranch}”`);
+			if (s.uncommitted) bits.push('uncommitted changes');
+			if (!bits.length) return '';
+			return `\n\nBranch “${s.branch}” has ${bits.join(' and ')}. Deleting discards that work permanently.`;
+		} catch {
+			return ''; // Best-effort: a status failure must never block deletion.
+		}
+	}
+
 	async function removeTerminal(p: ProjectRec, t: TerminalRec, e: Event) {
 		e.stopPropagation();
-		if (!confirm(`Delete terminal “${t.title}”? This kills its session and can't be undone.`)) return;
+		const warning = await unmergedWarning(p, t);
+		if (
+			!confirm(
+				`Delete terminal “${t.title}”? This kills its session and removes its worktree and branch.${warning}\n\nThis can't be undone.`
+			)
+		)
+			return;
 		// Close any open tab for this terminal first.
 		const tab = get(openTabs).find((x) => x.terminalId === t.id);
 		if (tab) closeTab(tab.key);
