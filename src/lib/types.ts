@@ -58,6 +58,29 @@ export interface MergeStatus {
 	blocker?: string | null;
 }
 
+/** A project's main-checkout git status (mirrors commands::RepoStatus). */
+export interface RepoStatus {
+	/** Whether the project directory is inside a git repository. */
+	isRepo: boolean;
+	/** Current branch (null on detached HEAD or non-repo). */
+	branch?: string | null;
+	/** Upstream tracking branch, e.g. "origin/main" (null if none). */
+	upstream?: string | null;
+	/** Commits ahead of upstream. */
+	ahead: number;
+	/** Commits behind upstream. */
+	behind: number;
+	/** Working tree has staged/unstaged changes. */
+	dirty: boolean;
+}
+
+/** Local + remote branches for a project's repo (mirrors commands::GitBranches). */
+export interface GitBranches {
+	current?: string | null;
+	local: string[];
+	remote: string[];
+}
+
 export interface ContextBlock {
 	id: string;
 	kind: 'note' | 'file' | 'session';

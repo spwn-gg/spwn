@@ -37,6 +37,31 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     }
 }
 
+/// Like [`git`], but for network operations (fetch/pull/push). Sets
+/// `GIT_TERMINAL_PROMPT=0` so a missing credential or an SSH passphrase prompt
+/// fails fast with a readable error instead of hanging forever — the spawned
+/// process has no TTY to answer an interactive prompt on. Auth still works when
+/// it's non-interactive (ssh-agent, keychain-cached HTTPS credential).
+fn git_net(dir: &Path, args: &[&str]) -> Result<String, String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .map_err(|e| format!("failed to run git: {e}"))?;
+    if out.status.success() {
+        // Network commands put progress on stderr; include both so the UI can
+        // show a useful summary line.
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let combined = format!("{}\n{}", stdout.trim(), stderr.trim());
+        Ok(combined.trim().to_string())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}
+
 /// The repository root containing `dir`, or None if it isn't inside a git repo.
 pub fn repo_root(dir: &Path) -> Option<PathBuf> {
     git(dir, &["rev-parse", "--show-toplevel"])
@@ -249,5 +274,96 @@ pub fn merge_into_base(repo: &Path, base: &str, branch: &str) -> Result<String, 
                 "Couldn't merge '{branch}' into '{base}' (conflicts?). Left '{base}' untouched; resolve manually. {e}"
             ))
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Source Control: managing the project's *main* checkout (branch switch + sync).
+// These operate on `dir` directly (the project directory), not a session worktree.
+// ---------------------------------------------------------------------------
+
+/// The upstream (remote-tracking) branch of `dir`'s current branch, if one is
+/// configured — e.g. `origin/main`. None when the branch has no upstream.
+pub fn upstream_branch(dir: &Path) -> Option<String> {
+    git(dir, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"])
+        .ok()
+        .filter(|s| !s.is_empty())
+}
+
+/// How many commits the current branch is ahead of / behind its upstream,
+/// as `(ahead, behind)`. Returns `(0, 0)` when there's no upstream or on error.
+pub fn ahead_behind(dir: &Path) -> (u32, u32) {
+    // `--left-right --count HEAD...@{upstream}` prints "<ahead>\t<behind>".
+    let Ok(out) = git(
+        dir,
+        &["rev-list", "--left-right", "--count", "HEAD...@{upstream}"],
+    ) else {
+        return (0, 0);
+    };
+    let mut parts = out.split_whitespace();
+    let ahead = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let behind = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    (ahead, behind)
+}
+
+/// Local branch names (`refs/heads`), sorted by most-recent commit first.
+pub fn local_branches(dir: &Path) -> Result<Vec<String>, String> {
+    git(
+        dir,
+        &[
+            "for-each-ref",
+            "--sort=-committerdate",
+            "--format=%(refname:short)",
+            "refs/heads",
+        ],
+    )
+    .map(|s| s.lines().filter(|l| !l.is_empty()).map(String::from).collect())
+}
+
+/// Remote-tracking branch names (`refs/remotes`), excluding the `*/HEAD` symrefs.
+pub fn remote_branches(dir: &Path) -> Result<Vec<String>, String> {
+    git(
+        dir,
+        &["for-each-ref", "--format=%(refname:short)", "refs/remotes"],
+    )
+    .map(|s| {
+        s.lines()
+            .filter(|l| !l.is_empty() && !l.ends_with("/HEAD"))
+            .map(String::from)
+            .collect()
+    })
+}
+
+/// Check out an existing branch in `dir`. Git's own stderr is returned on failure
+/// (e.g. "would be overwritten by checkout", "already checked out at <path>"),
+/// so the UI can show exactly why it didn't switch.
+pub fn checkout_branch(dir: &Path, branch: &str) -> Result<(), String> {
+    git(dir, &["checkout", branch]).map(|_| ())
+}
+
+/// Create a new branch off the current HEAD and switch to it.
+pub fn create_branch(dir: &Path, name: &str) -> Result<(), String> {
+    git(dir, &["checkout", "-b", name]).map(|_| ())
+}
+
+/// Fetch all remotes and prune deleted remote-tracking refs.
+pub fn fetch(dir: &Path) -> Result<String, String> {
+    git_net(dir, &["fetch", "--all", "--prune"])
+}
+
+/// Fast-forward-only pull. Fails (rather than creating a merge commit) if the
+/// branch has diverged — the UI surfaces git's message so the user can resolve
+/// manually.
+pub fn pull(dir: &Path) -> Result<String, String> {
+    git_net(dir, &["pull", "--ff-only"])
+}
+
+/// Push the current branch. When `set_upstream` is true (no upstream configured
+/// yet), push to `origin` and set it as the tracking branch.
+pub fn push(dir: &Path, set_upstream: bool) -> Result<String, String> {
+    if set_upstream {
+        git_net(dir, &["push", "-u", "origin", "HEAD"])
+    } else {
+        git_net(dir, &["push"])
     }
 }

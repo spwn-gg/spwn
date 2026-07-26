@@ -7,9 +7,11 @@ import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import type {
 	CheckpointMeta,
 	ClaudeEvent,
+	GitBranches,
 	HooksStatus,
 	MergeStatus,
 	ProjectRec,
+	RepoStatus,
 	ScheduledTask,
 	Settings,
 	TerminalKind,
@@ -194,6 +196,48 @@ export function sessionMergeStatus(projectId: string, terminalId: string): Promi
 /** Commit a session's changes onto its worktree branch (no-op if it has no branch). */
 export function commitSessionTurn(terminalId: string, message: string): Promise<void> {
 	return invoke('commit_session_turn', { terminalId, message });
+}
+
+// --- Source Control (git for a project's main checkout) ---
+
+/** Git status of a project's main checkout (safe on non-repos → isRepo:false). */
+export function gitRepoStatus(projectId: string): Promise<RepoStatus> {
+	return invoke('git_repo_status', { projectId });
+}
+
+/** Local + remote branches for a project's repo. */
+export function gitBranches(projectId: string): Promise<GitBranches> {
+	return invoke('git_branches', { projectId });
+}
+
+/** Check out an existing branch in the project's main checkout. */
+export function gitCheckout(projectId: string, branch: string): Promise<void> {
+	return invoke('git_checkout', { projectId, branch });
+}
+
+/** Create a new branch off HEAD and switch to it. */
+export function gitCreateBranch(projectId: string, name: string): Promise<void> {
+	return invoke('git_create_branch', { projectId, name });
+}
+
+/** Fetch all remotes (resolves to a summary line). */
+export function gitFetch(projectId: string): Promise<string> {
+	return invoke('git_fetch', { projectId });
+}
+
+/** Fast-forward-only pull (resolves to a summary line). */
+export function gitPull(projectId: string): Promise<string> {
+	return invoke('git_pull', { projectId });
+}
+
+/** Push the current branch, setting upstream if it has none (resolves to a summary). */
+export function gitPush(projectId: string): Promise<string> {
+	return invoke('git_push', { projectId });
+}
+
+/** VS Code "Sync": fetch → ff pull → push. */
+export function gitSync(projectId: string): Promise<string> {
+	return invoke('git_sync', { projectId });
 }
 
 /** Persist a discovered claude session id onto a terminal record. */
