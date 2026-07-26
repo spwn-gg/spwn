@@ -7,12 +7,36 @@
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter};
+
+/// Live status of a Claude session, derived in the sidecar's stdout reader so it
+/// works for background sessions with no mounted pane. Serialized camelCase to match
+/// the frontend `SessionStatus` union and emitted on `claude://status`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SessionStatus {
+    /// A turn is running (streaming text / thinking / tool calls).
+    Thinking,
+    /// Held on a tool-permission prompt awaiting allow/deny.
+    BlockedPermission,
+    /// Held on an AskUserQuestion awaiting the human's pick.
+    BlockedQuestion,
+    /// The turn finished — awaiting the human.
+    Done,
+    /// The turn failed / the sidecar died unexpectedly.
+    Error,
+    /// No active turn (also the cleared state — removes the live entry).
+    Idle,
+}
 
 pub struct ClaudeAgent {
     child: Child,
     stdin: ChildStdin,
+    /// Set true by `kill()` so the reader thread can tell an intentional teardown
+    /// (close/delete/rewind) from a crash and not synthesize a false `Error` status.
+    killed: Arc<AtomicBool>,
 }
 
 impl ClaudeAgent {
@@ -24,6 +48,9 @@ impl ClaudeAgent {
     }
 
     pub fn kill(&mut self) {
+        // Mark this an intentional kill before closing stdout so the reader thread's
+        // exit branch leaves the status to the caller instead of reporting a crash.
+        self.killed.store(true, Ordering::SeqCst);
         // Killing the child closes its stdout, ending the reader thread.
         let _ = self.child.kill();
     }
@@ -150,6 +177,12 @@ fn spawn_inner(
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
 
+    // Shared with the reader thread so it can distinguish an intentional kill from a
+    // crash when stdout closes.
+    let killed = Arc::new(AtomicBool::new(false));
+    let killed_reader = Arc::clone(&killed);
+    let status_term_id = terminal_id.to_string();
+
     // Drain stderr on its own thread, logging each line and keeping the tail so we
     // can attach it to an error if the sidecar dies without responding.
     let err_tail: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
@@ -173,6 +206,7 @@ fn spawn_inner(
         let reader = std::io::BufReader::new(stdout);
         let mut emitted = 0usize;
         let mut saw_result = false;
+        let mut last_status: Option<SessionStatus> = None;
         for line in reader.lines() {
             match line {
                 Ok(l) if !l.is_empty() => {
@@ -184,6 +218,15 @@ fn spawn_inner(
                                 saw_result = true;
                             }
                             cb(ev);
+                        }
+                    }
+                    // Derive live status for the sidebar (works with no pane mounted).
+                    // Only emit on a real change — a turn streams many `delta` lines that
+                    // all map to `Thinking`, and we don't want an event per token.
+                    if let Some(st) = parse_status(&l) {
+                        if last_status != Some(st) {
+                            last_status = Some(st);
+                            crate::commands::emit_claude_status(&app, &status_term_id, st);
                         }
                     }
                     if app.emit(&event, l).is_err() {
@@ -221,10 +264,28 @@ fn spawn_inner(
                 cb(HeadlessEvent::Error { message });
             }
         }
+        // Finalize live status. On an intentional kill (close/delete/rewind) the caller
+        // owns the next status — don't touch it (and don't stomp a rewind's fresh
+        // sidecar). Otherwise: keep a terminal status (Done/Error) as-is; a sidecar that
+        // vanished mid-turn crashed → Error.
+        if !killed_reader.load(Ordering::SeqCst) {
+            match last_status {
+                Some(SessionStatus::Done) | Some(SessionStatus::Error) => {}
+                _ => crate::commands::emit_claude_status(
+                    &app,
+                    &status_term_id,
+                    SessionStatus::Error,
+                ),
+            }
+        }
         let _ = app.emit(&exit_event, ());
     });
 
-    Ok(ClaudeAgent { child, stdin })
+    Ok(ClaudeAgent {
+        child,
+        stdin,
+        killed,
+    })
 }
 
 /// Parse one sidecar stdout JSON line into a control event, if it is one.
@@ -246,6 +307,21 @@ fn parse_headless(line: &str) -> Option<HeadlessEvent> {
         }),
         _ => None,
     }
+}
+
+/// Map one sidecar stdout JSON line to a live session status, if it implies one.
+fn parse_status(line: &str) -> Option<SessionStatus> {
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    Some(match v.get("t").and_then(|t| t.as_str())? {
+        "init" | "delta" | "thinking" | "tool_use" | "tool_result" | "assistant_uuid" => {
+            SessionStatus::Thinking
+        }
+        "permission" => SessionStatus::BlockedPermission,
+        "question" => SessionStatus::BlockedQuestion,
+        "result" => SessionStatus::Done,
+        "error" => SessionStatus::Error,
+        _ => return None,
+    })
 }
 
 /// The directory containing the running executable (Contents/MacOS in a bundle).

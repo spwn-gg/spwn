@@ -1,6 +1,6 @@
 //! Shared backend state, managed by Tauri and accessed from commands.
 
-use crate::claude::ClaudeAgent;
+use crate::claude::{ClaudeAgent, SessionStatus};
 use crate::hooks::HookRun;
 use crate::projects::ProjectsWatcher;
 use crate::pty::RmuxSession;
@@ -52,4 +52,8 @@ pub struct AppState {
     /// Sessions with a hook executing right now: terminal id → event name. Drives the
     /// live "running" spinner on tabs / the project tree while a hook streams output.
     pub hooks_running: Mutex<HashMap<String, String>>,
+    /// Live Claude session status: terminal id → status. Derived in the sidecar reader
+    /// so background sessions (no pane) still drive the sidebar. Ephemeral (empty on
+    /// launch; restart falls back to persisted `needs_attention`/`attention_reason`).
+    pub claude_status: Mutex<HashMap<String, SessionStatus>>,
 }

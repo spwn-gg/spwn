@@ -33,11 +33,17 @@ pub struct TerminalRec {
     /// The branch this session's branch should merge back into.
     #[serde(default)]
     pub base_branch: Option<String>,
-    /// A persisted attention flag. Interactive attention is in-memory (frontend
-    /// tab state), but a windowless scheduled run has no tab to flag — so the
-    /// nav reflects this on next open. Cleared when the session is viewed.
+    /// A persisted attention flag: the session finished a turn / hit a prompt / failed
+    /// while the user wasn't looking. Set by the sidecar reader (any session) and by
+    /// windowless scheduled runs; cleared when the session is viewed. Survives restart
+    /// (where no live sidecar exists) so the nav still reflects it on next launch.
     #[serde(default)]
     pub needs_attention: bool,
+    /// Why attention is needed — `"blocked"` | `"done"` | `"error"`. Lets the sidebar
+    /// render the right treatment after restart, before a sidecar re-attaches. None
+    /// when `needs_attention` is false.
+    #[serde(default)]
+    pub attention_reason: Option<String>,
 }
 
 fn default_true() -> bool {
