@@ -36,3 +36,9 @@ Copy the `.spwn/hooks/` tree into your own repo root and adapt.
    runs before the worktree is cleaned up.
 
 All scripts here are read-only/echo-style and safe to run.
+
+## Cookbook
+
+For practical, copy-paste recipes (refresh the base branch, per-session preview
+environment, copy secrets, seed a DB, teardown on delete), see
+[`cookbook/`](cookbook/README.md).
