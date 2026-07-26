@@ -23,8 +23,6 @@ pub fn start_scheduler(app: AppHandle) {
         loop {
             interval.tick().await;
             tick(&app);
-            // Idle-stop session compose stacks past their `idle_stop` threshold.
-            crate::commands::compose_idle_sweep(&app.state::<AppState>());
         }
     });
 }
@@ -108,7 +106,6 @@ pub fn fire(app: &AppHandle, project_id: &str, task_id: &str) {
                 parent_id: None,
                 branch: None,
                 base_branch: None,
-                compose_project: None,
                 needs_attention: false,
             });
             Some((terminal_id, directory, context, task))
@@ -145,8 +142,8 @@ pub fn fire(app: &AppHandle, project_id: &str, task_id: &str) {
                     }
                 }
                 persist(&state);
-                // Honor the project's spwn.yaml lifecycle for headless runs too.
-                crate::commands::compose_bring_up_for(&state, &terminal_id, &directory, &wt_path);
+                // Run the project `session-created` hook for the headless run too.
+                crate::commands::hooks_on_session_created(&state, &terminal_id, &directory, &wt_path);
             }
         }
     }

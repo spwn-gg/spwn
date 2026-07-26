@@ -15,30 +15,35 @@ export interface TerminalRec {
 	branch?: string | null;
 	/** The branch this session merges back into. */
 	baseBranch?: string | null;
-	/** docker-compose project name for this session's service stack (null = none). */
-	composeProject?: string | null;
 	/** Persisted attention flag (set by a windowless scheduled run). */
 	needsAttention?: boolean;
 }
 
-/** One service in a session's compose stack (mirrors compose::ServiceState). */
-export interface ServiceState {
-	name: string;
-	/** "service" (long-running) | "harness" (test watcher) | null. */
-	role?: string | null;
-	/** "session" (forked per session) | "shared" (one instance across sessions). */
-	scope: string;
-	/** Compose container state: "running" | "exited" | "-" (not created), … */
-	state: string;
-	/** Live host URL for a published port, when running. */
-	url?: string | null;
+/** One hook script's most recent run (mirrors hooks::HookRun). */
+export interface HookRun {
+	event: string;
+	/** Script basename (e.g. "10-install.sh"). */
+	script: string;
+	exitCode?: number | null;
+	ok: boolean;
+	/** Combined stdout+stderr tail. */
+	output: string;
+	/** Epoch seconds when the run finished. */
+	at: number;
 }
 
-/** A session's compose status (mirrors compose::ComposeStatus). */
-export interface ComposeStatus {
+/** The discovered hook + last run for one lifecycle event (mirrors hooks::HookEventInfo). */
+export interface HookEventInfo {
+	event: string;
+	/** Hook file basename (e.g. "session-created.sh"), or null if none exists. */
+	script?: string | null;
+	lastRun?: HookRun | null;
+}
+
+/** A session's hooks status (mirrors hooks::HooksStatus). */
+export interface HooksStatus {
 	available: boolean;
-	project?: string | null;
-	services: ServiceState[];
+	events: HookEventInfo[];
 }
 
 /** Preview of what merging a session's branch into its base would do. */
