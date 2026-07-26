@@ -44,6 +44,8 @@ export interface HookEventInfo {
 export interface HooksStatus {
 	available: boolean;
 	events: HookEventInfo[];
+	/** The event whose hook is executing right now, if any. */
+	running?: string | null;
 }
 
 /** Preview of what merging a session's branch into its base would do. */

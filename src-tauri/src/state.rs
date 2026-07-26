@@ -49,4 +49,7 @@ pub struct AppState {
     /// Most recent hook run per session: terminal id → (event name → run). Drives
     /// the Hooks panel; cleared when the session is deleted.
     pub hook_runs: Mutex<HashMap<String, BTreeMap<String, HookRun>>>,
+    /// Sessions with a hook executing right now: terminal id → event name. Drives the
+    /// live "running" spinner on tabs / the project tree while a hook streams output.
+    pub hooks_running: Mutex<HashMap<String, String>>,
 }

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import { hooksStatus, hooksRun, onHooksEvent } from './ipc';
+	import { hooksStatus, hooksRun, onHooksEvent, onHookOutput, onHookRunning } from './ipc';
 	import type { HooksStatus, HookEventInfo } from './types';
 	import type { UnlistenFn } from '@tauri-apps/api/event';
 
@@ -10,12 +10,18 @@
 	let loading = $state(true);
 	let busy = $state(false);
 	let openLog = $state<string | null>(null);
-	let unlisten: UnlistenFn | undefined;
+	let unlisten: UnlistenFn[] = [];
 	let timer: ReturnType<typeof setInterval> | undefined;
+
+	// The event whose hook is executing right now, and its live-streamed output lines
+	// (per event), so the panel shows progress as a hook runs — not just the final tail.
+	let runningEvent = $state<string | null>(null);
+	let liveLines = $state<Record<string, string[]>>({});
 
 	async function refresh() {
 		try {
 			status = await hooksStatus(terminalId);
+			runningEvent = status.running ?? null;
 		} catch (e) {
 			onStatus?.(String(e));
 		} finally {
@@ -25,12 +31,25 @@
 
 	onMount(() => {
 		refresh();
-		onHooksEvent(terminalId, refresh).then((u) => (unlisten = u));
+		onHooksEvent(terminalId, refresh).then((u) => unlisten.push(u));
+		// A hook for this session started / finished → toggle the live spinner + log.
+		onHookRunning((e) => {
+			if (e.terminalId !== terminalId) return;
+			runningEvent = e.event;
+			if (e.event) {
+				liveLines = { ...liveLines, [e.event]: [] };
+				openLog = e.event; // auto-open the log so output is visible live
+			}
+		}).then((u) => unlisten.push(u));
+		// Live output lines from the running hook.
+		onHookOutput(terminalId, (e) => {
+			liveLines = { ...liveLines, [e.event]: [...(liveLines[e.event] ?? []), e.line] };
+		}).then((u) => unlisten.push(u));
 		// Light polling so late-finishing hooks / statuses stay fresh while open.
 		timer = setInterval(refresh, 4000);
 	});
 	onDestroy(() => {
-		unlisten?.();
+		unlisten.forEach((u) => u());
 		if (timer) clearInterval(timer);
 	});
 
@@ -51,13 +70,19 @@
 		openLog = openLog === event ? null : event;
 	}
 
-	/** Status dot for an event: green if the last run passed, red if it failed. */
-	function dot(ev: HookEventInfo): '' | 'ok' | 'fail' {
+	/** Status dot for an event: 'run' while executing, else green/red for the last run. */
+	function dot(ev: HookEventInfo): '' | 'ok' | 'fail' | 'run' {
+		if (runningEvent === ev.event) return 'run';
 		if (!ev.lastRun) return '';
 		return ev.lastRun.ok ? 'ok' : 'fail';
 	}
 
 	function logText(ev: HookEventInfo): string {
+		// While running, show the live-streamed output as it arrives.
+		if (runningEvent === ev.event) {
+			const lines = liveLines[ev.event] ?? [];
+			return `$ ${ev.script ?? ev.event} (running…)\n${lines.join('\n') || '…'}`;
+		}
 		if (!ev.lastRun) return '(not run yet)';
 		const r = ev.lastRun;
 		const head = `$ ${r.script}${r.ok ? '' : ` (exit ${r.exitCode ?? '?'})`}`;
@@ -77,7 +102,7 @@
 		<div class="rows">
 			{#each status.events as ev (ev.event)}
 				<div class="row">
-					<span class="d {dot(ev)}" title={dot(ev) || 'not run'}></span>
+					<span class="d {dot(ev)}" title={dot(ev) === 'run' ? 'running…' : dot(ev) || 'not run'}></span>
 					<span class="name">{ev.event}</span>
 					<span class="scripts">
 						{#if ev.script}
@@ -94,7 +119,7 @@
 					>
 					<button
 						class="mini"
-						disabled={busy || !ev.script}
+						disabled={busy || !!runningEvent || !ev.script}
 						onclick={() => run(ev.event)}
 						title="Run this event's hook now">Run</button
 					>
@@ -146,6 +171,18 @@
 	.d.fail {
 		background: #d85a5a;
 		box-shadow: 0 0 6px rgba(216, 90, 90, 0.6);
+	}
+	.d.run {
+		background: transparent;
+		border: 2px solid rgba(127, 163, 223, 0.3);
+		border-top-color: #7fa3df;
+		box-shadow: none;
+		animation: hook-spin 0.7s linear infinite;
+	}
+	@keyframes hook-spin {
+		to {
+			transform: rotate(360deg);
+		}
 	}
 	.name {
 		font-family: ui-monospace, Menlo, monospace;

@@ -4,8 +4,8 @@
 	import PaneManager from '$lib/PaneManager.svelte';
 	import Settings from '$lib/Settings.svelte';
 	import UpdateBanner from '$lib/UpdateBanner.svelte';
-	import { showSettings, openTabs, activeTabKey, closeTab } from '$lib/stores';
-	import { onStoreError } from '$lib/ipc';
+	import { showSettings, openTabs, activeTabKey, closeTab, setHookRunning } from '$lib/stores';
+	import { onStoreError, onHookRunning } from '$lib/ipc';
 	import { checkForUpdate } from '$lib/updater';
 	import { get } from 'svelte/store';
 
@@ -17,6 +17,7 @@
 	let resizing = $state(false);
 	let errorMsg = $state('');
 	let unlistenError: (() => void) | undefined;
+	let unlistenHook: (() => void) | undefined;
 
 	// Restore persisted sidebar layout.
 	onMount(async () => {
@@ -25,12 +26,15 @@
 		collapsed = localStorage.getItem('cm.sidebarCollapsed') === '1';
 		window.addEventListener('keydown', onKey);
 		unlistenError = await onStoreError((m) => (errorMsg = m));
+		// Track hooks running across all sessions → drives tab / tree spinners.
+		unlistenHook = await onHookRunning((e) => setHookRunning(e.terminalId, e.event));
 		// Check GitHub for a newer release; silent if offline / endpoint unset.
 		checkForUpdate({ silent: true });
 	});
 	onDestroy(() => {
 		window.removeEventListener('keydown', onKey);
 		unlistenError?.();
+		unlistenHook?.();
 		stopResize();
 	});
 

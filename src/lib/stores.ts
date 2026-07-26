@@ -64,6 +64,18 @@ export function setSessionBusy(sessionId: string, busy: boolean) {
 /** Which session's code is currently materialized in each project dir (projectId → sessionId). */
 export const activeCodeSession = writable<Record<string, string>>({});
 
+/** Sessions with a `.spwn` hook executing right now (terminalId → event name).
+ * Drives the live spinner on tabs and project-tree rows. */
+export const hookRunning = writable<Map<string, string>>(new Map());
+export function setHookRunning(terminalId: string, event: string | null) {
+	hookRunning.update((m) => {
+		const n = new Map(m);
+		if (event) n.set(terminalId, event);
+		else n.delete(terminalId);
+		return n;
+	});
+}
+
 /** Flag a tab as needing attention — ignored if it's already the focused tab. */
 export function markAttention(key: string) {
 	if (get(activeTabKey) === key) return;
