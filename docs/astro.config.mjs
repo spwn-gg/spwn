@@ -35,7 +35,7 @@ export default defineConfig({
 						{ label: 'Claude Sessions', slug: 'guides/claude-sessions' },
 						{ label: 'Fork & Rewind', slug: 'guides/fork-and-rewind' },
 						{ label: 'Parallel Sessions', slug: 'guides/parallel-sessions' },
-						{ label: 'Per-Session Services', slug: 'guides/services' },
+						{ label: 'Project Hooks', slug: 'guides/hooks' },
 						{ label: 'Composing Context', slug: 'guides/context-composer' },
 						{ label: 'Scheduled Tasks', slug: 'guides/scheduled-tasks' },
 						{ label: 'Settings', slug: 'guides/settings' },

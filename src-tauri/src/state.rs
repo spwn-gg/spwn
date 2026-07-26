@@ -1,16 +1,17 @@
 //! Shared backend state, managed by Tauri and accessed from commands.
 
 use crate::claude::ClaudeAgent;
+use crate::hooks::HookRun;
 use crate::projects::ProjectsWatcher;
 use crate::pty::RmuxSession;
 use crate::settings::Settings;
 use crate::store::ProjectStore;
 use rmux_sdk::Rmux;
 use parking_lot::Mutex;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
-use std::time::{Instant, SystemTime};
+use std::time::SystemTime;
 use tauri::AppHandle;
 use tokio::sync::OnceCell;
 
@@ -45,10 +46,7 @@ pub struct AppState {
     /// ExitRequested handler knows to let the process die instead of staying
     /// alive in the background for the scheduler.
     pub quitting: AtomicBool,
-    /// Last-activity timestamp per session's compose stack (terminal id → instant),
-    /// driving idle-stop. Updated on up/status/logs.
-    pub compose_activity: Mutex<HashMap<String, Instant>>,
-    /// Session stacks currently idle-stopped, so the idle sweep doesn't re-`stop`
-    /// them every tick. Cleared when the stack is marked active again.
-    pub compose_stopped: Mutex<HashSet<String>>,
+    /// Most recent hook run per session: terminal id → (event name → run). Drives
+    /// the Hooks panel; cleared when the session is deleted.
+    pub hook_runs: Mutex<HashMap<String, BTreeMap<String, HookRun>>>,
 }
