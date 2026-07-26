@@ -15,9 +15,21 @@ export interface TerminalRec {
 	branch?: string | null;
 	/** The branch this session merges back into. */
 	baseBranch?: string | null;
-	/** Persisted attention flag (set by a windowless scheduled run). */
+	/** Persisted attention flag: a turn finished / hit a prompt / failed unseen. */
 	needsAttention?: boolean;
+	/** Why attention is needed — 'blocked' | 'done' | 'error' — for restart rendering. */
+	attentionReason?: string | null;
 }
+
+/** Live status of a Claude session (mirrors Rust `SessionStatus`). Drives the
+ * sidebar/tab-bar spinner and attention dots. */
+export type SessionStatus =
+	| 'thinking'
+	| 'blockedPermission'
+	| 'blockedQuestion'
+	| 'done'
+	| 'error'
+	| 'idle';
 
 /** One hook script's most recent run (mirrors hooks::HookRun). */
 export interface HookRun {

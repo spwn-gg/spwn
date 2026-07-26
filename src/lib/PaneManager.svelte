@@ -3,23 +3,40 @@
 	import ClaudePane from './ClaudePane.svelte';
 	import ContextComposer from './ContextComposer.svelte';
 	import ScheduledTasks from './ScheduledTasks.svelte';
-	import { openTabs, activeTabKey, closeTab, hookRunning } from './stores';
+	import { openTabs, activeTabKey, closeTab, hookRunning, claudeStatus } from './stores';
+	import type { OpenTab } from './stores';
 
 	function close(key: string, e: Event) {
 		e.stopPropagation();
 		closeTab(key);
 	}
+
+	/** Attention state for a tab, derived from the live status feed. Suppressed for the
+	 * active tab (you're looking at it); a "thinking" spinner still shows via isBusy. */
+	function tabAttn(tab: OpenTab, activeKey: string | null): 'blocked' | 'done' | 'error' | null {
+		if (!tab.terminalId || tab.key === activeKey) return null;
+		const s = $claudeStatus.get(tab.terminalId);
+		if (s === 'blockedPermission' || s === 'blockedQuestion') return 'blocked';
+		if (s === 'done') return 'done';
+		if (s === 'error') return 'error';
+		return null;
+	}
+	const isBusy = (tab: OpenTab) => tab.terminalId && $claudeStatus.get(tab.terminalId) === 'thinking';
 </script>
 
 <div class="panes">
 	<div class="tabbar" data-tauri-drag-region>
 		{#each $openTabs as tab (tab.key)}
-			<div class="tab" class:active={tab.key === $activeTabKey} class:attn={tab.needsAttention}>
+			{@const attn = tabAttn(tab, $activeTabKey)}
+			<div class="tab" class:active={tab.key === $activeTabKey} class:attn={attn === 'blocked' || attn === 'done'} class:err={attn === 'error'}>
 				<button
 					class="tab-main"
 					onclick={() => activeTabKey.set(tab.key)}
 					title={tab.projectName ? `${tab.title} — ${tab.projectName}` : tab.title}>
-					{#if tab.needsAttention}<span class="attn-dot" title="Needs attention"></span>{/if}
+					{#if attn === 'error'}<span class="attn-dot error" title="Session error"></span>
+					{:else if attn === 'blocked'}<span class="attn-dot blocked" title="Waiting for you"></span>
+					{:else if attn === 'done'}<span class="attn-dot" title="Turn finished — awaiting you"></span>
+					{:else if isBusy(tab)}<span class="think-spin" title="Working…"></span>{/if}
 					{#if tab.terminalId && $hookRunning.has(tab.terminalId)}<span class="hook-spin" title="Running {$hookRunning.get(tab.terminalId)} hook…"></span>{/if}
 					<span class="tab-icon">{tab.kind === 'claude' ? '✦' : tab.kind === 'context' ? '▦' : tab.kind === 'schedule' ? '◷' : '$'}</span>
 					<span class="tab-title">{tab.title}</span>
@@ -90,6 +107,9 @@
 	.tab.attn:not(.active) {
 		color: #f0c674;
 	}
+	.tab.err:not(.active) {
+		color: #e06c6c;
+	}
 	.attn-dot {
 		flex: 0 0 auto;
 		width: 7px;
@@ -97,6 +117,31 @@
 		border-radius: 50%;
 		background: #e0a83a;
 		box-shadow: 0 0 0 2px rgba(224, 168, 58, 0.25);
+	}
+	.attn-dot.blocked {
+		animation: attn-pulse 1.4s ease-in-out infinite;
+	}
+	.attn-dot.error {
+		background: #e06c6c;
+		box-shadow: 0 0 0 2px rgba(224, 108, 108, 0.25);
+	}
+	@keyframes attn-pulse {
+		0%,
+		100% {
+			opacity: 1;
+		}
+		50% {
+			opacity: 0.5;
+		}
+	}
+	.think-spin {
+		flex: 0 0 auto;
+		width: 10px;
+		height: 10px;
+		border-radius: 50%;
+		border: 2px solid rgba(240, 198, 116, 0.25);
+		border-top-color: #e0a83a;
+		animation: hook-spin 0.7s linear infinite;
 	}
 	.hook-spin {
 		flex: 0 0 auto;

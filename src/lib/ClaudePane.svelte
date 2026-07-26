@@ -21,7 +21,6 @@
 		setTabTerminalId,
 		setTabSession,
 		refreshProjects,
-		markAttention,
 		setSessionBusy,
 		pasteToInput,
 		claudeMode
@@ -224,18 +223,15 @@
 					...pendingPermissions,
 					{ id: ev.id, tool: ev.tool, input: ev.input, title: ev.title }
 				];
-				// A background session is now blocked awaiting allow/deny.
-				markAttention(tabKey);
+				// Sidebar/tab-bar attention is driven by the backend `claude://status`
+				// event now (works for background sessions too), not from the pane.
 				break;
 			case 'question':
 				pendingQuestions = [...pendingQuestions, { id: ev.id, questions: ev.questions }];
-				markAttention(tabKey);
 				break;
 			case 'result':
 				busy = false;
 				disarmStall();
-				// A background session finished its turn.
-				markAttention(tabKey);
 				// Snapshot the project's files at this turn (for undo / rewind-restore).
 				if (liveSession && lastAssistantUuid) {
 					checkpointProject(projectId, liveSession, lastAssistantUuid, 'turn').catch((e) =>

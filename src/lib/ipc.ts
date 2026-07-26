@@ -13,6 +13,7 @@ import type {
 	ProjectRec,
 	RepoStatus,
 	ScheduledTask,
+	SessionStatus,
 	Settings,
 	TerminalKind,
 	Turn
@@ -330,6 +331,18 @@ export interface HookRunningEvent {
  * live "running" spinner on tabs and the project tree. */
 export function onHookRunning(cb: (e: HookRunningEvent) => void): Promise<UnlistenFn> {
 	return listen<HookRunningEvent>('hooks://running', (e) => cb(e.payload));
+}
+
+/** A session's live status changed (thinking / blocked / done / error / idle). */
+export interface ClaudeStatusEvent {
+	terminalId: string;
+	status: SessionStatus;
+}
+
+/** Fires (globally) whenever any Claude session's live status changes — drives the
+ * sidebar/tab-bar spinner and attention dots without opening the session. */
+export function onClaudeStatus(cb: (e: ClaudeStatusEvent) => void): Promise<UnlistenFn> {
+	return listen<ClaudeStatusEvent>('claude://status', (e) => cb(e.payload));
 }
 
 /** One streamed output line from a session's currently-running hook. */

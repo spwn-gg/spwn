@@ -5,6 +5,7 @@
 //! stable, persistent ids so they reattach across restarts.
 
 use crate::checkpoints::{self, CheckpointMeta};
+use crate::claude::SessionStatus;
 use crate::gitwt;
 use crate::hooks;
 use crate::pty::{default_shell, find_claude_bin, spawn_rmux_session};
@@ -16,7 +17,7 @@ use rmux_sdk::{EnsureSession, EnsureSessionPolicy, Rmux, RmuxBuilder, SessionNam
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
@@ -342,6 +343,7 @@ pub async fn open_terminal(
                     branch: None,
                     base_branch: None,
                     needs_attention: false,
+                    attention_reason: None,
                 });
             }
         }
@@ -456,6 +458,7 @@ pub fn close_terminal(state: State<AppState>, terminal_id: String) -> Result<(),
     }
     if let Some(mut agent) = state.claude_agents.lock().remove(&terminal_id) {
         agent.kill();
+        clear_claude_status(state.inner(), &terminal_id);
     }
     Ok(())
 }
@@ -955,6 +958,15 @@ pub fn clear_terminal_attention(state: State<AppState>, terminal_id: String) -> 
         let mut store = state.store.lock();
         if let Some(t) = store.terminal_mut(&terminal_id) {
             t.needs_attention = false;
+            t.attention_reason = None;
+        }
+    }
+    // Drop any live "needs you" status too, so the sidebar clears immediately even
+    // though the (still-alive) sidecar won't re-emit until its next event.
+    {
+        let mut map = state.claude_status.lock();
+        if !matches!(map.get(&terminal_id), Some(SessionStatus::Thinking)) {
+            map.remove(&terminal_id);
         }
     }
     persist(&state);
@@ -1043,6 +1055,7 @@ pub fn claude_rewind(
     let cwd_path = std::fs::canonicalize(&cwd).unwrap_or_else(|_| PathBuf::from(&cwd));
     if let Some(mut agent) = state.claude_agents.lock().remove(&terminal_id) {
         agent.kill();
+        clear_claude_status(state.inner(), &terminal_id);
     }
     let agent = crate::claude::spawn_claude_agent(
         app,
@@ -1086,6 +1099,7 @@ pub fn claude_rewind_restore(
     // 1. Kill the sidecar so the working tree is idle.
     if let Some(mut agent) = state.claude_agents.lock().remove(&terminal_id) {
         agent.kill();
+        clear_claude_status(state.inner(), &terminal_id);
     }
     // 2. Restore files (safety snapshot first) while the agent is dead.
     if restore {
@@ -1266,6 +1280,77 @@ fn set_hook_running(state: &AppState, terminal_id: &str, event: Option<&str>) {
             HookRunning {
                 terminal_id: terminal_id.to_string(),
                 event: event.map(str::to_string),
+            },
+        );
+    }
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ClaudeStatusPayload {
+    terminal_id: String,
+    status: SessionStatus,
+}
+
+/// Record a session's live status and broadcast it so the sidebar/tab bar track it.
+/// Also persists a coarse attention flag (+reason) on the record for needs-you states,
+/// so a restart (no live sidecar) still surfaces it. Called from the sidecar reader
+/// thread — reaches shared state via the managed `AppState`.
+pub(crate) fn emit_claude_status(app: &AppHandle, terminal_id: &str, status: SessionStatus) {
+    let state = app.state::<AppState>();
+    {
+        let mut map = state.claude_status.lock();
+        if status == SessionStatus::Idle {
+            map.remove(terminal_id);
+        } else {
+            map.insert(terminal_id.to_string(), status);
+        }
+    }
+    // Persist coarse attention for restart survival + render granularity.
+    let reason = match status {
+        SessionStatus::BlockedPermission | SessionStatus::BlockedQuestion => Some("blocked"),
+        SessionStatus::Done => Some("done"),
+        SessionStatus::Error => Some("error"),
+        _ => None,
+    };
+    if let Some(reason) = reason {
+        let mut changed = false;
+        {
+            let mut store = state.store.lock();
+            if let Some(t) = store.terminal_mut(terminal_id) {
+                if !t.needs_attention || t.attention_reason.as_deref() != Some(reason) {
+                    t.needs_attention = true;
+                    t.attention_reason = Some(reason.to_string());
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            persist(&state);
+        }
+    }
+    let _ = app.emit(
+        "claude://status",
+        ClaudeStatusPayload {
+            terminal_id: terminal_id.to_string(),
+            status,
+        },
+    );
+}
+
+/// Clear a session's live status entry and broadcast `idle` — used when a sidecar is
+/// intentionally torn down (close/delete/rewind) so the reader thread's exit doesn't
+/// own the transition.
+fn clear_claude_status(state: &AppState, terminal_id: &str) {
+    {
+        state.claude_status.lock().remove(terminal_id);
+    }
+    if let Some(app) = state.app.lock().as_ref() {
+        let _ = app.emit(
+            "claude://status",
+            ClaudeStatusPayload {
+                terminal_id: terminal_id.to_string(),
+                status: SessionStatus::Idle,
             },
         );
     }
@@ -1533,6 +1618,7 @@ async fn kill_terminals(state: &AppState, terminal_ids: &[String]) {
         }
         if let Some(mut agent) = state.claude_agents.lock().remove(tid) {
             agent.kill();
+            clear_claude_status(state, tid);
         }
         rmux_ids.push(tid.clone());
     }

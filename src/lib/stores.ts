@@ -2,7 +2,7 @@
 
 import { writable, derived, get } from 'svelte/store';
 import { listProjects } from './ipc';
-import type { ProjectRec, TerminalKind } from './types';
+import type { ProjectRec, SessionStatus, TerminalKind } from './types';
 
 /** A pane is a terminal (shell/claude), the context composer, or the scheduler. */
 export type PaneKind = TerminalKind | 'context' | 'schedule';
@@ -40,8 +40,6 @@ export interface OpenTab {
 	claudeFork?: string;
 	parentTerminalId?: string;
 	initialPrompt?: string;
-	/** A background tab needs the user's attention (permission prompt / turn done). */
-	needsAttention?: boolean;
 }
 
 export const openTabs = writable<OpenTab[]>([]);
@@ -76,19 +74,18 @@ export function setHookRunning(terminalId: string, event: string | null) {
 	});
 }
 
-/** Flag a tab as needing attention — ignored if it's already the focused tab. */
-export function markAttention(key: string) {
-	if (get(activeTabKey) === key) return;
-	openTabs.update((ts) => ts.map((t) => (t.key === key ? { ...t, needsAttention: true } : t)));
+/** Live Claude session status (terminalId → status), fed by the backend `claude://status`
+ * event. The single source of truth for the sidebar/tab-bar spinner and attention dots —
+ * it tracks background sessions the pane can't see. `idle`/null removes the entry. */
+export const claudeStatus = writable<Map<string, SessionStatus>>(new Map());
+export function setClaudeStatus(terminalId: string, status: SessionStatus | null) {
+	claudeStatus.update((m) => {
+		const n = new Map(m);
+		if (status && status !== 'idle') n.set(terminalId, status);
+		else n.delete(terminalId);
+		return n;
+	});
 }
-
-// Focusing a tab clears its attention flag.
-activeTabKey.subscribe((key) => {
-	if (!key) return;
-	openTabs.update((ts) =>
-		ts.map((t) => (t.key === key && t.needsAttention ? { ...t, needsAttention: false } : t))
-	);
-});
 
 /** Claude permission/execution mode. Kept in sync with InputBar's local union. */
 export type PermMode = 'default' | 'acceptEdits' | 'plan' | 'auto';

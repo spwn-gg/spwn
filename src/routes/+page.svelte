@@ -4,8 +4,17 @@
 	import PaneManager from '$lib/PaneManager.svelte';
 	import Settings from '$lib/Settings.svelte';
 	import UpdateBanner from '$lib/UpdateBanner.svelte';
-	import { showSettings, openTabs, activeTabKey, closeTab, setHookRunning } from '$lib/stores';
-	import { onStoreError, onHookRunning } from '$lib/ipc';
+	import {
+		showSettings,
+		openTabs,
+		activeTabKey,
+		activeTab,
+		closeTab,
+		setHookRunning,
+		setClaudeStatus
+	} from '$lib/stores';
+	import { onStoreError, onHookRunning, onClaudeStatus, clearTerminalAttention } from '$lib/ipc';
+	import type { SessionStatus } from '$lib/types';
 	import { checkForUpdate } from '$lib/updater';
 	import { get } from 'svelte/store';
 
@@ -18,6 +27,10 @@
 	let errorMsg = $state('');
 	let unlistenError: (() => void) | undefined;
 	let unlistenHook: (() => void) | undefined;
+	let unlistenStatus: (() => void) | undefined;
+
+	// States that "need you" — suppressed for the session you're already looking at.
+	const NEEDS_YOU: SessionStatus[] = ['done', 'blockedPermission', 'blockedQuestion', 'error'];
 
 	// Restore persisted sidebar layout.
 	onMount(async () => {
@@ -28,6 +41,18 @@
 		unlistenError = await onStoreError((m) => (errorMsg = m));
 		// Track hooks running across all sessions → drives tab / tree spinners.
 		unlistenHook = await onHookRunning((e) => setHookRunning(e.terminalId, e.event));
+		// Track live Claude session status → drives sidebar/tab-bar spinners + attention.
+		unlistenStatus = await onClaudeStatus((e) => {
+			const active = get(activeTab);
+			// If you're already looking at this session, don't nag — clear it (and the
+			// persisted flag) instead of lighting a dot. A live "thinking" still shows.
+			if (active?.terminalId === e.terminalId && NEEDS_YOU.includes(e.status)) {
+				setClaudeStatus(e.terminalId, 'idle');
+				clearTerminalAttention(e.terminalId).catch(() => {});
+				return;
+			}
+			setClaudeStatus(e.terminalId, e.status);
+		});
 		// Check GitHub for a newer release; silent if offline / endpoint unset.
 		checkForUpdate({ silent: true });
 	});
@@ -35,6 +60,7 @@
 		window.removeEventListener('keydown', onKey);
 		unlistenError?.();
 		unlistenHook?.();
+		unlistenStatus?.();
 		stopResize();
 	});
 

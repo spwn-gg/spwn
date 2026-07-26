@@ -20,7 +20,9 @@
 		refreshProjects,
 		openTabs,
 		activeTab,
-		hookRunning
+		hookRunning,
+		claudeStatus,
+		setClaudeStatus
 	} from './stores';
 	import { get } from 'svelte/store';
 	import type { ProjectRec, TerminalRec } from './types';
@@ -154,7 +156,10 @@
 	}
 
 	function openExisting(p: ProjectRec, t: TerminalRec) {
-		// Viewing a session clears its persisted attention flag (from a headless run).
+		// Viewing a session clears its attention. Drop the live "needs you" status now so
+		// the dot clears immediately (the still-alive sidecar won't re-emit until its next
+		// event); keep a live "thinking" spinner. Also clear the persisted flag.
+		if ($claudeStatus.get(t.id) !== 'thinking') setClaudeStatus(t.id, 'idle');
 		if (t.needsAttention) {
 			clearTerminalAttention(t.id).then(() => refreshProjects());
 		}
@@ -260,11 +265,27 @@
 
 	// Highlight the row backing the currently-focused tab.
 	const isActiveTerm = (t: TerminalRec) => $activeTab?.terminalId === t.id;
-	// A session needs attention: either a background tab flagged it (permission /
-	// turn done) or a windowless scheduled run persisted the flag on the record.
-	const attnFor = (t: TerminalRec) =>
-		t.needsAttention === true ||
-		$openTabs.some((tab) => tab.terminalId === t.id && tab.needsAttention);
+
+	/** The status token to render on a session row: a live spinner while it works, or an
+	 * attention state when it needs you. Prefers the live `claude://status` feed; falls
+	 * back to the persisted flag (+reason) when no sidecar is attached (e.g. after
+	 * restart). Attention states are hidden for the session you're already viewing. */
+	type RowStatus = 'thinking' | 'blocked' | 'done' | 'error' | null;
+	function statusFor(t: TerminalRec): RowStatus {
+		const live = $claudeStatus.get(t.id);
+		let s: RowStatus = null;
+		if (live === 'thinking') s = 'thinking';
+		else if (live === 'blockedPermission' || live === 'blockedQuestion') s = 'blocked';
+		else if (live === 'done') s = 'done';
+		else if (live === 'error') s = 'error';
+		else if (t.needsAttention) {
+			// No live sidecar → fall back to the persisted reason.
+			s = t.attentionReason === 'blocked' ? 'blocked' : t.attentionReason === 'error' ? 'error' : 'done';
+		}
+		// You're looking at it — don't nag with an attention dot (a spinner still shows).
+		if (s && s !== 'thinking' && isActiveTerm(t)) return null;
+		return s;
+	}
 	const isActiveCtx = (p: ProjectRec) =>
 		$activeTab?.kind === 'context' && $activeTab?.projectId === p.id;
 	const isActiveSchedule = (p: ProjectRec) =>
@@ -284,6 +305,7 @@
 {#snippet sessionNode(p: ProjectRec, node: SessionNode, depth: number)}
 	{@const t = node.t}
 	{@const open = !collapsed.has('s:' + t.id)}
+	{@const status = statusFor(t)}
 	<div class="row session" class:active={isActiveTerm(t)} style="--depth: {depth}">
 		{#if node.children.length}
 			<button class="twisty" title={open ? 'Hide branches' : 'Show branches'} onclick={() => toggle('s:' + t.id)}>{open ? '▾' : '▸'}</button>
@@ -292,10 +314,13 @@
 		{/if}
 		<button class="row-main" onclick={() => openExisting(p, t)} title={t.title}>
 			<span class="t-icon" class:branch={depth > 0}>{depth > 0 ? '↳' : '✦'}</span>
-			<span class="t-title" class:attn={attnFor(t)}>{t.title}</span>
+			<span class="t-title" class:attn={status === 'blocked' || status === 'done'} class:err={status === 'error'}>{t.title}</span>
 			{#if $hookRunning.has(t.id)}<span class="hook-spin" title="Running {$hookRunning.get(t.id)} hook…"></span>{/if}
 			{#if t.branch}<span class="wt-chip" title="git worktree branch: {t.branch}">⎇ {t.branch.replace(/^cm\//, '')}</span>{/if}
-			{#if attnFor(t)}<span class="attn-dot" title="Needs attention"></span>{/if}
+			{#if status === 'thinking'}<span class="think-spin" title="Working…"></span>
+			{:else if status === 'blocked'}<span class="attn-dot blocked" title="Waiting for you"></span>
+			{:else if status === 'done'}<span class="attn-dot" title="Turn finished — awaiting you"></span>
+			{:else if status === 'error'}<span class="attn-dot error" title="Session error"></span>{/if}
 			{#if node.children.length}<span class="count" title="{node.children.length} branch(es)">{node.children.length}</span>{/if}
 		</button>
 		<button class="icon-btn fork" title={t.sessionId ? 'Branch a new session from here' : 'Send a message first to enable branching'} disabled={!t.sessionId} onclick={(e) => forkSession(p, t, e)}>⑂</button>
@@ -674,6 +699,9 @@
 	.t-title.attn {
 		color: #f0c674;
 	}
+	.t-title.err {
+		color: #e06c6c;
+	}
 	.attn-dot {
 		flex: 0 0 auto;
 		width: 7px;
@@ -681,6 +709,35 @@
 		border-radius: 50%;
 		background: #e0a83a;
 		box-shadow: 0 0 0 2px rgba(224, 168, 58, 0.22);
+	}
+	/* Blocked-on-you pulses to read as "act now"; done is a steady dot. */
+	.attn-dot.blocked {
+		animation: attn-pulse 1.4s ease-in-out infinite;
+	}
+	.attn-dot.error {
+		background: #e06c6c;
+		box-shadow: 0 0 0 2px rgba(224, 108, 108, 0.22);
+	}
+	@keyframes attn-pulse {
+		0%,
+		100% {
+			opacity: 1;
+			box-shadow: 0 0 0 2px rgba(224, 168, 58, 0.22);
+		}
+		50% {
+			opacity: 0.55;
+			box-shadow: 0 0 0 4px rgba(224, 168, 58, 0.12);
+		}
+	}
+	/* A working session: a cool-toned spinner, distinct from the accent hook spinner. */
+	.think-spin {
+		flex: 0 0 auto;
+		width: 10px;
+		height: 10px;
+		border-radius: 50%;
+		border: 2px solid rgba(240, 198, 116, 0.25);
+		border-top-color: #e0a83a;
+		animation: hook-spin 0.7s linear infinite;
 	}
 	.hook-spin {
 		flex: 0 0 auto;

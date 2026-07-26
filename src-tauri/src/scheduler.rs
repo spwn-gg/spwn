@@ -107,6 +107,7 @@ pub fn fire(app: &AppHandle, project_id: &str, task_id: &str) {
                 branch: None,
                 base_branch: None,
                 needs_attention: false,
+                attention_reason: None,
             });
             Some((terminal_id, directory, context, task))
         })
