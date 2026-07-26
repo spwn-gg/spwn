@@ -641,6 +641,158 @@ pub fn commit_session_turn(
     gitwt::commit_all(Path::new(&cwd), &message).map(|_| ())
 }
 
+// ---------------------------------------------------------------------------
+// Source Control (VS Code-style git for a project's *main* checkout).
+// These act on `project.directory`, distinct from per-session worktrees.
+// ---------------------------------------------------------------------------
+
+/// A project's git repo status: current branch, upstream tracking, how far
+/// ahead/behind it is, and whether the working tree is dirty.
+#[derive(Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoStatus {
+    /// Whether the project directory is inside a git repository at all.
+    pub is_repo: bool,
+    /// Current branch (None on detached HEAD or when not a repo).
+    pub branch: Option<String>,
+    /// Upstream tracking branch, e.g. "origin/main" (None if none configured).
+    pub upstream: Option<String>,
+    /// Commits ahead of upstream.
+    pub ahead: u32,
+    /// Commits behind upstream.
+    pub behind: u32,
+    /// Working tree has staged/unstaged changes.
+    pub dirty: bool,
+}
+
+/// Local + remote branches for a project's repo, with the current one flagged.
+#[derive(Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct GitBranches {
+    pub current: Option<String>,
+    pub local: Vec<String>,
+    pub remote: Vec<String>,
+}
+
+/// Resolve a project's directory path from the store.
+fn project_dir(state: &State<AppState>, project_id: &str) -> Result<String, String> {
+    state
+        .store
+        .lock()
+        .project(project_id)
+        .map(|p| p.directory.clone())
+        .ok_or_else(|| "no such project".to_string())
+}
+
+/// The git status of a project's main checkout (safe to call on any project —
+/// returns `is_repo: false` when the directory isn't a git repo).
+#[tauri::command]
+pub fn git_repo_status(state: State<AppState>, project_id: String) -> Result<RepoStatus, String> {
+    let dir = project_dir(&state, &project_id)?;
+    let dir = Path::new(&dir);
+    if gitwt::repo_root(dir).is_none() {
+        return Ok(RepoStatus::default());
+    }
+    let (ahead, behind) = gitwt::ahead_behind(dir);
+    Ok(RepoStatus {
+        is_repo: true,
+        branch: gitwt::current_branch(dir),
+        upstream: gitwt::upstream_branch(dir),
+        ahead,
+        behind,
+        dirty: !gitwt::is_clean(dir),
+    })
+}
+
+/// List a project's local and remote-tracking branches.
+#[tauri::command]
+pub fn git_branches(state: State<AppState>, project_id: String) -> Result<GitBranches, String> {
+    let dir = project_dir(&state, &project_id)?;
+    let dir = Path::new(&dir);
+    if gitwt::repo_root(dir).is_none() {
+        return Ok(GitBranches::default());
+    }
+    Ok(GitBranches {
+        current: gitwt::current_branch(dir),
+        local: gitwt::local_branches(dir)?,
+        remote: gitwt::remote_branches(dir)?,
+    })
+}
+
+/// Check out an existing branch in a project's main checkout.
+#[tauri::command]
+pub fn git_checkout(
+    state: State<AppState>,
+    project_id: String,
+    branch: String,
+) -> Result<(), String> {
+    let dir = project_dir(&state, &project_id)?;
+    gitwt::checkout_branch(Path::new(&dir), &branch)
+}
+
+/// Create a new branch off HEAD and switch to it.
+#[tauri::command]
+pub fn git_create_branch(
+    state: State<AppState>,
+    project_id: String,
+    name: String,
+) -> Result<(), String> {
+    let dir = project_dir(&state, &project_id)?;
+    gitwt::create_branch(Path::new(&dir), &name)
+}
+
+/// Run a blocking git-network op off the async runtime's worker threads. The
+/// project dir is resolved (and cloned) up front so the store `Mutex` is never
+/// held across the await.
+async fn run_net<F>(
+    state: State<'_, AppState>,
+    project_id: String,
+    op: F,
+) -> Result<String, String>
+where
+    F: FnOnce(&Path) -> Result<String, String> + Send + 'static,
+{
+    let dir = project_dir(&state, &project_id)?;
+    tauri::async_runtime::spawn_blocking(move || op(Path::new(&dir)))
+        .await
+        .map_err(|e| format!("git task failed: {e}"))?
+}
+
+/// Fetch all remotes for a project's repo.
+#[tauri::command]
+pub async fn git_fetch(state: State<'_, AppState>, project_id: String) -> Result<String, String> {
+    run_net(state, project_id, |d| gitwt::fetch(d)).await
+}
+
+/// Fast-forward-only pull.
+#[tauri::command]
+pub async fn git_pull(state: State<'_, AppState>, project_id: String) -> Result<String, String> {
+    run_net(state, project_id, |d| gitwt::pull(d)).await
+}
+
+/// Push the current branch (setting upstream if it has none yet).
+#[tauri::command]
+pub async fn git_push(state: State<'_, AppState>, project_id: String) -> Result<String, String> {
+    run_net(state, project_id, |d| {
+        let set_upstream = gitwt::upstream_branch(d).is_none();
+        gitwt::push(d, set_upstream)
+    })
+    .await
+}
+
+/// VS Code "Sync": fetch, fast-forward pull, then push. Stops at the first error.
+#[tauri::command]
+pub async fn git_sync(state: State<'_, AppState>, project_id: String) -> Result<String, String> {
+    run_net(state, project_id, |d| {
+        gitwt::fetch(d)?;
+        gitwt::pull(d)?;
+        let set_upstream = gitwt::upstream_branch(d).is_none();
+        gitwt::push(d, set_upstream)?;
+        Ok("Synced.".to_string())
+    })
+    .await
+}
+
 /// Persist a discovered claude session id onto a terminal (looked up by id across
 /// all projects, so headless/scheduled runs can bind without knowing the project).
 pub(crate) fn bind_session(state: &AppState, terminal_id: &str, session_id: &str) {

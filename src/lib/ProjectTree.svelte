@@ -9,8 +9,10 @@
 		onScheduledTaskFired,
 		clearTerminalAttention,
 		openInVscode,
-		sessionMergeStatus
+		sessionMergeStatus,
+		gitRepoStatus
 	} from './ipc';
+	import SourceControl from './SourceControl.svelte';
 	import {
 		projects,
 		openTab,
@@ -27,6 +29,29 @@
 	let openMenuId = $state<string | null>(null);
 	let menuPos = $state({ x: 0, y: 0 });
 	let unlisten: Array<() => void> = [];
+
+	// Which projects are git repos (lazily probed when a project is expanded), so
+	// the Source Control section only shows for repos. `checkedRepos` dedupes the probe.
+	let repoIsGit = $state<Record<string, boolean>>({});
+	const checkedRepos = new Set<string>();
+	// Which projects have their Source Control section expanded (collapsed by default).
+	let scmOpen = $state(new Set<string>());
+
+	$effect(() => {
+		for (const p of $projects) {
+			if (collapsed.has(p.id) || checkedRepos.has(p.id)) continue;
+			checkedRepos.add(p.id);
+			gitRepoStatus(p.id)
+				.then((s) => (repoIsGit = { ...repoIsGit, [p.id]: s.isRepo }))
+				.catch(() => {});
+		}
+	});
+
+	function toggleScm(id: string) {
+		const next = new Set(scmOpen);
+		next.has(id) ? next.delete(id) : next.add(id);
+		scmOpen = next;
+	}
 
 	const closeMenu = () => {
 		openMenuId = null;
@@ -315,6 +340,17 @@
 							{#if p.scheduledTasks?.length}<span class="count">{p.scheduledTasks.length}</span>{/if}
 						</button>
 					</div>
+					{#if repoIsGit[p.id]}
+						<div class="row ctx-row">
+							<button class="row-main" onclick={() => toggleScm(p.id)}>
+								<span class="t-icon ctx">{scmOpen.has(p.id) ? '▾' : '▸'}</span>
+								<span class="t-title">Source Control</span>
+							</button>
+						</div>
+						{#if scmOpen.has(p.id)}
+							<SourceControl projectId={p.id} onChanged={() => refreshProjects()} />
+						{/if}
+					{/if}
 					{#each shells(p) as t (t.id)}
 						{@render termRow(p, t, false)}
 					{/each}
