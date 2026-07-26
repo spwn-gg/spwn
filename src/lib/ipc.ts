@@ -7,7 +7,7 @@ import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import type {
 	CheckpointMeta,
 	ClaudeEvent,
-	ComposeStatus,
+	HooksStatus,
 	MergeStatus,
 	ProjectRec,
 	ScheduledTask,
@@ -269,31 +269,21 @@ export function claudeRewindRestore(
 	return invoke('claude_rewind_restore', { terminalId, anchorUuid, restore });
 }
 
-// --- Per-session docker-compose services ---
+// --- Project hooks (discovered shell scripts run on session lifecycle events) ---
 
-/** Current compose status for a session (availability, project, services + URLs). */
-export function composeStatus(terminalId: string): Promise<ComposeStatus> {
-	return invoke('compose_status', { terminalId });
+/** Discovered hooks + last-run results for a session's worktree. */
+export function hooksStatus(terminalId: string): Promise<HooksStatus> {
+	return invoke('hooks_status', { terminalId });
 }
 
-/** Bring a session's service stack up (or resume it if idle-stopped). */
-export function composeUp(terminalId: string): Promise<void> {
-	return invoke('compose_up', { terminalId });
+/** Manually re-run one event's hook for a session (resolves when the script finishes). */
+export function hooksRun(terminalId: string, event: string): Promise<void> {
+	return invoke('hooks_run', { terminalId, event });
 }
 
-/** Tear a session's service stack down (down -v). */
-export function composeDown(terminalId: string): Promise<void> {
-	return invoke('compose_down', { terminalId });
-}
-
-/** Recent logs for one service in a session's stack. */
-export function composeLogs(terminalId: string, service: string, tail = 200): Promise<string> {
-	return invoke('compose_logs', { terminalId, service, tail });
-}
-
-/** Fires when a session's compose stack changes state (up/down/idle-stop). */
-export function onComposeEvent(terminalId: string, cb: () => void): Promise<UnlistenFn> {
-	return listen(`compose://event/${terminalId}`, () => cb());
+/** Fires when a session's hooks finish running (created/ready/deleted/manual re-run). */
+export function onHooksEvent(terminalId: string, cb: () => void): Promise<UnlistenFn> {
+	return listen(`hooks://event/${terminalId}`, () => cb());
 }
 
 // --- Code checkpoints ---
