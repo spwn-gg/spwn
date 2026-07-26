@@ -28,7 +28,10 @@ git fetch origin main
 current_branch="$(git rev-parse --abbrev-ref HEAD)"
 if [ "$current_branch" = "main" ]; then
   # On main: fast-forward only so we never create a merge commit or hit conflicts.
-  git merge --ff-only origin/main
+  # Fail soft: if local main has diverged from origin/main (e.g. a local commit
+  # that later landed upstream as a squash-merged PR, giving it a new hash), the
+  # ff would fail and abort the whole hook under `set -e`. Warn and skip instead.
+  git merge --ff-only origin/main || echo "[$SPWN_EVENT] local main diverged from origin/main; skipping ff"
 else
   # Not on main (e.g. parent checked out elsewhere): update the local main ref
   # to match the remote without switching branches. No-op if it can't fast-forward.
