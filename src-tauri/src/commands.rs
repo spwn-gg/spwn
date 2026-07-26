@@ -660,6 +660,7 @@ pub async fn delete_terminal(
         }
     }
     state.hook_runs.lock().remove(&terminal_id);
+    state.hooks_running.lock().remove(&terminal_id);
     if let (Some(sid), Some(app_data)) = (session_id, app_data_dir(&state)) {
         checkpoints::remove_session(&app_data, &sid);
     }
@@ -1221,15 +1222,82 @@ fn emit_hooks_event(state: &AppState, terminal_id: &str) {
     }
 }
 
+/// One streamed line of a running hook's output, pushed to the session's panel live.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HookOutput<'a> {
+    event: &'a str,
+    line: &'a str,
+}
+
+/// A session's hook starting or finishing. Broadcast globally (not keyed by session)
+/// so the tab bar and project tree can drive a "running" spinner without wiring a
+/// listener per session. `event` is None when the hook finished.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HookRunning {
+    terminal_id: String,
+    event: Option<String>,
+}
+
+/// Mark (or clear) a session's currently-running hook and broadcast the change so the
+/// tab / tree spinner tracks it.
+fn set_hook_running(state: &AppState, terminal_id: &str, event: Option<&str>) {
+    {
+        let mut running = state.hooks_running.lock();
+        match event {
+            Some(e) => {
+                running.insert(terminal_id.to_string(), e.to_string());
+            }
+            None => {
+                running.remove(terminal_id);
+            }
+        }
+    }
+    if let Some(app) = state.app.lock().as_ref() {
+        let _ = app.emit(
+            "hooks://running",
+            HookRunning {
+                terminal_id: terminal_id.to_string(),
+                event: event.map(str::to_string),
+            },
+        );
+    }
+}
+
+/// Stream one output line of a running hook to the session's Hooks panel.
+fn emit_hook_output(state: &AppState, terminal_id: &str, event: &str, line: &str) {
+    if let Some(app) = state.app.lock().as_ref() {
+        let _ = app.emit(
+            &format!("hooks://output/{terminal_id}"),
+            HookOutput { event, line },
+        );
+    }
+}
+
 /// Run the event's hook (if one exists) synchronously, recording the result and
 /// notifying the panel. Hooks are intentionally **synchronous**: the session waits for
 /// the script to finish. A hook that wants background work should background it itself
 /// (e.g. `my-server & disown`), which keeps the model simple and predictable.
+///
+/// While it runs, the session is flagged "running" (driving a spinner on its tab / tree
+/// row) and each output line is streamed to the Hooks panel live.
 fn fire_hooks(state: &AppState, ctx: &hooks::HookCtx, event: &str) {
-    let Some(run) = hooks::run_event_sync(ctx, event) else {
+    // Only announce a run when a hook actually exists for this event, so idle events
+    // don't flash a spinner.
+    if hooks::discover(&ctx.worktree, event).is_none() {
         return;
+    }
+    let terminal_id = ctx.terminal_id.clone();
+    set_hook_running(state, &terminal_id, Some(event));
+    let run = {
+        let mut on_line = |line: &str| emit_hook_output(state, &terminal_id, event, line);
+        hooks::run_event_sync(ctx, event, &mut on_line)
     };
-    record_hook_run(state, &ctx.terminal_id, event, run);
+    set_hook_running(state, &terminal_id, None);
+    if let Some(run) = run {
+        record_hook_run(state, &terminal_id, event, run);
+    }
 }
 
 /// Run the `session-created` hook (synchronously) for a freshly-worktree'd session.
@@ -1263,7 +1331,9 @@ pub async fn hooks_status(
         .get(&terminal_id)
         .cloned()
         .unwrap_or_default();
-    Ok(hooks::status(&ctx.worktree, &last))
+    let mut st = hooks::status(&ctx.worktree, &last);
+    st.running = state.hooks_running.lock().get(&terminal_id).cloned();
+    Ok(st)
 }
 
 /// Manually re-run one event's hook for a session. Runs synchronously (awaits the

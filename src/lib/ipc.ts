@@ -286,6 +286,32 @@ export function onHooksEvent(terminalId: string, cb: () => void): Promise<Unlist
 	return listen(`hooks://event/${terminalId}`, () => cb());
 }
 
+/** A hook starting (`event` set) or finishing (`event` null) for a session. */
+export interface HookRunningEvent {
+	terminalId: string;
+	event: string | null;
+}
+
+/** Fires (globally) whenever any session's hook starts or finishes — drives the
+ * live "running" spinner on tabs and the project tree. */
+export function onHookRunning(cb: (e: HookRunningEvent) => void): Promise<UnlistenFn> {
+	return listen<HookRunningEvent>('hooks://running', (e) => cb(e.payload));
+}
+
+/** One streamed output line from a session's currently-running hook. */
+export interface HookOutputEvent {
+	event: string;
+	line: string;
+}
+
+/** Streams each output line of a session's running hook, live. */
+export function onHookOutput(
+	terminalId: string,
+	cb: (e: HookOutputEvent) => void
+): Promise<UnlistenFn> {
+	return listen<HookOutputEvent>(`hooks://output/${terminalId}`, (e) => cb(e.payload));
+}
+
 // --- Code checkpoints ---
 
 /** Snapshot the project directory (kind: 'turn' | 'baseline' | …). */

@@ -3,7 +3,7 @@
 	import ClaudePane from './ClaudePane.svelte';
 	import ContextComposer from './ContextComposer.svelte';
 	import ScheduledTasks from './ScheduledTasks.svelte';
-	import { openTabs, activeTabKey, closeTab } from './stores';
+	import { openTabs, activeTabKey, closeTab, hookRunning } from './stores';
 
 	function close(key: string, e: Event) {
 		e.stopPropagation();
@@ -20,6 +20,7 @@
 					onclick={() => activeTabKey.set(tab.key)}
 					title={tab.projectName ? `${tab.title} — ${tab.projectName}` : tab.title}>
 					{#if tab.needsAttention}<span class="attn-dot" title="Needs attention"></span>{/if}
+					{#if tab.terminalId && $hookRunning.has(tab.terminalId)}<span class="hook-spin" title="Running {$hookRunning.get(tab.terminalId)} hook…"></span>{/if}
 					<span class="tab-icon">{tab.kind === 'claude' ? '✦' : tab.kind === 'context' ? '▦' : tab.kind === 'schedule' ? '◷' : '$'}</span>
 					<span class="tab-title">{tab.title}</span>
 					{#if tab.projectName && tab.kind !== 'context' && tab.kind !== 'schedule'}
@@ -96,6 +97,20 @@
 		border-radius: 50%;
 		background: #e0a83a;
 		box-shadow: 0 0 0 2px rgba(224, 168, 58, 0.25);
+	}
+	.hook-spin {
+		flex: 0 0 auto;
+		width: 10px;
+		height: 10px;
+		border-radius: 50%;
+		border: 2px solid rgba(127, 163, 223, 0.3);
+		border-top-color: var(--accent-text);
+		animation: hook-spin 0.7s linear infinite;
+	}
+	@keyframes hook-spin {
+		to {
+			transform: rotate(360deg);
+		}
 	}
 	.tab-main {
 		display: flex;

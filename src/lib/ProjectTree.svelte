@@ -13,7 +13,15 @@
 		openCheckpointDiff,
 		sessionMergeStatus
 	} from './ipc';
-	import { projects, openTab, closeTab, refreshProjects, openTabs, activeTab } from './stores';
+	import {
+		projects,
+		openTab,
+		closeTab,
+		refreshProjects,
+		openTabs,
+		activeTab,
+		hookRunning
+	} from './stores';
 	import { get } from 'svelte/store';
 	import type { ProjectRec, TerminalRec } from './types';
 
@@ -301,6 +309,7 @@
 		<button class="row-main" onclick={() => openExisting(p, t)} title={t.title}>
 			<span class="t-icon" class:branch={depth > 0}>{depth > 0 ? '↳' : '✦'}</span>
 			<span class="t-title" class:attn={attnFor(t)}>{t.title}</span>
+			{#if $hookRunning.has(t.id)}<span class="hook-spin" title="Running {$hookRunning.get(t.id)} hook…"></span>{/if}
 			{#if t.branch}<span class="wt-chip" title="git worktree branch: {t.branch}">⎇ {t.branch.replace(/^cm\//, '')}</span>{/if}
 			{#if attnFor(t)}<span class="attn-dot" title="Needs attention"></span>{/if}
 			{#if node.children.length}<span class="count" title="{node.children.length} branch(es)">{node.children.length}</span>{/if}
@@ -700,6 +709,20 @@
 		border-radius: 50%;
 		background: #e0a83a;
 		box-shadow: 0 0 0 2px rgba(224, 168, 58, 0.22);
+	}
+	.hook-spin {
+		flex: 0 0 auto;
+		width: 10px;
+		height: 10px;
+		border-radius: 50%;
+		border: 2px solid rgba(127, 163, 223, 0.3);
+		border-top-color: var(--accent-text);
+		animation: hook-spin 0.7s linear infinite;
+	}
+	@keyframes hook-spin {
+		to {
+			transform: rotate(360deg);
+		}
 	}
 	.t-icon {
 		color: var(--accent-text);

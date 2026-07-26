@@ -21,8 +21,11 @@
 
 use serde::Serialize;
 use std::collections::BTreeMap;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// The lifecycle events spwn fires hooks for (also the discoverable file stems).
@@ -80,6 +83,9 @@ pub struct HooksStatus {
     /// Whether this session has a worktree to discover hooks in.
     pub available: bool,
     pub events: Vec<HookEventInfo>,
+    /// The event whose hook is executing right now (if any), so a freshly-opened
+    /// panel shows the running state without waiting for the next stream event.
+    pub running: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -148,7 +154,11 @@ fn tail(s: &str, cap: usize) -> String {
 
 /// Run the event's hook script, capturing its outcome. Executes the file directly
 /// when it's executable (honoring its shebang), otherwise via `sh`. Never panics.
-fn run_one(ctx: &HookCtx, event: &str, script: &Path) -> HookRun {
+///
+/// Streams the script's output **live**: each stdout/stderr line is handed to
+/// `on_line` as it's produced (so the UI can show progress while a hook runs), and
+/// the same lines are accumulated into the returned [`HookRun`]'s captured tail.
+fn run_one(ctx: &HookCtx, event: &str, script: &Path, on_line: &mut dyn FnMut(&str)) -> HookRun {
     let name = script
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
@@ -165,7 +175,9 @@ fn run_one(ctx: &HookCtx, event: &str, script: &Path) -> HookRun {
         .env("SPWN_EVENT", event)
         .env("SPWN_TERMINAL_ID", &ctx.terminal_id)
         .env("SPWN_PROJECT_DIR", &ctx.project_dir)
-        .env("SPWN_WORKTREE", ctx.worktree.to_string_lossy().as_ref());
+        .env("SPWN_WORKTREE", ctx.worktree.to_string_lossy().as_ref())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     if let Some(b) = &ctx.branch {
         cmd.env("SPWN_BRANCH", b);
     }
@@ -176,40 +188,77 @@ fn run_one(ctx: &HookCtx, event: &str, script: &Path) -> HookRun {
         cmd.env("SPWN_SESSION_ID", s);
     }
 
-    match cmd.output() {
-        Ok(out) => {
-            let mut combined = String::from_utf8_lossy(&out.stdout).into_owned();
-            let err = String::from_utf8_lossy(&out.stderr);
-            if !err.trim().is_empty() {
-                if !combined.is_empty() && !combined.ends_with('\n') {
-                    combined.push('\n');
+    let failed = |msg: String| HookRun {
+        event: event.to_string(),
+        script: name.clone(),
+        exit_code: None,
+        ok: false,
+        output: msg,
+        at: now_secs(),
+    };
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => return failed(format!("failed to run hook: {e}")),
+    };
+
+    // Drain stdout and stderr on their own threads into one channel, so a hook that
+    // writes a lot to one stream can't deadlock by filling a pipe buffer. Lines are
+    // consumed on this thread (keeping `on_line` free of Send bounds) and appended in
+    // arrival order — stdout/stderr interleaving is approximate, which is fine for a
+    // progress feed.
+    let (tx, rx) = mpsc::channel::<String>();
+    let mut readers = Vec::new();
+    for pipe in [
+        child.stdout.take().map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
+        child.stderr.take().map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let tx = tx.clone();
+        readers.push(thread::spawn(move || {
+            for line in BufReader::new(pipe).lines().map_while(Result::ok) {
+                if tx.send(line).is_err() {
+                    break;
                 }
-                combined.push_str(&err);
             }
-            HookRun {
-                event: event.to_string(),
-                script: name,
-                exit_code: out.status.code(),
-                ok: out.status.success(),
-                output: tail(&combined, OUTPUT_CAP),
-                at: now_secs(),
-            }
-        }
-        Err(e) => HookRun {
-            event: event.to_string(),
-            script: name,
-            exit_code: None,
-            ok: false,
-            output: format!("failed to run hook: {e}"),
-            at: now_secs(),
-        },
+        }));
+    }
+    drop(tx); // so the channel closes once both readers finish
+
+    let mut combined = String::new();
+    for line in rx {
+        on_line(&line);
+        combined.push_str(&line);
+        combined.push('\n');
+    }
+    for r in readers {
+        let _ = r.join();
+    }
+
+    let (exit_code, ok) = match child.wait() {
+        Ok(s) => (s.code(), s.success()),
+        Err(_) => (None, false),
+    };
+    HookRun {
+        event: event.to_string(),
+        script: name,
+        exit_code,
+        ok,
+        output: tail(&combined, OUTPUT_CAP),
+        at: now_secs(),
     }
 }
 
 /// Run the event's hook (if one exists), returning its result — or None when there's
-/// no hook file for this event.
-pub fn run_event_sync(ctx: &HookCtx, event: &str) -> Option<HookRun> {
-    discover(&ctx.worktree, event).map(|s| run_one(ctx, event, &s))
+/// no hook file for this event. Each output line is streamed to `on_line` live.
+pub fn run_event_sync(
+    ctx: &HookCtx,
+    event: &str,
+    on_line: &mut dyn FnMut(&str),
+) -> Option<HookRun> {
+    discover(&ctx.worktree, event).map(|s| run_one(ctx, event, &s, on_line))
 }
 
 // ---------------------------------------------------------------------------
@@ -227,7 +276,7 @@ pub fn status(worktree: &Path, last_runs: &BTreeMap<String, HookRun>) -> HooksSt
             last_run: last_runs.get(event).cloned(),
         })
         .collect();
-    HooksStatus { available: true, events }
+    HooksStatus { available: true, events, running: None }
 }
 
 #[cfg(test)]
@@ -265,7 +314,8 @@ mod tests {
             "#!/bin/sh\necho \"id=$SPWN_TERMINAL_ID event=$SPWN_EVENT branch=$SPWN_BRANCH\"\n",
             true,
         );
-        let run = run_event_sync(&ctx(wt), "session-created").expect("hook present");
+        let run =
+            run_event_sync(&ctx(wt), "session-created", &mut |_| {}).expect("hook present");
         assert_eq!(run.script, "session-created.sh");
         assert!(run.ok);
         assert!(run.output.contains("id=abc123"));
@@ -277,7 +327,7 @@ mod tests {
     fn missing_hook_is_none() {
         let dir = tempfile::tempdir().unwrap();
         assert!(discover(dir.path(), "session-deleted").is_none());
-        assert!(run_event_sync(&ctx(dir.path()), "session-deleted").is_none());
+        assert!(run_event_sync(&ctx(dir.path()), "session-deleted", &mut |_| {}).is_none());
     }
 
     #[test]
@@ -286,9 +336,30 @@ mod tests {
         let wt = dir.path();
         // No execute bit — spwn falls back to `sh <file>`.
         write(&hook_file(wt, "session-ready"), "echo hi\n", false);
-        let run = run_event_sync(&ctx(wt), "session-ready").expect("hook present");
+        let run = run_event_sync(&ctx(wt), "session-ready", &mut |_| {}).expect("hook present");
         assert!(run.ok, "output: {}", run.output);
         assert!(run.output.contains("hi"));
+    }
+
+    #[test]
+    fn streams_each_output_line_live() {
+        let dir = tempfile::tempdir().unwrap();
+        let wt = dir.path();
+        write(
+            &hook_file(wt, "session-created"),
+            "#!/bin/sh\necho one\necho two >&2\necho three\n",
+            true,
+        );
+        let mut lines: Vec<String> = Vec::new();
+        let run = run_event_sync(&ctx(wt), "session-created", &mut |l| lines.push(l.to_string()))
+            .expect("hook present");
+        assert!(run.ok);
+        // Every line reached the streamer (order across stdout/stderr is not asserted).
+        assert!(lines.iter().any(|l| l == "one"));
+        assert!(lines.iter().any(|l| l == "two"));
+        assert!(lines.iter().any(|l| l == "three"));
+        // …and the captured tail still holds them.
+        assert!(run.output.contains("one") && run.output.contains("three"));
     }
 
     #[test]
@@ -296,7 +367,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let wt = dir.path();
         write(&hook_file(wt, "session-deleted"), "#!/bin/sh\nexit 3\n", true);
-        let run = run_event_sync(&ctx(wt), "session-deleted").unwrap();
+        let run = run_event_sync(&ctx(wt), "session-deleted", &mut |_| {}).unwrap();
         assert!(!run.ok);
         assert_eq!(run.exit_code, Some(3));
     }
