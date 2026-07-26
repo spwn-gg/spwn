@@ -198,16 +198,6 @@ pub fn list(app_data: &Path, session_id: &str) -> Vec<CheckpointMeta> {
     idx
 }
 
-/// Absolute path to a checkpoint's snapshot directory (may not exist on disk).
-pub fn checkpoint_dir(app_data: &Path, session_id: &str, checkpoint_id: &str) -> PathBuf {
-    session_dir(app_data, session_id).join(checkpoint_id)
-}
-
-/// The most recent checkpoint captured for a session, if any.
-pub fn latest(app_data: &Path, session_id: &str) -> Option<CheckpointMeta> {
-    load_index(app_data, session_id).into_iter().last()
-}
-
 /// The newest checkpoint captured for a given assistant turn, if any.
 pub fn find_for_turn(app_data: &Path, session_id: &str, turn_uuid: &str) -> Option<CheckpointMeta> {
     load_index(app_data, session_id)
