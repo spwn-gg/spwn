@@ -55,24 +55,25 @@ to new sessions only — existing worktrees stay where they were created.
 | **Inside repo** | `<repo>/.spwn/worktrees/<id>/` | Registered in the repo's `.git/info/exclude` (the tracked `.gitignore` is untouched). The `.spwn/` dot-prefix keeps most tooling from scanning it, but tools with explicit include globs (e.g. a `tsc` `include: ["src"]`) may still pick it up. |
 | **App data** | `…/com.markbarta.spwn/worktrees/<id>/` | Under the app data dir, away from your repos entirely. |
 
-## 3. A Docker preview environment per session
+## 3. A shell hook per session lifecycle event
 
-Agents working autonomously on parallel branches often need more than files — a
-*running* service and a live test harness. Doing that by hand doesn't scale: one full
-stack per branch is wasteful, and the branches collide on ports and databases.
+Each session runs on its own branch in its own worktree, so it's a natural place to
+wire up per-session setup and teardown — start a dev server, seed a database, spin up
+containers, then clean it up on delete.
 
-With an optional **`spwn.yaml`** at your repo root, spwn brings up **each session's
-own service + test harness** in an isolated **docker-compose** stack:
+spwn does this with **project hooks**: one script per event, committed as
+**`.spwn/hooks/<event>.sh`** in your repo. When that lifecycle event fires spwn runs the
+script — a single entry point you can use to orchestrate other files/code — with the
+session's details in the environment (`SPWN_WORKTREE`, `SPWN_BRANCH`, `SPWN_SESSION_ID`,
+…). spwn has no opinion about what the script does — Docker, plain shell, anything.
 
-- **No collisions** — per-session project names and ephemeral host ports, surfaced as
-  a clickable live URL.
-- **Shared heavy deps** — a database (say) runs **once**, ref-counted across sessions.
-- **Fast forks** — a forked session reuses its parent's image.
-- **Self-cleaning** — idle stacks stop themselves to save resources.
+- **Events** — `session-created` (worktree ready), `session-ready` (Claude session id
+  bound), `session-deleted` (just before the worktree is removed).
+- **Synchronous** — the session waits for the script; background long-running work
+  yourself (e.g. `my-server & disown`).
+- **Opt-in** — no `.spwn/hooks/<event>.sh`, no change.
 
-It's a thin wrapper over your own `docker-compose.yml` (never mutated) and fully
-opt-in — no `spwn.yaml`, no change. See the **Per-Session Services** guide in the
-docs, or `examples/compose-integration/` for a runnable sample.
+See the **Project Hooks** guide in the docs, or `examples/hooks/` for a runnable sample.
 
 ---
 
@@ -86,7 +87,6 @@ docs, or `examples/compose-integration/` for a runnable sample.
 
 ## What spwn stores on disk
 
-spwn confines its own writes to its **app data dir**
 (`~/Library/Application Support/com.markbarta.spwn/`): `projects.json` (the projects +
 terminals store), `settings.json`, `checkpoints/<session_id>/` (APFS copy-on-write
 code-undo snapshots), and — for the *App data* worktree layout — `worktrees/`. It only
