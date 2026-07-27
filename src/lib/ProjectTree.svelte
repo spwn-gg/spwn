@@ -27,7 +27,8 @@
 		type ConfirmRow
 	} from './stores';
 	import { get } from 'svelte/store';
-	import { ACTIONS } from './labels';
+	import { ACTIONS, GLYPHS } from './labels';
+	import { claudeForest, type SessionNode } from './forest';
 	import type { ProjectRec, TerminalRec } from './types';
 
 	let collapsed = $state(new Set<string>());
@@ -158,6 +159,16 @@
 		});
 	}
 
+	function openMap(p: ProjectRec, e: Event) {
+		e.stopPropagation();
+		openTab({
+			projectId: p.id,
+			kind: 'map',
+			title: `Map · ${p.name}`,
+			projectName: p.name
+		});
+	}
+
 	function openExisting(p: ProjectRec, t: TerminalRec) {
 		// Viewing a session clears its attention. Drop the live "needs you" status now so
 		// the dot clears immediately (the still-alive sidecar won't re-emit until its next
@@ -258,31 +269,8 @@
 		return p.terminals.filter((t) => t.kind === 'shell');
 	}
 
-	// Build the claude sessions into a branch forest: each fork nests under the
-	// session it was forked from, so lineage is visible at a glance.
-	interface SessionNode {
-		t: TerminalRec;
-		children: SessionNode[];
-	}
-	function parentOf(t: TerminalRec, ids: Set<string>): string | null {
-		if (t.parentId && ids.has(t.parentId)) return t.parentId;
-		// Legacy data: groupId pointed at the lineage root.
-		if (t.groupId && t.groupId !== t.id && ids.has(t.groupId)) return t.groupId;
-		return null;
-	}
-	function claudeForest(p: ProjectRec): SessionNode[] {
-		const claudes = p.terminals.filter((t) => t.kind === 'claude');
-		const ids = new Set(claudes.map((t) => t.id));
-		const nodes = new Map<string, SessionNode>();
-		for (const t of claudes) nodes.set(t.id, { t, children: [] });
-		const roots: SessionNode[] = [];
-		for (const t of claudes) {
-			const pid = parentOf(t, ids);
-			if (pid) nodes.get(pid)!.children.push(nodes.get(t.id)!);
-			else roots.push(nodes.get(t.id)!);
-		}
-		return roots;
-	}
+	// Claude sessions form a branch forest (each fork nests under its parent) — lineage
+	// is visible both here and in the exploration map, so the layout lives in forest.ts.
 
 	// Fork a new session from an existing one (same as Fork in the chat panel).
 	function forkSession(p: ProjectRec, t: TerminalRec, e: Event) {
@@ -328,6 +316,10 @@
 		$activeTab?.kind === 'context' && $activeTab?.projectId === p.id;
 	const isActiveSchedule = (p: ProjectRec) =>
 		$activeTab?.kind === 'schedule' && $activeTab?.projectId === p.id;
+	const isActiveMap = (p: ProjectRec) =>
+		$activeTab?.kind === 'map' && $activeTab?.projectId === p.id;
+	/** The exploration map only says something once ≥2 sessions exist to compare. */
+	const hasForest = (p: ProjectRec) => p.terminals.filter((t) => t.kind === 'claude').length >= 2;
 </script>
 
 {#snippet termRow(p: ProjectRec, t: TerminalRec, nested: boolean)}
@@ -403,6 +395,14 @@
 							{#if p.scheduledTasks?.length}<span class="count">{p.scheduledTasks.length}</span>{/if}
 						</button>
 					</div>
+					{#if hasForest(p)}
+						<div class="row ctx-row" class:active={isActiveMap(p)}>
+							<button class="row-main" onclick={(e) => openMap(p, e)} title="See how your sessions branched, and combine the best">
+								<span class="t-icon ctx">{GLYPHS.map}</span>
+								<span class="t-title">Exploration Map</span>
+							</button>
+						</div>
+					{/if}
 					{#if repoIsGit[p.id]}
 						<div class="row ctx-row">
 							<button class="row-main" onclick={() => toggleScm(p.id)}>

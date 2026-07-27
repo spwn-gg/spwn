@@ -8,8 +8,10 @@
 	import { sessionMergeStatus, hooksStatus, onProjectsChanged, openInVscode } from './ipc';
 	import { projects, toggleInspector, alwaysAllowTools, sessionAllowTools, revokeTool } from './stores';
 	import MergePanel from './MergePanel.svelte';
+	import BringWorkBack from './BringWorkBack.svelte';
 	import CheckpointList from './CheckpointList.svelte';
 	import HooksPanel from './HooksPanel.svelte';
+	import { ACTIONS } from './labels';
 	import type { MergeStatus, HooksStatus } from './types';
 
 	let {
@@ -27,6 +29,7 @@
 	type Section = 'overview' | 'timeline' | 'hooks';
 	let section = $state<Section>('overview');
 	let showMerge = $state(false);
+	let showBringBack = $state(false);
 	let showFiles = $state(false);
 	let status = $state('');
 
@@ -127,7 +130,8 @@
 				{/if}
 				{#if merge?.blocker}<div class="blocker">{merge.blocker}</div>{/if}
 				<div class="actions">
-					<button class="act primary" disabled={!canMerge} title={canMerge ? 'Merge this branch into its base' : 'Nothing to merge yet'} onclick={() => (showMerge = true)}>⤵ Merge…</button>
+					<button class="act primary" title="Merge, send to another session, or save to the Merge tray" onclick={() => (showBringBack = true)}>↩ {ACTIONS.bringWorkBack}…</button>
+					<button class="act" disabled={!canMerge} title={canMerge ? 'Full merge dialog (with delete-after)' : 'Nothing to merge yet'} onclick={() => (showMerge = true)}>⤵ Merge…</button>
 					{#if term?.cwd}
 						<button class="act" onclick={() => openInVscode(term!.cwd).catch(() => {})}>Open in VS Code</button>
 					{/if}
@@ -168,6 +172,9 @@
 
 {#if showMerge && term?.branch && terminalId}
 	<MergePanel {projectId} {terminalId} onClose={() => { showMerge = false; refresh(); }} />
+{/if}
+{#if showBringBack && terminalId}
+	<BringWorkBack {projectId} {terminalId} {sessionId} title={term?.title ?? 'session'} onClose={() => { showBringBack = false; refresh(); }} />
 {/if}
 
 <style>
