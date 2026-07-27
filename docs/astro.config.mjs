@@ -28,7 +28,7 @@ export default defineConfig({
 					],
 				},
 				{
-					label: 'Guides',
+					label: 'Features',
 					items: [
 						{ label: 'Projects', slug: 'guides/projects' },
 						{ label: 'Sessions', slug: 'guides/terminals' },
