@@ -31,9 +31,7 @@ export const GLYPHS = {
 	/** The git branch property chip. */
 	branch: '⎇',
 	mergeTray: '▦',
-	schedule: '◷',
-	/** The per-project exploration map (fork lineage as a canvas). */
-	map: '⋔'
+	schedule: '◷'
 } as const;
 
 /** Common action labels, so buttons/menus/tooltips read identically across views. */
@@ -50,7 +48,6 @@ export const ACTIONS = {
 	forkDisabled: 'Send a message first to enable forking',
 	merge: 'Merge',
 	openInVscode: 'Open in VS Code',
-	explorationMap: 'Exploration Map',
 	/** Unified "move this session's work somewhere useful" flow. */
 	bringWorkBack: 'Bring work back'
 } as const;

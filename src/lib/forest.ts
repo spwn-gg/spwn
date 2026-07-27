@@ -1,6 +1,6 @@
 // Shared fork-lineage helpers. A project's Claude sessions form a forest: each
 // forked session nests under the session it was forked from, so lineage is visible
-// both in the sidebar tree (ProjectTree) and the exploration map (ExplorationMap).
+// in the sidebar tree (ProjectTree).
 
 import type { ProjectRec, TerminalRec } from './types';
 
@@ -30,24 +30,4 @@ export function claudeForest(p: ProjectRec): SessionNode[] {
 		else roots.push(nodes.get(t.id)!);
 	}
 	return roots;
-}
-
-/** A node placed on the exploration-map canvas: its lineage depth (x) and row (y). */
-export interface PlacedNode {
-	node: SessionNode;
-	depth: number;
-	row: number;
-}
-
-/** Flatten a forest into (depth, row) positions via pre-order DFS — each session
- * gets its own row, children sit one lineage-column to the right of their parent. */
-export function placeForest(roots: SessionNode[]): PlacedNode[] {
-	const placed: PlacedNode[] = [];
-	let nextRow = 0;
-	const walk = (node: SessionNode, depth: number) => {
-		placed.push({ node, depth, row: nextRow++ });
-		for (const c of node.children) walk(c, depth + 1);
-	};
-	for (const r of roots) walk(r, 0);
-	return placed;
 }

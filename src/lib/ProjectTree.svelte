@@ -27,7 +27,7 @@
 		type ConfirmRow
 	} from './stores';
 	import { get } from 'svelte/store';
-	import { ACTIONS, GLYPHS } from './labels';
+	import { ACTIONS } from './labels';
 	import { claudeForest, type SessionNode } from './forest';
 	import type { ProjectRec, TerminalRec } from './types';
 
@@ -159,16 +159,6 @@
 		});
 	}
 
-	function openMap(p: ProjectRec, e: Event) {
-		e.stopPropagation();
-		openTab({
-			projectId: p.id,
-			kind: 'map',
-			title: `Map · ${p.name}`,
-			projectName: p.name
-		});
-	}
-
 	function openExisting(p: ProjectRec, t: TerminalRec) {
 		// Viewing a session clears its attention. Drop the live "needs you" status now so
 		// the dot clears immediately (the still-alive sidecar won't re-emit until its next
@@ -269,8 +259,8 @@
 		return p.terminals.filter((t) => t.kind === 'shell');
 	}
 
-	// Claude sessions form a branch forest (each fork nests under its parent) — lineage
-	// is visible both here and in the exploration map, so the layout lives in forest.ts.
+	// Claude sessions form a branch forest (each fork nests under its parent); the
+	// forest-building lives in forest.ts.
 
 	// Fork a new session from an existing one (same as Fork in the chat panel).
 	function forkSession(p: ProjectRec, t: TerminalRec, e: Event) {
@@ -316,10 +306,6 @@
 		$activeTab?.kind === 'context' && $activeTab?.projectId === p.id;
 	const isActiveSchedule = (p: ProjectRec) =>
 		$activeTab?.kind === 'schedule' && $activeTab?.projectId === p.id;
-	const isActiveMap = (p: ProjectRec) =>
-		$activeTab?.kind === 'map' && $activeTab?.projectId === p.id;
-	/** The exploration map only says something once ≥2 sessions exist to compare. */
-	const hasForest = (p: ProjectRec) => p.terminals.filter((t) => t.kind === 'claude').length >= 2;
 </script>
 
 {#snippet termRow(p: ProjectRec, t: TerminalRec, nested: boolean)}
@@ -395,14 +381,6 @@
 							{#if p.scheduledTasks?.length}<span class="count">{p.scheduledTasks.length}</span>{/if}
 						</button>
 					</div>
-					{#if hasForest(p)}
-						<div class="row ctx-row" class:active={isActiveMap(p)}>
-							<button class="row-main" onclick={(e) => openMap(p, e)} title="See how your sessions branched, and combine the best">
-								<span class="t-icon ctx">{GLYPHS.map}</span>
-								<span class="t-title">Exploration Map</span>
-							</button>
-						</div>
-					{/if}
 					{#if repoIsGit[p.id]}
 						<div class="row ctx-row">
 							<button class="row-main" onclick={() => toggleScm(p.id)}>
