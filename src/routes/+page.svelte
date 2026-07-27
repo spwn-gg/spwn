@@ -4,6 +4,7 @@
 	import PaneManager from '$lib/PaneManager.svelte';
 	import Settings from '$lib/Settings.svelte';
 	import UpdateBanner from '$lib/UpdateBanner.svelte';
+	import QuestionPicker from '$lib/QuestionPicker.svelte';
 	import {
 		showSettings,
 		openTabs,
@@ -13,8 +14,16 @@
 		setHookRunning,
 		setClaudeStatus
 	} from '$lib/stores';
-	import { onStoreError, onHookRunning, onClaudeStatus, clearTerminalAttention } from '$lib/ipc';
-	import type { SessionStatus } from '$lib/types';
+	import {
+		onStoreError,
+		onHookRunning,
+		onClaudeStatus,
+		clearTerminalAttention,
+		onHookPrompt,
+		onHookPromptClose,
+		hooksPromptAnswer
+	} from '$lib/ipc';
+	import type { SessionStatus, HookPromptEvent, PendingQuestion } from '$lib/types';
 	import { checkForUpdate } from '$lib/updater';
 	import { get } from 'svelte/store';
 
@@ -28,6 +37,27 @@
 	let unlistenError: (() => void) | undefined;
 	let unlistenHook: (() => void) | undefined;
 	let unlistenStatus: (() => void) | undefined;
+	let unlistenHookPrompt: (() => void) | undefined;
+	let unlistenHookPromptClose: (() => void) | undefined;
+
+	// Blocking multiple-choice prompts raised by running hooks, awaiting the user's pick.
+	// Rendered globally (a hook can fire when no session pane is mounted).
+	let hookPrompts = $state<HookPromptEvent[]>([]);
+
+	// Wrap a hook prompt as the picker's single-question shape.
+	function asPending(p: HookPromptEvent): PendingQuestion {
+		return {
+			id: p.id,
+			questions: [
+				{ question: p.question, header: p.header, multiSelect: p.multiSelect, options: p.options }
+			]
+		};
+	}
+
+	function answerHookPrompt(id: string, text: string) {
+		hooksPromptAnswer(id, text).catch(() => {});
+		hookPrompts = hookPrompts.filter((p) => p.id !== id);
+	}
 
 	// States that "need you" — suppressed for the session you're already looking at.
 	const NEEDS_YOU: SessionStatus[] = ['done', 'blockedPermission', 'blockedQuestion', 'error'];
@@ -41,6 +71,13 @@
 		unlistenError = await onStoreError((m) => (errorMsg = m));
 		// Track hooks running across all sessions → drives tab / tree spinners.
 		unlistenHook = await onHookRunning((e) => setHookRunning(e.terminalId, e.event));
+		// A running hook can raise a blocking multiple-choice prompt; show it globally.
+		unlistenHookPrompt = await onHookPrompt((e) => {
+			hookPrompts = [...hookPrompts.filter((p) => p.id !== e.id), e];
+		});
+		unlistenHookPromptClose = await onHookPromptClose((e) => {
+			hookPrompts = hookPrompts.filter((p) => p.id !== e.id);
+		});
 		// Track live Claude session status → drives sidebar/tab-bar spinners + attention.
 		unlistenStatus = await onClaudeStatus((e) => {
 			const active = get(activeTab);
@@ -61,6 +98,8 @@
 		unlistenError?.();
 		unlistenHook?.();
 		unlistenStatus?.();
+		unlistenHookPrompt?.();
+		unlistenHookPromptClose?.();
 		stopResize();
 	});
 
@@ -150,6 +189,16 @@
 		<div class="error-banner" role="alert">
 			<span>{errorMsg}</span>
 			<button onclick={() => (errorMsg = '')} title="Dismiss">×</button>
+		</div>
+	{/if}
+	{#if hookPrompts.length}
+		<div class="hook-prompts" role="dialog" aria-label="Hook prompt">
+			{#each hookPrompts as p (p.id)}
+				<div class="hook-prompt">
+					<div class="hook-prompt-head">Hook · {p.event}</div>
+					<QuestionPicker pending={asPending(p)} onAnswer={answerHookPrompt} raw />
+				</div>
+			{/each}
 		</div>
 	{/if}
 </div>
@@ -320,5 +369,34 @@
 		line-height: 1;
 		cursor: pointer;
 		padding: 0 4px;
+	}
+
+	.hook-prompts {
+		position: absolute;
+		bottom: 12px;
+		left: 50%;
+		transform: translateX(-50%);
+		z-index: 130;
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+		width: min(520px, 80vw);
+	}
+	.hook-prompt {
+		background: var(--surface);
+		border: 1px solid var(--border-strong);
+		border-radius: var(--radius-lg);
+		box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+		overflow: hidden;
+	}
+	.hook-prompt-head {
+		padding: 7px 12px;
+		font-size: 11px;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: var(--text-dim);
+		background: var(--surface-head);
+		border-bottom: 1px solid var(--border);
 	}
 </style>

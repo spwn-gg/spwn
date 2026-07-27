@@ -73,6 +73,10 @@ set -euo pipefail
 
 echo "[\$SPWN_EVENT] \${SPWN_BRANCH:-<no-branch>} in \$SPWN_WORKTREE"
 
+# Ask the user (blocks on the answer; prints the chosen label). Exit 0=answered,
+# 2=declined/no-UI, 3=error. Always handle the non-zero branch (headless runs decline).
+#   if [ "\$("\$SPWN_BIN" prompt 'Seed the database?')" = Yes ]; then ./scripts/seed.sh; fi
+
 # TODO: your setup/teardown here.
 EOF
   chmod +x "$f"
@@ -145,6 +149,32 @@ cmd_test() {
     session-created) unset SPWN_SESSION_ID 2>/dev/null || true ;;
     *) export SPWN_SESSION_ID="test-session" ;;
   esac
+
+  # No UI under `test`, so stub SPWN_BIN: `spwn prompt …` auto-answers with the first
+  # option (mirrors a user always picking the first choice). Cleaned up on exit.
+  stub="$(mktemp "${TMPDIR:-/tmp}/spwn-prompt-stub.XXXXXX")"
+  cat > "$stub" <<'STUB'
+#!/bin/sh
+# test stub for `spwn prompt [--multi] [--header H] "Question" [option ...]`:
+# echo the first option (or "Yes" for a bare confirm) and exit 0.
+[ "$1" = prompt ] || exit 0
+shift
+q_seen=0; first_opt=
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --multi) : ;;
+    --header) shift ;;
+    --header=*) : ;;
+    *) if [ "$q_seen" = 0 ]; then q_seen=1; elif [ -z "$first_opt" ]; then first_opt="$1"; fi ;;
+  esac
+  shift
+done
+[ -n "$first_opt" ] || first_opt=Yes
+printf '%s\n' "$first_opt"
+STUB
+  chmod +x "$stub"
+  export SPWN_BIN="$stub"
+  trap 'rm -f "$stub"' EXIT
 
   echo ">> running $f as spwn would (cwd=$root)"
   echo "---"

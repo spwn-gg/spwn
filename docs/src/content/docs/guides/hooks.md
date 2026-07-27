@@ -79,6 +79,35 @@ Each script is run with the **worktree as its working directory** and these vari
 | `SPWN_BRANCH` | The session's branch (`cm/<short>`). |
 | `SPWN_BASE_BRANCH` | The branch it will merge back into. |
 | `SPWN_SESSION_ID` | The Claude session id — set for `session-ready`/`session-deleted`; absent on `session-created` (not known yet). |
+| `SPWN_BIN` | Path to the spwn binary — run `"$SPWN_BIN" prompt …` to [ask the user](#ask-the-user). |
+
+## Ask the user
+
+A hook can pause and **ask you a question** — spwn shows a picker in the app and blocks
+the script until you answer. Use the injected **`spwn prompt`** helper (`SPWN_BIN` points
+at the spwn binary); it prints the chosen label to stdout, so a `session-created` hook can
+**gate** what it does:
+
+```sh
+# .spwn/hooks/session-created.sh
+# Yes/No confirm (no options ⇒ Yes/No):
+if [ "$("$SPWN_BIN" prompt 'Seed the database?')" = Yes ]; then
+  ./.spwn/hooks/setup/seed-db.sh
+fi
+
+# Multiple choice — the chosen label is printed to stdout:
+profile=$("$SPWN_BIN" prompt --header env 'Which services?' none web 'web+worker')
+```
+
+- **Flags:** `--header TEXT` (a short label above the question) and `--multi`
+  (multi-select — labels come back comma-joined). With no options it's a `Yes`/`No` confirm.
+- **Exit codes:** `0` = answered (label on stdout), `2` = declined (no window, or the
+  ~5-minute timeout elapsed), `3` = usage error / not run inside a hook. The code never
+  encodes *which* option, so `answer=$("$SPWN_BIN" prompt …)` is safe under `set -e` —
+  branch on the string.
+- **Headless runs auto-decline.** A [scheduled](/spwn/guides/scheduled-tasks/) or
+  background session has no window, so every prompt returns "declined" at once — always
+  handle that branch with a sensible default.
 
 ## The Hooks panel
 

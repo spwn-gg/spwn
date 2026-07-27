@@ -52,6 +52,10 @@ pub struct AppState {
     /// Sessions with a hook executing right now: terminal id → event name. Drives the
     /// live "running" spinner on tabs / the project tree while a hook streams output.
     pub hooks_running: Mutex<HashMap<String, String>>,
+    /// Outstanding hook UI prompts awaiting a user answer: prompt id → answer sender.
+    /// The synchronous hook runner blocks on the receiver; `hooks_prompt_answer` sends
+    /// the chosen label(s) to unblock it.
+    pub hook_prompts: Mutex<HashMap<String, std::sync::mpsc::Sender<String>>>,
     /// Live Claude session status: terminal id → status. Derived in the sidecar reader
     /// so background sessions (no pane) still drive the sidebar. Ephemeral (empty on
     /// launch; restart falls back to persisted `needs_attention`/`attention_reason`).
