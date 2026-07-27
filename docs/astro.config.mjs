@@ -36,10 +36,15 @@ export default defineConfig({
 						{ label: 'Fork & Rewind', slug: 'guides/fork-and-rewind' },
 						{ label: 'Parallel Sessions', slug: 'guides/parallel-sessions' },
 						{ label: 'Project Hooks', slug: 'guides/hooks' },
-						{ label: 'Hooks Cookbook', slug: 'guides/hooks-cookbook' },
 						{ label: 'Composing Context', slug: 'guides/context-composer' },
 						{ label: 'Scheduled Tasks', slug: 'guides/scheduled-tasks' },
 						{ label: 'Settings', slug: 'guides/settings' },
+					],
+				},
+				{
+					label: 'Cookbook',
+					items: [
+						{ label: 'Hooks', slug: 'cookbook/hooks' },
 					],
 				},
 				{
