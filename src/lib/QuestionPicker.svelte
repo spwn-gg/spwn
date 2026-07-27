@@ -1,8 +1,18 @@
 <script lang="ts">
 	import type { PendingQuestion } from './types';
 
-	let { pending, onAnswer }: { pending: PendingQuestion; onAnswer: (id: string, text: string) => void } =
-		$props();
+	// `raw`: answer with just the chosen label(s) (joined by ", "), not the
+	// "<question> → <labels>" transcript form. Used for hook prompts, whose script
+	// reads the bare answer from stdin. Only meaningful for a single question.
+	let {
+		pending,
+		onAnswer,
+		raw = false
+	}: {
+		pending: PendingQuestion;
+		onAnswer: (id: string, text: string) => void;
+		raw?: boolean;
+	} = $props();
 
 	// selections[i] = set of chosen labels for question i.
 	let selections = $state<Set<string>[]>(pending.questions.map(() => new Set<string>()));
@@ -26,6 +36,11 @@
 	const canSubmit = $derived(selections.every((s) => s.size > 0));
 
 	function submit() {
+		if (raw) {
+			// Bare label(s) of the (single) question for the hook's stdin.
+			onAnswer(pending.id, [...selections[0]].join(', '));
+			return;
+		}
 		const lines = pending.questions.map((q, i) => {
 			const picked = [...selections[i]];
 			return `${q.question} → ${picked.length ? picked.join(', ') : '(no selection)'}`;

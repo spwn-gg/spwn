@@ -8,6 +8,8 @@ import type {
 	CheckpointMeta,
 	ClaudeEvent,
 	GitBranches,
+	HookPromptCloseEvent,
+	HookPromptEvent,
 	HooksStatus,
 	MergeStatus,
 	ProjectRec,
@@ -357,6 +359,22 @@ export function onHookOutput(
 	cb: (e: HookOutputEvent) => void
 ): Promise<UnlistenFn> {
 	return listen<HookOutputEvent>(`hooks://output/${terminalId}`, (e) => cb(e.payload));
+}
+
+/** Answer a blocking hook prompt with the user's chosen label(s), unblocking the hook. */
+export function hooksPromptAnswer(id: string, answer: string): Promise<void> {
+	return invoke('hooks_prompt_answer', { id, answer });
+}
+
+/** Fires (globally) when any running hook raises a blocking multiple-choice prompt.
+ * Global because hooks fire on session create/delete when no session pane is mounted. */
+export function onHookPrompt(cb: (e: HookPromptEvent) => void): Promise<UnlistenFn> {
+	return listen<HookPromptEvent>('hooks://prompt', (e) => cb(e.payload));
+}
+
+/** Fires (globally) when a hook prompt should be dismissed (answered / timed out). */
+export function onHookPromptClose(cb: (e: HookPromptCloseEvent) => void): Promise<UnlistenFn> {
+	return listen<HookPromptCloseEvent>('hooks://prompt-close', (e) => cb(e.payload));
 }
 
 // --- Code checkpoints ---

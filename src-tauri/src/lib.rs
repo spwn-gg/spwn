@@ -17,6 +17,15 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::Manager;
 
+/// CLI entry for the `spwn prompt …` helper that hooks invoke to raise a UI prompt.
+/// Returns `(exit code, optional stdout line)`; `main` owns the actual print + exit so
+/// the client logic stays unit-testable. Called before the GUI boots when spwn is run
+/// as `spwn prompt …`.
+pub fn run_prompt_cli(args: &[String]) -> (i32, Option<String>) {
+    let out = hooks::run_prompt_cli(args);
+    (out.code, out.stdout)
+}
+
 /// Show and focus the main window (recreating nothing — it's hidden, not closed).
 fn show_main(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
@@ -167,6 +176,7 @@ pub fn run() {
             commands::read_transcript,
             commands::hooks_status,
             commands::hooks_run,
+            commands::hooks_prompt_answer,
             commands::git_repo_status,
             commands::git_branches,
             commands::git_checkout,

@@ -387,8 +387,9 @@ pub async fn open_terminal(
                             }
                         }
                         persist(&state);
-                        // Run the project `session-created` hook (synchronous).
-                        hooks_on_session_created(&state, &terminal_id, &project_dir, &wt_path);
+                        // Run the project `session-created` hook (synchronous). Interactive
+                        // session → hooks may raise UI prompts (headless = false).
+                        hooks_on_session_created(&state, &terminal_id, &project_dir, &wt_path, false);
                     }
                     Err(e) => {
                         eprintln!("worktree create failed (using project dir): {e}");
@@ -503,7 +504,7 @@ pub async fn delete_terminal(
             base_branch,
             session_id: session_id.clone(),
         };
-        fire_hooks(&state, &ctx, "session-deleted");
+        fire_hooks(&state, &ctx, "session-deleted", false);
         if let Some(repo) = gitwt::repo_root(Path::new(&proj_dir)) {
             if let Err(e) = gitwt::remove_worktree(&repo, Path::new(&wt_path)) {
                 eprintln!("worktree remove failed: {e}");
@@ -816,7 +817,7 @@ pub(crate) fn bind_session(state: &AppState, terminal_id: &str, session_id: &str
     if newly_bound {
         if let Some(ctx) = hook_ctx_by_id(state, terminal_id) {
             if ctx.branch.is_some() {
-                fire_hooks(state, &ctx, "session-ready");
+                fire_hooks(state, &ctx, "session-ready", false);
             }
         }
     }
@@ -1366,6 +1367,74 @@ fn emit_hook_output(state: &AppState, terminal_id: &str, event: &str, line: &str
     }
 }
 
+/// How long a blocking hook prompt waits for a user answer before auto-declining, so a
+/// forgotten prompt (or a closed window) can't wedge a session forever.
+const HOOK_PROMPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// A hook is asking the user a multiple-choice question. Broadcast globally (not keyed
+/// by session in the channel name) because hooks fire on session create/delete when no
+/// Claude pane is mounted — a global listener in the root renders the picker. `event`
+/// and the flattened request fields let the UI reuse the existing question picker.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HookPromptPayload<'a> {
+    terminal_id: &'a str,
+    id: &'a str,
+    event: &'a str,
+    #[serde(flatten)]
+    request: &'a hooks::HookPromptRequest,
+}
+
+/// A hook prompt is no longer answerable (answered, timed out, or the hook died) — the
+/// UI drops the card by id.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HookPromptClosePayload<'a> {
+    terminal_id: &'a str,
+    id: &'a str,
+}
+
+/// Broadcast a hook's multiple-choice prompt to the UI.
+fn emit_hook_prompt(
+    state: &AppState,
+    terminal_id: &str,
+    event: &str,
+    id: &str,
+    request: &hooks::HookPromptRequest,
+) {
+    if let Some(app) = state.app.lock().as_ref() {
+        let _ = app.emit(
+            "hooks://prompt",
+            HookPromptPayload { terminal_id, id, event, request },
+        );
+    }
+}
+
+/// Tell the UI to dismiss a hook prompt card (it's been answered/timed out).
+fn emit_hook_prompt_close(state: &AppState, terminal_id: &str, id: &str) {
+    if let Some(app) = state.app.lock().as_ref() {
+        let _ = app.emit(
+            "hooks://prompt-close",
+            HookPromptClosePayload { terminal_id, id },
+        );
+    }
+}
+
+/// Resolve a blocking hook prompt with the user's chosen label(s). Called from the UI;
+/// unblocks the synchronous hook runner waiting on the matching receiver.
+#[tauri::command]
+pub async fn hooks_prompt_answer(
+    state: State<'_, AppState>,
+    id: String,
+    answer: String,
+) -> Result<(), String> {
+    let tx = state.hook_prompts.lock().remove(&id);
+    if let Some(tx) = tx {
+        let _ = tx.send(answer);
+    }
+    Ok(())
+}
+
 /// Run the event's hook (if one exists) synchronously, recording the result and
 /// notifying the panel. Hooks are intentionally **synchronous**: the session waits for
 /// the script to finish. A hook that wants background work should background it itself
@@ -1373,7 +1442,12 @@ fn emit_hook_output(state: &AppState, terminal_id: &str, event: &str, line: &str
 ///
 /// While it runs, the session is flagged "running" (driving a spinner on its tab / tree
 /// row) and each output line is streamed to the Hooks panel live.
-fn fire_hooks(state: &AppState, ctx: &hooks::HookCtx, event: &str) {
+///
+/// A hook may raise a blocking multiple-choice prompt (a `SPWN_PROMPT` stdout line):
+/// spwn shows a picker and waits (up to [`HOOK_PROMPT_TIMEOUT`]) for the user's answer,
+/// which is written back to the script's stdin. When `headless` (no UI window, e.g. a
+/// scheduled run) prompts auto-decline immediately so the run can't deadlock.
+fn fire_hooks(state: &AppState, ctx: &hooks::HookCtx, event: &str, headless: bool) {
     // Only announce a run when a hook actually exists for this event, so idle events
     // don't flash a spinner.
     if hooks::discover(&ctx.worktree, event).is_none() {
@@ -1383,7 +1457,23 @@ fn fire_hooks(state: &AppState, ctx: &hooks::HookCtx, event: &str) {
     set_hook_running(state, &terminal_id, Some(event));
     let run = {
         let mut on_line = |line: &str| emit_hook_output(state, &terminal_id, event, line);
-        hooks::run_event_sync(ctx, event, &mut on_line)
+        let mut on_prompt = |req: hooks::HookPromptRequest| -> String {
+            // No window to answer → decline at once (don't emit/leak a pending prompt).
+            if headless {
+                return hooks::PROMPT_DECLINED.to_string();
+            }
+            let id = Uuid::new_v4().to_string();
+            let (tx, rx) = std::sync::mpsc::channel::<String>();
+            state.hook_prompts.lock().insert(id.clone(), tx);
+            emit_hook_prompt(state, &terminal_id, event, &id, &req);
+            let answer = rx
+                .recv_timeout(HOOK_PROMPT_TIMEOUT)
+                .unwrap_or_else(|_| hooks::PROMPT_DECLINED.to_string());
+            state.hook_prompts.lock().remove(&id);
+            emit_hook_prompt_close(state, &terminal_id, &id);
+            answer
+        };
+        hooks::run_event_sync(ctx, event, &mut on_line, &mut on_prompt)
     };
     set_hook_running(state, &terminal_id, None);
     if let Some(run) = run {
@@ -1398,9 +1488,10 @@ pub(crate) fn hooks_on_session_created(
     terminal_id: &str,
     project_dir: &str,
     worktree: &Path,
+    headless: bool,
 ) {
     let ctx = hook_ctx(state, terminal_id, project_dir, worktree);
-    fire_hooks(state, &ctx, "session-created");
+    fire_hooks(state, &ctx, "session-created", headless);
 }
 
 /// Discovered hooks + last-run results for a session's worktree, for the Hooks panel.
@@ -1437,7 +1528,7 @@ pub async fn hooks_run(
 ) -> Result<(), String> {
     let ctx = hook_ctx_by_id(&state, &terminal_id)
         .ok_or_else(|| "this session has no worktree".to_string())?;
-    fire_hooks(&state, &ctx, &event);
+    fire_hooks(&state, &ctx, &event, false);
     Ok(())
 }
 

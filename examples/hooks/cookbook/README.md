@@ -12,6 +12,7 @@ swap for your stack. Start from the minimal mechanics example in [`../`](../READ
 | [`copy-secrets.sh`](copy-secrets.sh) | `session-created` | Copy gitignored config (`.env`, certs) from the project dir into the worktree — a fresh checkout won't have them. |
 | [`preview-env.sh`](preview-env.sh) | `session-created` | Install deps and start a dev server on a per-session port, backgrounded, with a pidfile. |
 | [`seed-db.sh`](seed-db.sh) | `session-created` | Migrate + seed a per-session database (idempotent). |
+| [`confirm-setup.sh`](confirm-setup.sh) | `session-created` | Ask before expensive setup with `spwn prompt` — a Yes/No confirm and a multiple-choice, each gating what runs. |
 | [`teardown.sh`](teardown.sh) | `session-deleted` | Stop what `preview-env.sh` started and drop ephemeral data, before the worktree is removed. |
 
 `preview-env.sh` and `teardown.sh` are a **pair** — the first writes `.spwn/run/preview.pid`
@@ -50,6 +51,9 @@ env, run directly if executable else via `sh`):
   work yourself (`server & disown`); a hook that hangs blocks the session.
 - **`session-deleted` runs before removal** — keep teardown idempotent and `|| true`-guarded.
 - **`SPWN_SESSION_ID` is absent on `session-created`** — need it? use `session-ready`.
+- **`spwn prompt` needs the UI** — it blocks on a picker in the app; headless/scheduled
+  runs (and the ~5-min timeout) auto-decline (exit 2), so always handle the non-answered
+  branch. Under the skill driver's `test`, prompts auto-answer with the first option.
 - **Output is an 8 KB tail** in the ▸ Hooks panel; non-zero exit is non-fatal (red dot).
 
 ## Further ideas

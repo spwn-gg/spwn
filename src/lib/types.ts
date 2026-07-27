@@ -60,6 +60,26 @@ export interface HooksStatus {
 	running?: string | null;
 }
 
+/** A blocking multiple-choice prompt raised by a running hook (mirrors the flattened
+ * `hooks://prompt` payload). The user's pick is written back to the script's stdin. */
+export interface HookPromptEvent {
+	terminalId: string;
+	/** Correlation id echoed back with the answer. */
+	id: string;
+	/** The lifecycle event whose hook raised this (e.g. "session-created"). */
+	event: string;
+	question: string;
+	header?: string;
+	multiSelect?: boolean;
+	options: { label: string; description?: string }[];
+}
+
+/** A hook prompt that's no longer answerable (answered / timed out / hook died). */
+export interface HookPromptCloseEvent {
+	terminalId: string;
+	id: string;
+}
+
 /** Preview of what merging a session's branch into its base would do. */
 export interface MergeStatus {
 	branch?: string | null;

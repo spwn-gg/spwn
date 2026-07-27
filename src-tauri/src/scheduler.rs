@@ -143,8 +143,15 @@ pub fn fire(app: &AppHandle, project_id: &str, task_id: &str) {
                     }
                 }
                 persist(&state);
-                // Run the project `session-created` hook for the headless run too.
-                crate::commands::hooks_on_session_created(&state, &terminal_id, &directory, &wt_path);
+                // Run the project `session-created` hook for the headless run too. No UI
+                // window here, so hook prompts auto-decline (headless = true).
+                crate::commands::hooks_on_session_created(
+                    &state,
+                    &terminal_id,
+                    &directory,
+                    &wt_path,
+                    true,
+                );
             }
         }
     }
