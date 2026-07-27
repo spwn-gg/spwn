@@ -108,6 +108,121 @@ claudeMode.subscribe((m) => {
 /** Whether the settings panel is shown. */
 export const showSettings = writable(false);
 
+// ── Tool permission grants ──────────────────────────────────────────────────
+// Auto-allow a tool without re-prompting, scoped to a single session or globally
+// ("always", persisted across restarts). Client-side: the pane resolves a matching
+// permission request itself instead of surfacing the prompt.
+
+export type GrantScope = 'once' | 'session' | 'always';
+
+const ALWAYS_KEY = 'cm.alwaysAllowTools';
+function loadAlways(): Set<string> {
+	if (typeof localStorage === 'undefined') return new Set();
+	try {
+		const v = JSON.parse(localStorage.getItem(ALWAYS_KEY) ?? '[]');
+		return new Set(Array.isArray(v) ? v : []);
+	} catch {
+		return new Set();
+	}
+}
+/** Tools allowed in every session, persisted. */
+export const alwaysAllowTools = writable<Set<string>>(loadAlways());
+alwaysAllowTools.subscribe((s) => {
+	if (typeof localStorage !== 'undefined')
+		localStorage.setItem(ALWAYS_KEY, JSON.stringify([...s]));
+});
+
+/** Tools allowed for the rest of a single session: terminalId → tool names. */
+export const sessionAllowTools = writable<Map<string, Set<string>>>(new Map());
+
+/** Record a grant (no-op for 'once', which allows a single request only). */
+export function grantTool(terminalId: string, tool: string, scope: GrantScope) {
+	if (scope === 'always') {
+		alwaysAllowTools.update((s) => new Set(s).add(tool));
+	} else if (scope === 'session') {
+		sessionAllowTools.update((m) => {
+			const n = new Map(m);
+			const set = new Set(n.get(terminalId) ?? []);
+			set.add(tool);
+			n.set(terminalId, set);
+			return n;
+		});
+	}
+}
+
+/** Whether a tool should be auto-allowed for this session (session or always grant). */
+export function isToolGranted(terminalId: string, tool: string): boolean {
+	return get(alwaysAllowTools).has(tool) || (get(sessionAllowTools).get(terminalId)?.has(tool) ?? false);
+}
+
+/** Revoke a tool's grant (both session- and always-scope). */
+export function revokeTool(terminalId: string, tool: string) {
+	alwaysAllowTools.update((s) => {
+		const n = new Set(s);
+		n.delete(tool);
+		return n;
+	});
+	sessionAllowTools.update((m) => {
+		const n = new Map(m);
+		const set = new Set(n.get(terminalId) ?? []);
+		set.delete(tool);
+		if (set.size) n.set(terminalId, set);
+		else n.delete(terminalId);
+		return n;
+	});
+}
+
+/** Which sessions have their Inspector drawer open (by terminal id). */
+export const inspectorOpen = writable<Set<string>>(new Set());
+export function toggleInspector(terminalId: string, force?: boolean) {
+	inspectorOpen.update((s) => {
+		const n = new Set(s);
+		const want = force ?? !n.has(terminalId);
+		if (want) n.add(terminalId);
+		else n.delete(terminalId);
+		return n;
+	});
+}
+
+// ── Confirm dialog ────────────────────────────────────────────────────────
+// A promise-based replacement for native confirm(): shows a custom modal that
+// can name exactly what's at stake (structured rows) and offer a secondary
+// action (e.g. "Merge first") beside the destructive one.
+
+/** One named fact about what a destructive action would affect. */
+export interface ConfirmRow {
+	label: string;
+	value: string;
+	/** Render in the danger colour (e.g. work that would be lost). */
+	danger?: boolean;
+}
+
+export interface ConfirmOptions {
+	title: string;
+	/** Main message (plain text). */
+	body: string;
+	/** Structured "here's what's at stake" rows, shown above the buttons. */
+	rows?: ConfirmRow[];
+	/** Label for the primary/destructive action (default "Delete"). */
+	confirmLabel?: string;
+	/** Style the primary action as destructive (default true). */
+	danger?: boolean;
+	/** Optional secondary action (e.g. "Merge first"); resolves to 'secondary'. */
+	secondaryLabel?: string;
+}
+
+export type ConfirmResult = 'confirm' | 'cancel' | 'secondary';
+
+export const confirmState = writable<{
+	opts: ConfirmOptions;
+	resolve: (r: ConfirmResult) => void;
+} | null>(null);
+
+/** Show a confirm modal; resolves to the user's choice. */
+export function confirmDialog(opts: ConfirmOptions): Promise<ConfirmResult> {
+	return new Promise((resolve) => confirmState.set({ opts, resolve }));
+}
+
 export const activeTab = derived(
 	[openTabs, activeTabKey],
 	([$tabs, $key]) => $tabs.find((t) => t.key === $key) ?? null

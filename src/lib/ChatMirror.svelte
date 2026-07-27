@@ -8,10 +8,15 @@
 		claudeRewindRestore,
 		listCheckpoints
 	} from './ipc';
-	import MergePanel from './MergePanel.svelte';
-	import { openTab, refreshProjects, projects, pasteToInput } from './stores';
-	import CheckpointList from './CheckpointList.svelte';
-	import HooksPanel from './HooksPanel.svelte';
+	import {
+		openTab,
+		refreshProjects,
+		projects,
+		pasteToInput,
+		inspectorOpen,
+		toggleInspector,
+		confirmDialog
+	} from './stores';
 	import type { Turn, QuestionSpec } from './types';
 	import { marked } from 'marked';
 	import DOMPurify from 'dompurify';
@@ -128,7 +133,6 @@
 	let turnCheckpoints = $state<Set<string>>(new Set());
 	// The rewind choice popover: anchored at a turn.
 	let rewindMenu = $state<{ uuid: string; x: number; y: number } | null>(null);
-	let showCheckpoints = $state(false);
 
 	async function loadCheckpoints() {
 		if (!sessionId) {
@@ -145,10 +149,18 @@
 		rewindMenu = { uuid, x: Math.min(r.left, window.innerWidth - 230), y: r.bottom + 2 };
 	}
 
-	function rewindTo(uuid: string, restore: boolean) {
+	async function rewindTo(uuid: string, restore: boolean) {
 		rewindMenu = null;
 		if (!terminalId) return;
-		if (restore && !confirm('Also restore the project files to this point?\n\nReverts working files and deletes files created since (git history kept; a safety snapshot is saved first).')) return;
+		if (restore) {
+			const res = await confirmDialog({
+				title: 'Return conversation + restore files?',
+				body: 'This rolls the conversation back to this point and reverts working files to their snapshot here — files created since are deleted. Git history is kept, and a safety snapshot is saved first.',
+				confirmLabel: 'Return + restore',
+				danger: false
+			});
+			if (res !== 'confirm') return;
+		}
 		rewindBaseline = turns.length ? turns[turns.length - 1].uuid : null;
 		rewindAnchor = uuid;
 		const p = restore
@@ -420,13 +432,6 @@
 		setStatus('Sent to the parent session.');
 	}
 
-	// This session's terminal record (for its worktree branch chip + merge panel).
-	const term = $derived(
-		$projects.find((p) => p.id === projectId)?.terminals.find((t) => t.id === terminalId)
-	);
-	let showMerge = $state(false);
-	let showHooks = $state(false);
-
 	function fork() {
 		if (!sessionId) return;
 		openTab({
@@ -451,7 +456,7 @@
 		if (!text) return;
 		await addContextBlock(projectId, 'session', t.role, text);
 		await refreshProjects();
-		setStatus('Added to this project’s context.');
+		setStatus('Added to the merge tray.');
 	}
 </script>
 
@@ -479,22 +484,9 @@
 <div class="mirror">
 	<div class="bar">
 		<span class="title">Conversation</span>
-		<button class="act" class:on={showCheckpoints} disabled={!sessionId} onclick={() => (showCheckpoints = !showCheckpoints)} title="Code checkpoints — undo file changes">⟲ Checkpoints</button>
-		{#if term?.branch}
-			<button
-				class="act"
-				onclick={() => (showMerge = true)}
-				title="Merge this session's branch ({term.branch}) into {term.baseBranch}">⤵ Merge</button>
-		{/if}
-		{#if term?.branch}
-			<button
-				class="act"
-				class:on={showHooks}
-				onclick={() => (showHooks = !showHooks)}
-				title="This session's project hooks (.spwn/hooks/)">▸ Hooks</button>
-		{/if}
-		<button class="act" disabled={!sessionId} onclick={fork} title="Fork this whole session">⑂ Fork</button>
+		<button class="act" disabled={!sessionId} onclick={fork} title="Fork a new session from this one">⑂ Fork</button>
 		<button class="act" class:on={findOpen} onclick={() => (findOpen ? closeFind() : openFind())} title="Find in conversation (⌘F)">🔍 Find</button>
+		<button class="act" class:on={terminalId && $inspectorOpen.has(terminalId)} disabled={!terminalId} onclick={() => terminalId && toggleInspector(terminalId)} title="Session inspector — worktree, merge, timeline, hooks">ⓘ Inspector</button>
 	</div>
 	{#if findOpen}
 		<div class="find">
@@ -510,12 +502,6 @@
 			<button class="find-nav" disabled={matchCount === 0} onclick={() => stepMatch(1)} title="Next match (⏎)">›</button>
 			<button class="find-nav" onclick={closeFind} title="Close (Esc)">×</button>
 		</div>
-	{/if}
-	{#if showHooks && term?.branch && terminalId}
-		<HooksPanel {terminalId} onStatus={setStatus} />
-	{/if}
-	{#if showCheckpoints && sessionId}
-		<CheckpointList {projectId} {sessionId} disabled={busy} onStatus={setStatus} />
 	{/if}
 	<div class="filters">
 		<button class="chip" class:off={!filters.text} onclick={() => (filters.text = !filters.text)}>
@@ -544,12 +530,12 @@
 					<div class="who">
 						<span>{t.role}</span>
 						{#if t.role === 'assistant'}
-							<button class="rewind" title="Rewind to here" onclick={(e) => openRewindMenu(t.uuid, e)}>↺ rewind</button>
+							<button class="rewind" title="Return the conversation (and optionally files) to this point" onclick={(e) => openRewindMenu(t.uuid, e)}>↺ Return here</button>
 							{#if parentTerm}
 								<button class="toparent" title="Paste this response into the parent session ({parentTerm.title})" onclick={() => pasteToParent(t)}>→ parent</button>
 							{/if}
 						{/if}
-						<button class="addctx" title="Add to project context" onclick={() => addToContext(t)}>＋ ctx</button>
+						<button class="addctx" title="Add to the merge tray" onclick={() => addToContext(t)}>＋ ctx</button>
 					</div>
 					{#each t.blocks as b}
 						{#if b.kind === 'text' && filters.text}
@@ -605,15 +591,12 @@
 
 {#if rewindMenu}
 	<div class="rewind-menu" role="menu" tabindex="-1" style="left: {rewindMenu.x}px; top: {rewindMenu.y}px">
+		<div class="rewind-head">Return to this point</div>
 		<button onclick={() => rewindTo(rewindMenu!.uuid, false)}>Conversation only</button>
-		<button disabled={!turnCheckpoints.has(rewindMenu.uuid)} onclick={() => rewindTo(rewindMenu!.uuid, true)}>
+		<button disabled={!turnCheckpoints.has(rewindMenu.uuid)} onclick={() => rewindTo(rewindMenu!.uuid, true)} title={turnCheckpoints.has(rewindMenu.uuid) ? '' : 'No file snapshot for this turn'}>
 			Conversation + restore files
 		</button>
 	</div>
-{/if}
-
-{#if showMerge && term?.branch && terminalId}
-	<MergePanel {projectId} terminalId={terminalId} onClose={() => (showMerge = false)} />
 {/if}
 
 <style>
@@ -792,6 +775,13 @@
 		min-width: 210px;
 		display: flex;
 		flex-direction: column;
+	}
+	.rewind-head {
+		padding: 5px 10px 6px;
+		font-size: 10px;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: var(--text-muted);
 	}
 	.rewind-menu button {
 		background: none;

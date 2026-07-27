@@ -1,9 +1,10 @@
 <script lang="ts">
 	import type { PermissionReq } from './types';
+	import type { GrantScope } from './stores';
 
 	let { req, onAllow, onDeny }: {
 		req: PermissionReq;
-		onAllow: (id: string) => void;
+		onAllow: (id: string, scope: GrantScope) => void;
 		onDeny: (id: string) => void;
 	} = $props();
 
@@ -30,7 +31,9 @@
 	</div>
 	<div class="actions">
 		<button class="deny" onclick={() => onDeny(req.id)}>Deny</button>
-		<button class="allow" onclick={() => onAllow(req.id)}>Allow</button>
+		<button class="allow" onclick={() => onAllow(req.id, 'once')}>Allow once</button>
+		<button class="allow scope" title="Auto-allow {req.tool} for the rest of this session" onclick={() => onAllow(req.id, 'session')}>This session</button>
+		<button class="allow scope" title="Always auto-allow {req.tool} (every session)" onclick={() => onAllow(req.id, 'always')}>Always</button>
 	</div>
 </div>
 
@@ -92,6 +95,11 @@
 		background: #2a4a2a;
 		border-color: #3a6a3a;
 		color: #cfe8cf;
+	}
+	.allow.scope {
+		background: var(--bg-elevated);
+		border-color: #3a6a3a;
+		color: #9bbf8a;
 	}
 	.allow:hover {
 		filter: brightness(1.2);

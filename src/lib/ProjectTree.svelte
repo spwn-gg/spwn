@@ -22,9 +22,12 @@
 		activeTab,
 		hookRunning,
 		claudeStatus,
-		setClaudeStatus
+		setClaudeStatus,
+		confirmDialog,
+		type ConfirmRow
 	} from './stores';
 	import { get } from 'svelte/store';
+	import { ACTIONS } from './labels';
 	import type { ProjectRec, TerminalRec } from './types';
 
 	let collapsed = $state(new Set<string>());
@@ -128,7 +131,7 @@
 
 	function addTerminal(p: ProjectRec, kind: 'shell' | 'claude', e: Event) {
 		e.stopPropagation();
-		openTab({ projectId: p.id, kind, title: kind, projectName: p.name });
+		openTab({ projectId: p.id, kind, title: kind === 'claude' ? 'session' : 'shell', projectName: p.name });
 	}
 
 	async function openSessionCode(t: TerminalRec, e: Event) {
@@ -142,7 +145,7 @@
 
 	function openContext(p: ProjectRec, e: Event) {
 		e.stopPropagation();
-		openTab({ projectId: p.id, kind: 'context', title: `Context · ${p.name}`, projectName: p.name });
+		openTab({ projectId: p.id, kind: 'context', title: `Merge tray · ${p.name}`, projectName: p.name });
 	}
 
 	function openSchedule(p: ProjectRec, e: Event) {
@@ -175,30 +178,60 @@
 
 	/** Name the work a delete would destroy, so the confirm can spell it out. Deleting a
 	 * session drops its worktree *and* branch, so unmerged commits are gone for good. */
-	async function unmergedWarning(p: ProjectRec, t: TerminalRec): Promise<string> {
+	async function stakeRows(p: ProjectRec, t: TerminalRec): Promise<{ rows: ConfirmRow[]; atRisk: boolean }> {
+		const rows: ConfirmRow[] = [];
+		if (t.cwd) rows.push({ label: 'Code lives at', value: shortPath(t.cwd) });
+		let atRisk = false;
 		try {
 			const s = await sessionMergeStatus(p.id, t.id);
-			if (!s.branch) return '';
-			const bits: string[] = [];
-			if (s.ahead > 0)
-				bits.push(`${s.ahead} commit${s.ahead === 1 ? '' : 's'} not in “${s.baseBranch}”`);
-			if (s.uncommitted) bits.push('uncommitted changes');
-			if (!bits.length) return '';
-			return `\n\nBranch “${s.branch}” has ${bits.join(' and ')}. Deleting discards that work permanently.`;
+			if (s.branch) {
+				rows.push({ label: 'On branch', value: s.branch });
+				if (s.ahead > 0) {
+					rows.push({
+						label: 'Unmerged commits',
+						value: `${s.ahead} not in “${s.baseBranch}”`,
+						danger: true
+					});
+					atRisk = true;
+				}
+				if (s.uncommitted) {
+					rows.push({ label: 'Uncommitted changes', value: 'yes', danger: true });
+					atRisk = true;
+				}
+			}
 		} catch {
-			return ''; // Best-effort: a status failure must never block deletion.
+			// Best-effort: a status failure must never block deletion.
 		}
+		return { rows, atRisk };
+	}
+
+	/** Shorten a long absolute worktree path for display (keep the tail). */
+	function shortPath(pth: string): string {
+		const parts = pth.split('/').filter(Boolean);
+		return parts.length > 3 ? '…/' + parts.slice(-3).join('/') : pth;
 	}
 
 	async function removeTerminal(p: ProjectRec, t: TerminalRec, e: Event) {
 		e.stopPropagation();
-		const warning = await unmergedWarning(p, t);
-		if (
-			!confirm(
-				`Delete terminal “${t.title}”? This kills its session and removes its worktree and branch.${warning}\n\nThis can't be undone.`
-			)
-		)
+		const isSession = t.kind === 'claude';
+		const { rows, atRisk } = isSession
+			? await stakeRows(p, t)
+			: { rows: [] as ConfirmRow[], atRisk: false };
+		const res = await confirmDialog({
+			title: isSession ? `Delete session “${t.title}”?` : `Delete shell “${t.title}”?`,
+			body: isSession
+				? "This throws away the session's isolated copy of your code — its worktree and its git branch — and can't be undone."
+				: "This ends the shell and can't be undone.",
+			rows,
+			confirmLabel: 'Delete',
+			// Offer a way out when there's work that a delete would discard.
+			secondaryLabel: isSession && atRisk ? 'Open to merge first' : undefined
+		});
+		if (res === 'cancel') return;
+		if (res === 'secondary') {
+			openExisting(p, t); // let the user merge from the session's toolbar
 			return;
+		}
 		// Close any open tab for this terminal first.
 		const tab = get(openTabs).find((x) => x.terminalId === t.id);
 		if (tab) closeTab(tab.key);
@@ -209,8 +242,13 @@
 	async function removeProject(p: ProjectRec, e: Event) {
 		e.stopPropagation();
 		const n = p.terminals.length;
-		const detail = n ? ` and its ${n} terminal${n === 1 ? '' : 's'}` : '';
-		if (!confirm(`Delete project “${p.name}”${detail}? This can't be undone.`)) return;
+		const detail = n ? ` and its ${n} session${n === 1 ? '' : 's'}/shell${n === 1 ? '' : 's'}` : '';
+		const res = await confirmDialog({
+			title: `Delete project “${p.name}”?`,
+			body: `This removes the project${detail} from spwn and can't be undone.`,
+			confirmLabel: 'Delete'
+		});
+		if (res !== 'confirm') return;
 		for (const tab of get(openTabs).filter((x) => x.projectId === p.id)) closeTab(tab.key);
 		await deleteProject(p.id);
 		await refreshProjects();
@@ -246,14 +284,14 @@
 		return roots;
 	}
 
-	// Branch a new session from an existing one (same as Fork in the chat panel).
+	// Fork a new session from an existing one (same as Fork in the chat panel).
 	function forkSession(p: ProjectRec, t: TerminalRec, e: Event) {
 		e.stopPropagation();
 		if (!t.sessionId) return;
 		openTab({
 			projectId: p.id,
 			kind: 'claude',
-			title: 'branch',
+			title: 'fork',
 			projectName: p.name,
 			claudeFork: t.sessionId,
 			parentTerminalId: t.id,
@@ -298,7 +336,7 @@
 			<span class="t-icon">{t.kind === 'claude' ? '✦' : '$'}</span>
 			<span class="t-title">{t.title}</span>
 		</button>
-		<button class="icon-btn t-del" title="Delete terminal" onclick={(e) => removeTerminal(p, t, e)}>×</button>
+		<button class="icon-btn t-del" title="Delete shell" onclick={(e) => removeTerminal(p, t, e)}>×</button>
 	</div>
 {/snippet}
 
@@ -308,7 +346,7 @@
 	{@const status = statusFor(t)}
 	<div class="row session" class:active={isActiveTerm(t)} style="--depth: {depth}">
 		{#if node.children.length}
-			<button class="twisty" title={open ? 'Hide branches' : 'Show branches'} onclick={() => toggle('s:' + t.id)}>{open ? '▾' : '▸'}</button>
+			<button class="twisty" title={open ? 'Hide forks' : 'Show forks'} onclick={() => toggle('s:' + t.id)}>{open ? '▾' : '▸'}</button>
 		{:else}
 			<span class="twisty-spacer"></span>
 		{/if}
@@ -316,15 +354,15 @@
 			<span class="t-icon" class:branch={depth > 0}>{depth > 0 ? '↳' : '✦'}</span>
 			<span class="t-title" class:attn={status === 'blocked' || status === 'done'} class:err={status === 'error'}>{t.title}</span>
 			{#if $hookRunning.has(t.id)}<span class="hook-spin" title="Running {$hookRunning.get(t.id)} hook…"></span>{/if}
-			{#if t.branch}<span class="wt-chip" title="git worktree branch: {t.branch}">⎇ {t.branch.replace(/^cm\//, '')}</span>{/if}
+			{#if t.branch}<span class="wt-chip" title="git branch (this session's worktree): {t.branch}">⎇ {t.branch.replace(/^cm\//, '')}</span>{/if}
 			{#if status === 'thinking'}<span class="think-spin" title="Working…"></span>
 			{:else if status === 'blocked'}<span class="attn-dot blocked" title="Waiting for you"></span>
 			{:else if status === 'done'}<span class="attn-dot" title="Turn finished — awaiting you"></span>
 			{:else if status === 'error'}<span class="attn-dot error" title="Session error"></span>{/if}
-			{#if node.children.length}<span class="count" title="{node.children.length} branch(es)">{node.children.length}</span>{/if}
+			{#if node.children.length}<span class="count" title="{node.children.length} fork(s)">{node.children.length}</span>{/if}
 		</button>
-		<button class="icon-btn fork" title={t.sessionId ? 'Branch a new session from here' : 'Send a message first to enable branching'} disabled={!t.sessionId} onclick={(e) => forkSession(p, t, e)}>⑂</button>
-		<button class="icon-btn code" title="Open project in VS Code" onclick={(e) => openSessionCode(t, e)}>{'</>'}</button>
+		<button class="icon-btn fork" title={t.sessionId ? ACTIONS.fork : ACTIONS.forkDisabled} disabled={!t.sessionId} onclick={(e) => forkSession(p, t, e)}>⑂</button>
+		<button class="icon-btn code" title="Open in VS Code" onclick={(e) => openSessionCode(t, e)}>{'</>'}</button>
 		<button class="icon-btn t-del" title="Delete session" onclick={(e) => removeTerminal(p, t, e)}>×</button>
 	</div>
 	{#if node.children.length && open}
@@ -354,7 +392,7 @@
 					<div class="row ctx-row" class:active={isActiveCtx(p)}>
 						<button class="row-main" onclick={(e) => openContext(p, e)}>
 							<span class="t-icon ctx">▦</span>
-							<span class="t-title">Context</span>
+							<span class="t-title">Merge tray</span>
 							{#if p.context?.length}<span class="count">{p.context.length}</span>{/if}
 						</button>
 					</div>
@@ -382,7 +420,7 @@
 					{#each claudeForest(p) as node (node.t.id)}
 						{@render sessionNode(p, node, 0)}
 					{/each}
-					<button class="add-session" onclick={(e) => menuClaude(p, e)} title="Start a new Claude session">＋ Claude session</button>
+					<button class="add-session" onclick={(e) => menuClaude(p, e)} title="Start a new session (isolated worktree + conversation)">＋ New session</button>
 					{#if p.terminals.length === 0}
 						<div class="t-empty">No sessions yet — start one above, or use the ⋯ menu.</div>
 					{/if}
@@ -400,9 +438,9 @@
 			role="menu"
 			tabindex="-1"
 			style="left: {menuPos.x}px; top: {menuPos.y}px">
-			<button onclick={(e) => menuShell(p, e)}>New terminal</button>
-			<button onclick={(e) => menuClaude(p, e)}>New Claude session</button>
-			<button onclick={(e) => menuVscode(p, e)}>Open in VSCode</button>
+			<button onclick={(e) => menuClaude(p, e)}>New session</button>
+			<button onclick={(e) => menuShell(p, e)}>New shell</button>
+			<button onclick={(e) => menuVscode(p, e)}>Open in VS Code</button>
 			<div class="sep"></div>
 			<button class="danger" onclick={(e) => menuDelete(p, e)}>Delete project</button>
 		</div>

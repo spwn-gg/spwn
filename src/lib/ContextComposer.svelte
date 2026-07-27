@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { projects, openTab, refreshProjects } from './stores';
+	import { projects, openTab, refreshProjects, confirmDialog } from './stores';
 	import {
 		addContextBlock,
 		addContextFile,
@@ -56,7 +56,12 @@
 		await refreshProjects();
 	}
 	async function clearAll() {
-		if (!confirm('Clear all context blocks for this project?')) return;
+		const res = await confirmDialog({
+			title: 'Clear the merge tray?',
+			body: 'This removes every block from this project’s merge tray. It can’t be undone.',
+			confirmLabel: 'Clear'
+		});
+		if (res !== 'confirm') return;
 		await clearContext(projectId);
 		await refreshProjects();
 	}
@@ -115,7 +120,7 @@
 		openTab({
 			projectId,
 			kind: 'claude',
-			title: 'context session',
+			title: 'session',
 			projectName: project?.name,
 			initialPrompt: assemble(blocks)
 		});
@@ -124,21 +129,21 @@
 
 <div class="composer">
 	<div class="bar">
-		<span class="title">Context — {project?.name ?? ''}</span>
+		<span class="title">Merge tray — {project?.name ?? ''}</span>
 		<button class="primary" disabled={blocks.length === 0} onclick={inject}>
-			Inject → new Claude session
+			Inject → new session
 		</button>
 	</div>
 
 	<div class="add">
 		<textarea
 			bind:value={note}
-			placeholder="Add a note to the context… (instructions, requirements, snippets)"></textarea>
+			placeholder="Add a note to the merge tray… (instructions, requirements, snippets)"></textarea>
 		<div class="add-btns">
 			<button onclick={addNote} disabled={!note.trim()}>＋ Note</button>
 			<button onclick={addFile}>＋ File</button>
 			<span class="spacer"></span>
-			<span class="len">{assembledLen.toLocaleString()} chars · ~{estTokens.toLocaleString()} tokens</span>
+			<span class="len" title="Size of the assembled payload that will seed the new session — not the model's context window">payload: {assembledLen.toLocaleString()} chars · ~{estTokens.toLocaleString()} tokens</span>
 			{#if blocks.length}<button class="danger" onclick={clearAll}>Clear</button>{/if}
 		</div>
 	</div>
@@ -146,7 +151,7 @@
 	<div class="blocks">
 		{#if blocks.length === 0}
 			<div class="hint">
-				No context yet. Add notes or files above, or ＋ ctx on a message in a chat.
+				Merge tray is empty. Add notes or files above, or ＋ ctx on a message in a chat.
 			</div>
 		{/if}
 		{#each blocks as b, i (b.id)}
