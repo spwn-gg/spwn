@@ -11,11 +11,13 @@
 	let {
 		projectId,
 		terminalId,
-		onOpen
+		onOpen,
+		open = false
 	}: {
 		projectId: string;
 		terminalId: string | undefined;
 		onOpen?: () => void;
+		open?: boolean;
 	} = $props();
 
 	const term = $derived(
@@ -70,86 +72,100 @@
 	});
 </script>
 
-<button class="strip" onclick={() => onOpen?.()} title="Open the session inspector">
+<div class="strip">
 	{#if !term}
-		<span class="seg dim">session starting…</span>
-		<span class="spacer"></span>
-		<span class="details">Inspector ›</span>
+		<div class="row">
+			<span class="seg dim">session starting…</span>
+			<button class="toggle" onclick={() => onOpen?.()} title="Open the session inspector">
+				Inspector {open ? '⌄' : '›'}
+			</button>
+		</div>
 	{:else}
-	{#if term?.cwd}
-		<span class="seg path" title="This session's isolated worktree: {term.cwd}">
-			📁 {shortPath(term.cwd)}
-		</span>
+		<div class="row">
+			{#if term?.cwd}
+				<span class="seg path" title="This session's isolated worktree: {term.cwd}">
+					📁 {shortPath(term.cwd)}
+				</span>
+			{:else}
+				<span class="seg dim">📁 —</span>
+			{/if}
+			<button class="toggle" onclick={() => onOpen?.()} title="Toggle the session inspector">
+				Inspector {open ? '⌄' : '›'}
+			</button>
+		</div>
+		<div class="row state">
+			{#if term?.branch}
+				<span class="seg branch" title="git branch (with the branch it merges back into)">
+					⎇ {branchShort}{merge?.baseBranch ? ` → ${merge.baseBranch}` : ''}
+				</span>
+				{#if merge && merge.ahead > 0}
+					<span class="chip ahead" title="Commits on this branch not yet in {merge.baseBranch}">
+						{merge.ahead} ahead
+					</span>
+				{/if}
+				{#if merge?.uncommitted}
+					<span class="chip warn" title="The worktree has uncommitted changes">uncommitted</span>
+				{/if}
+				{#if merge && merge.ahead === 0 && !merge.uncommitted}
+					<span class="chip ok" title="Nothing to merge back yet">in sync with {merge.baseBranch}</span>
+				{/if}
+			{:else}
+				<span class="seg dim" title="Not a git repo — this session shares the project directory">no worktree</span>
+			{/if}
+			{#if lastHook}
+				<span class="chip" class:ok={lastHook === 'ok'} class:warn={lastHook === 'failed'} title="Most recent .spwn hook result">
+					hooks {lastHook === 'ok' ? '✓' : '✗'}
+				</span>
+			{/if}
+		</div>
 	{/if}
-	{#if term?.branch}
-		<span class="sep">·</span>
-		<span class="seg" title="git branch (with the branch it merges back into)">
-			⎇ {branchShort}{merge?.baseBranch ? ` (from ${merge.baseBranch})` : ''}
-		</span>
-		{#if merge && merge.ahead > 0}
-			<span class="sep">·</span>
-			<span class="seg ahead" title="Commits on this branch not yet in {merge.baseBranch}">
-				{merge.ahead} ahead
-			</span>
-		{/if}
-		{#if merge?.uncommitted}
-			<span class="sep">·</span>
-			<span class="seg warn" title="The worktree has uncommitted changes">uncommitted</span>
-		{/if}
-		{#if merge && merge.ahead === 0 && !merge.uncommitted}
-			<span class="sep">·</span>
-			<span class="seg ok" title="Nothing to merge back yet">in sync with {merge.baseBranch}</span>
-		{/if}
-	{:else}
-		<span class="sep">·</span>
-		<span class="seg dim" title="Not a git repo — this session shares the project directory">no worktree</span>
-	{/if}
-	{#if lastHook}
-		<span class="sep">·</span>
-		<span class="seg" class:ok={lastHook === 'ok'} class:warn={lastHook === 'failed'} title="Most recent .spwn hook result">
-			hooks {lastHook === 'ok' ? '✓' : '✗'}
-		</span>
-	{/if}
-	<span class="spacer"></span>
-	<span class="details">Inspector ›</span>
-	{/if}
-</button>
+</div>
 
 <style>
 	.strip {
 		display: flex;
-		align-items: center;
-		gap: 6px;
+		flex-direction: column;
+		gap: 3px;
 		width: 100%;
 		box-sizing: border-box;
 		background: #14181f;
-		border: none;
 		border-bottom: 1px solid var(--border);
 		color: var(--text-dim);
-		padding: 5px 12px;
+		padding: 6px 12px;
 		font-size: 11px;
 		font-family: ui-monospace, Menlo, monospace;
-		cursor: pointer;
-		text-align: left;
-		overflow: hidden;
-		white-space: nowrap;
 	}
-	.strip:hover {
-		background: #171c24;
-		color: var(--text);
+	.row {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		min-width: 0;
+	}
+	.row.state {
+		flex-wrap: wrap;
+		row-gap: 4px;
 	}
 	.seg {
 		flex: 0 1 auto;
+		min-width: 0;
 		overflow: hidden;
 		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 	.seg.path {
 		color: #9bb0c8;
+	}
+	.seg.branch {
+		color: var(--text);
 		flex-shrink: 1;
 	}
-	.sep {
-		color: var(--text-muted);
+	.chip {
 		flex: 0 0 auto;
+		padding: 1px 7px;
+		border-radius: 999px;
+		background: rgba(255, 255, 255, 0.04);
+		border: 1px solid var(--border);
+		white-space: nowrap;
 	}
 	.ahead {
 		color: #e0a83a;
@@ -163,12 +179,18 @@
 	.dim {
 		color: var(--text-muted);
 	}
-	.spacer {
-		flex: 1 1 auto;
-	}
-	.details {
+	.toggle {
 		flex: 0 0 auto;
+		margin-left: auto;
+		background: none;
+		border: none;
 		color: var(--accent-text);
 		font-family: ui-sans-serif, system-ui, sans-serif;
+		font-size: 11px;
+		cursor: pointer;
+		padding: 0 0 0 8px;
+	}
+	.toggle:hover {
+		color: var(--text);
 	}
 </style>
