@@ -212,6 +212,147 @@
 		return true;
 	}
 
+	// ── In-conversation find ────────────────────────────────────────────────
+	// Searches user/assistant message text (text-kind blocks) in the current
+	// session only. Highlighting is done in the rendered DOM (see applyHighlights)
+	// so it doesn't disturb the markdown HTML.
+	let findOpen = $state(false);
+	let query = $state('');
+	let currentMatch = $state(0);
+	let findInput = $state<HTMLInputElement | undefined>(undefined);
+	let currentHit: HTMLElement | null = null;
+
+	// One entry per text-block occurrence of the query (case-insensitive). Only
+	// the count/index is used; the DOM walk re-finds positions against the same text.
+	const matchCount = $derived.by(() => {
+		const q = query.trim().toLowerCase();
+		if (!q) return 0;
+		let n = 0;
+		for (const t of visibleTurns) {
+			for (const b of t.blocks) {
+				if (b.kind !== 'text' || !b.text) continue;
+				const hay = b.text.toLowerCase();
+				let i = hay.indexOf(q);
+				while (i !== -1) {
+					n++;
+					i = hay.indexOf(q, i + q.length);
+				}
+			}
+		}
+		return n;
+	});
+
+	// Keep the active match in range as the match set changes.
+	$effect(() => {
+		if (currentMatch >= matchCount) currentMatch = matchCount ? matchCount - 1 : 0;
+		if (currentMatch < 0) currentMatch = 0;
+	});
+
+	function openFind() {
+		findOpen = true;
+		filters.text = true; // matches only exist among rendered text blocks
+		requestAnimationFrame(() => findInput?.focus());
+	}
+	function closeFind() {
+		findOpen = false;
+		query = '';
+	}
+	function stepMatch(dir: number) {
+		if (matchCount === 0) return;
+		currentMatch = (currentMatch + dir + matchCount) % matchCount;
+		stick = false; // don't let the bottom-follow effect yank us back down
+	}
+	function onFindKey(e: KeyboardEvent) {
+		if (e.key === 'Enter') {
+			e.preventDefault();
+			stepMatch(e.shiftKey ? -1 : 1);
+		} else if (e.key === 'Escape') {
+			e.preventDefault();
+			closeFind();
+		}
+	}
+
+	// Remove all our <mark> wrappers, restoring the original text nodes.
+	function clearHighlights() {
+		if (!bodyEl) return;
+		bodyEl.querySelectorAll('mark.cm-hit').forEach((m) => {
+			const parent = m.parentNode;
+			if (!parent) return;
+			while (m.firstChild) parent.insertBefore(m.firstChild, m);
+			parent.removeChild(m);
+			parent.normalize();
+		});
+	}
+
+	// Wrap every query occurrence inside rendered text blocks in <mark>, tagging
+	// the currentMatch-th one so it can be scrolled into view.
+	function applyHighlights() {
+		clearHighlights();
+		currentHit = null;
+		const q = query.trim();
+		if (!bodyEl || !q) return;
+		const ql = q.toLowerCase();
+		let idx = 0;
+		bodyEl.querySelectorAll('.text.md').forEach((block) => {
+			const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+			const nodes: Text[] = [];
+			let n: Node | null;
+			while ((n = walker.nextNode())) nodes.push(n as Text);
+			for (const node of nodes) {
+				const text = node.nodeValue ?? '';
+				const lower = text.toLowerCase();
+				let pos = lower.indexOf(ql);
+				if (pos === -1) continue;
+				const frag = document.createDocumentFragment();
+				let last = 0;
+				while (pos !== -1) {
+					if (pos > last) frag.appendChild(document.createTextNode(text.slice(last, pos)));
+					const mark = document.createElement('mark');
+					mark.className = 'cm-hit';
+					if (idx === currentMatch) {
+						mark.classList.add('cm-current');
+						currentHit = mark;
+					}
+					mark.textContent = text.slice(pos, pos + q.length);
+					frag.appendChild(mark);
+					idx++;
+					last = pos + q.length;
+					pos = lower.indexOf(ql, last);
+				}
+				if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+				node.parentNode?.replaceChild(frag, node);
+			}
+		});
+	}
+
+	// Re-highlight after the DOM settles whenever the query, active match, or
+	// rendered turns change. Scroll the active match into view.
+	$effect(() => {
+		void query;
+		void currentMatch;
+		void visibleTurns;
+		void filters.text;
+		const active = findOpen;
+		requestAnimationFrame(() => {
+			if (!active) {
+				clearHighlights();
+				return;
+			}
+			applyHighlights();
+			currentHit?.scrollIntoView({ block: 'center' });
+		});
+	});
+
+	// ⌘F / Ctrl+F opens find — but only for the pane that's actually visible
+	// (background panes are visibility:hidden yet still mounted and listening).
+	function onGlobalKey(e: KeyboardEvent) {
+		if ((e.metaKey || e.ctrlKey) && (e.key === 'f' || e.key === 'F')) {
+			if (!bodyEl || bodyEl.offsetParent === null) return;
+			e.preventDefault();
+			openFind();
+		}
+	}
+
 	// Parse an AskUserQuestion tool_use input into its questions (null if it isn't one).
 	function parseQuestions(text?: string | null): QuestionSpec[] | null {
 		if (!text) return null;
@@ -237,11 +378,13 @@
 			if (!sessionId || changed.length === 0 || changed.includes(sessionId)) reload();
 		});
 		window.addEventListener('click', closeRewindMenu);
+		window.addEventListener('keydown', onGlobalKey);
 	});
 	onDestroy(() => {
 		unlisten?.();
 		clearTimeout(statusTimer);
 		window.removeEventListener('click', closeRewindMenu);
+		window.removeEventListener('keydown', onGlobalKey);
 	});
 
 	// If this is a forked (child) session, find its parent terminal so responses
@@ -351,7 +494,23 @@
 				title="This session's project hooks (.spwn/hooks/)">▸ Hooks</button>
 		{/if}
 		<button class="act" disabled={!sessionId} onclick={fork} title="Fork this whole session">⑂ Fork</button>
+		<button class="act" class:on={findOpen} onclick={() => (findOpen ? closeFind() : openFind())} title="Find in conversation (⌘F)">🔍 Find</button>
 	</div>
+	{#if findOpen}
+		<div class="find">
+			<input
+				class="find-input"
+				bind:this={findInput}
+				bind:value={query}
+				onkeydown={onFindKey}
+				placeholder="Find in conversation…"
+				spellcheck="false" />
+			<span class="find-count">{matchCount ? currentMatch + 1 : 0}/{matchCount}</span>
+			<button class="find-nav" disabled={matchCount === 0} onclick={() => stepMatch(-1)} title="Previous match (⇧⏎)">‹</button>
+			<button class="find-nav" disabled={matchCount === 0} onclick={() => stepMatch(1)} title="Next match (⏎)">›</button>
+			<button class="find-nav" onclick={closeFind} title="Close (Esc)">×</button>
+		</div>
+	{/if}
 	{#if showHooks && term?.branch && terminalId}
 		<HooksPanel {terminalId} onStatus={setStatus} />
 	{/if}
@@ -569,6 +728,58 @@
 		background: var(--bg);
 		color: #d8b8f0;
 		border-color: #5a4a7a;
+	}
+	.find {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		padding: 8px 12px;
+		border-bottom: 1px solid #2c2c2c;
+	}
+	.find-input {
+		flex: 1 1 auto;
+		min-width: 0;
+		background: #1c1c1c;
+		border: 1px solid #3a3a3a;
+		color: #e6e6e6;
+		border-radius: 5px;
+		padding: 4px 8px;
+		font-size: 13px;
+	}
+	.find-input:focus {
+		outline: none;
+		border-color: #5a507a;
+	}
+	.find-count {
+		flex: 0 0 auto;
+		font-size: 11px;
+		color: #8aa0bf;
+		min-width: 34px;
+		text-align: center;
+	}
+	.find-nav {
+		flex: 0 0 auto;
+		background: #2a2a2a;
+		border: 1px solid #3a3a3a;
+		color: #cfcfcf;
+		border-radius: 5px;
+		padding: 2px 9px;
+		font-size: 14px;
+		line-height: 1;
+		cursor: pointer;
+	}
+	.find-nav:disabled {
+		opacity: 0.4;
+		cursor: default;
+	}
+	:global(mark.cm-hit) {
+		background: #5a4a12;
+		color: inherit;
+		border-radius: 2px;
+	}
+	:global(mark.cm-current) {
+		background: #e0a83a;
+		color: #161616;
 	}
 	.rewind-menu {
 		position: fixed;
