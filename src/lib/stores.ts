@@ -4,8 +4,9 @@ import { writable, derived, get } from 'svelte/store';
 import { listProjects } from './ipc';
 import type { ProjectRec, SessionStatus, TerminalKind } from './types';
 
-/** A pane is a terminal (shell/claude), the context composer, or the scheduler. */
-export type PaneKind = TerminalKind | 'context' | 'schedule';
+/** A pane is a terminal (shell/claude), the context composer, the scheduler, or
+ * the per-project exploration map. */
+export type PaneKind = TerminalKind | 'context' | 'schedule' | 'map';
 
 export const projects = writable<ProjectRec[]>([]);
 
@@ -244,8 +245,8 @@ export function openTab(spec: Omit<OpenTab, 'key'>) {
 			return;
 		}
 	}
-	// One context composer / scheduler per project — focus it if already open.
-	if (spec.kind === 'context' || spec.kind === 'schedule') {
+	// One context composer / scheduler / map per project — focus it if already open.
+	if (spec.kind === 'context' || spec.kind === 'schedule' || spec.kind === 'map') {
 		const existing = get(openTabs).find(
 			(t) => t.kind === spec.kind && t.projectId === spec.projectId
 		);

@@ -31,7 +31,9 @@ export const GLYPHS = {
 	/** The git branch property chip. */
 	branch: '⎇',
 	mergeTray: '▦',
-	schedule: '◷'
+	schedule: '◷',
+	/** The per-project exploration map (fork lineage as a canvas). */
+	map: '⋔'
 } as const;
 
 /** Common action labels, so buttons/menus/tooltips read identically across views. */
@@ -47,5 +49,8 @@ export const ACTIONS = {
 	/** Shown when a session has no id yet and can't be forked. */
 	forkDisabled: 'Send a message first to enable forking',
 	merge: 'Merge',
-	openInVscode: 'Open in VS Code'
+	openInVscode: 'Open in VS Code',
+	explorationMap: 'Exploration Map',
+	/** Unified "move this session's work somewhere useful" flow. */
+	bringWorkBack: 'Bring work back'
 } as const;
