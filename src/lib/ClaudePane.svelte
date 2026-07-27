@@ -5,6 +5,9 @@
 	import InputBar from './InputBar.svelte';
 	import PermissionPrompt from './PermissionPrompt.svelte';
 	import QuestionPicker from './QuestionPicker.svelte';
+	import SessionStatusStrip from './SessionStatusStrip.svelte';
+	import IsolationIntro from './IsolationIntro.svelte';
+	import Inspector from './Inspector.svelte';
 	import {
 		openTerminal,
 		setTerminalSession,
@@ -23,7 +26,12 @@
 		refreshProjects,
 		setSessionBusy,
 		pasteToInput,
-		claudeMode
+		claudeMode,
+		toggleInspector,
+		inspectorOpen,
+		isToolGranted,
+		grantTool,
+		type GrantScope
 	} from './stores';
 	import type { ClaudeEvent, PendingQuestion, PermissionReq, Turn } from './types';
 
@@ -70,6 +78,19 @@
 	// A brand-new tab (no terminalId yet) gets a pre-edit "baseline" checkpoint.
 	const isFreshSession = terminalId === undefined;
 	let baselineDone = false;
+
+	// One-time isolation explainer: shown the first time (per machine) a fresh session
+	// spawns its own worktree, so the isolation model is taught up front.
+	const INTRO_KEY = 'cm.seenIsolationIntro';
+	let showIntro = $state(false);
+	function closeIntro() {
+		showIntro = false;
+		try {
+			localStorage.setItem(INTRO_KEY, '1');
+		} catch {
+			/* ignore */
+		}
+	}
 
 	// Live, in-flight turn (overlaid on top of the JSONL-rendered history).
 	let busy = $state(false);
@@ -201,6 +222,12 @@
 				if (isFreshSession && !baselineDone) {
 					baselineDone = true;
 					checkpointProject(projectId, ev.sessionId, 'baseline', 'baseline').catch(() => {});
+					// Teach the isolation model the first time it happens (per machine).
+					try {
+						if (localStorage.getItem(INTRO_KEY) !== '1') showIntro = true;
+					} catch {
+						/* ignore */
+					}
 				}
 				break;
 			case 'delta':
@@ -219,6 +246,12 @@
 				lastAssistantUuid = ev.uuid;
 				break;
 			case 'permission':
+				// Auto-allow tools the user granted for this session (or always), so a
+				// repeated request doesn't re-prompt.
+				if (id && isToolGranted(id, ev.tool)) {
+					claudePermission(id, ev.id, true);
+					break;
+				}
 				pendingPermissions = [
 					...pendingPermissions,
 					{ id: ev.id, tool: ev.tool, input: ev.input, title: ev.title }
@@ -316,8 +349,12 @@
 		lastAssistantUuid = null;
 	}
 
-	function allow(pid: string) {
-		if (id) claudePermission(id, pid, true);
+	function allow(pid: string, scope: GrantScope) {
+		const req = pendingPermissions.find((p) => p.id === pid);
+		if (id) {
+			if (req && scope !== 'once') grantTool(id, req.tool, scope);
+			claudePermission(id, pid, true);
+		}
 		pendingPermissions = pendingPermissions.filter((p) => p.id !== pid);
 	}
 	function deny(pid: string) {
@@ -327,18 +364,27 @@
 </script>
 
 <div class="cpane">
+	<SessionStatusStrip
+		{projectId}
+		terminalId={id}
+		onOpen={() => id && toggleInspector(id)} />
 	<div class="mirror-wrap">
-		<ChatMirror
-			{projectId}
-			terminalId={id}
-			sessionId={liveSession}
-			{busy}
-			{streamingText}
-			{streamingThinking}
-			{liveTools}
-			{pendingUserText}
-			{onReload}
-			{onRewound} />
+		<div class="chat-col">
+			<ChatMirror
+				{projectId}
+				terminalId={id}
+				sessionId={liveSession}
+				{busy}
+				{streamingText}
+				{streamingThinking}
+				{liveTools}
+				{pendingUserText}
+				{onReload}
+				{onRewound} />
+		</div>
+		{#if id && $inspectorOpen.has(id)}
+			<Inspector {projectId} terminalId={id} sessionId={liveSession} {busy} />
+		{/if}
 	</div>
 	{#if lastError}
 		<div class="cerror" role="alert">
@@ -356,6 +402,9 @@
 		<PermissionPrompt req={p} onAllow={allow} onDeny={deny} />
 	{/each}
 	<InputBar terminalId={id} {busy} bind:mode {onSend} />
+	{#if showIntro}
+		<IsolationIntro {projectId} terminalId={id} onClose={closeIntro} />
+	{/if}
 </div>
 
 <style>
@@ -364,9 +413,17 @@
 		flex-direction: column;
 		height: 100%;
 		min-width: 0;
+		position: relative;
 	}
 	.mirror-wrap {
 		flex: 1 1 auto;
+		min-height: 0;
+		overflow: hidden;
+		display: flex;
+	}
+	.chat-col {
+		flex: 1 1 auto;
+		min-width: 0;
 		min-height: 0;
 		overflow: hidden;
 	}

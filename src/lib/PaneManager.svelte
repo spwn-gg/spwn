@@ -51,7 +51,7 @@
 
 	<div class="stack">
 		{#if $openTabs.length === 0}
-			<div class="empty">Pick a project in the sidebar, then open a Shell or Claude terminal.</div>
+			<div class="empty">Pick a project in the sidebar, then start a Session or open a Shell.</div>
 		{/if}
 		{#each $openTabs as tab (tab.key)}
 			<div class="pane" class:active={tab.key === $activeTabKey}>

@@ -5,6 +5,7 @@
 	import Settings from '$lib/Settings.svelte';
 	import UpdateBanner from '$lib/UpdateBanner.svelte';
 	import QuestionPicker from '$lib/QuestionPicker.svelte';
+	import ConfirmDialog from '$lib/ConfirmDialog.svelte';
 	import {
 		showSettings,
 		openTabs,
@@ -206,6 +207,8 @@
 {#if $showSettings}
 	<Settings />
 {/if}
+
+<ConfirmDialog />
 
 <style>
 	:global(:root) {

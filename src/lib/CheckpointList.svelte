@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { listCheckpoints, restoreCheckpoint } from './ipc';
-	import { refreshProjects } from './stores';
+	import { refreshProjects, confirmDialog } from './stores';
 	import type { CheckpointMeta } from './types';
 
 	let {
@@ -44,12 +44,13 @@
 
 	async function restore(c: CheckpointMeta) {
 		if (!sessionId || disabled || restoring) return;
-		if (
-			!confirm(
-				'Restore the project files to this checkpoint?\n\nThis reverts working files and deletes files created since. Git history is kept, and a safety snapshot is saved first.'
-			)
-		)
-			return;
+		const res = await confirmDialog({
+			title: 'Restore files to this snapshot?',
+			body: 'This reverts working files and deletes files created since. Git history is kept, and a safety snapshot is saved first. Your conversation is left as-is.',
+			confirmLabel: 'Restore files',
+			danger: false
+		});
+		if (res !== 'confirm') return;
 		restoring = true;
 		onStatus('Restoring files…');
 		try {
@@ -73,7 +74,7 @@
 
 <div class="panel">
 	<div class="head">
-		<span>Code checkpoints</span>
+		<span>File snapshots</span>
 		{#if undoTarget}
 			<button class="undo" disabled={disabled || restoring} onclick={() => restore(undoTarget!)}
 				>⟲ Undo last change</button>

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { projects, refreshProjects } from './stores';
+	import { projects, refreshProjects, confirmDialog } from './stores';
 	import {
 		addScheduledTask,
 		updateScheduledTask,
@@ -84,7 +84,12 @@
 	}
 
 	async function remove(t: ScheduledTask) {
-		if (!confirm(`Delete scheduled task “${t.name}”?`)) return;
+		const res = await confirmDialog({
+			title: `Delete scheduled task “${t.name}”?`,
+			body: 'This removes the scheduled task. It can’t be undone.',
+			confirmLabel: 'Delete'
+		});
+		if (res !== 'confirm') return;
 		if (editingId === t.id) resetForm();
 		await removeScheduledTask(projectId, t.id);
 		await refreshProjects();
