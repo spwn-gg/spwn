@@ -364,23 +364,26 @@
 </script>
 
 <div class="cpane">
-	<SessionStatusStrip
-		{projectId}
-		terminalId={id}
-		onOpen={() => id && toggleInspector(id)} />
 	<div class="mirror-wrap">
 		<div class="chat-col">
-			<ChatMirror
+			<SessionStatusStrip
 				{projectId}
 				terminalId={id}
-				sessionId={liveSession}
-				{busy}
-				{streamingText}
-				{streamingThinking}
-				{liveTools}
-				{pendingUserText}
-				{onReload}
-				{onRewound} />
+				open={!!(id && $inspectorOpen.has(id))}
+				onOpen={() => id && toggleInspector(id)} />
+			<div class="chat-body">
+				<ChatMirror
+					{projectId}
+					terminalId={id}
+					sessionId={liveSession}
+					{busy}
+					{streamingText}
+					{streamingThinking}
+					{liveTools}
+					{pendingUserText}
+					{onReload}
+					{onRewound} />
+			</div>
 		</div>
 		{#if id && $inspectorOpen.has(id)}
 			<Inspector {projectId} terminalId={id} sessionId={liveSession} {busy} />
@@ -424,6 +427,13 @@
 	.chat-col {
 		flex: 1 1 auto;
 		min-width: 0;
+		min-height: 0;
+		overflow: hidden;
+		display: flex;
+		flex-direction: column;
+	}
+	.chat-body {
+		flex: 1 1 auto;
 		min-height: 0;
 		overflow: hidden;
 	}
