@@ -3,7 +3,6 @@
 	import ClaudePane from './ClaudePane.svelte';
 	import ContextComposer from './ContextComposer.svelte';
 	import ScheduledTasks from './ScheduledTasks.svelte';
-	import ExplorationMap from './ExplorationMap.svelte';
 	import { openTabs, activeTabKey, closeTab, hookRunning, claudeStatus } from './stores';
 	import type { OpenTab } from './stores';
 	import { GLYPHS } from './labels';
@@ -16,9 +15,7 @@
 				? GLYPHS.mergeTray
 				: kind === 'schedule'
 					? GLYPHS.schedule
-					: kind === 'map'
-						? GLYPHS.map
-						: GLYPHS.shell;
+					: GLYPHS.shell;
 	}
 
 	function close(key: string, e: Event) {
@@ -55,7 +52,7 @@
 					{#if tab.terminalId && $hookRunning.has(tab.terminalId)}<span class="hook-spin" title="Running {$hookRunning.get(tab.terminalId)} hook…"></span>{/if}
 					<span class="tab-icon">{tabIcon(tab.kind)}</span>
 					<span class="tab-title">{tab.title}</span>
-					{#if tab.projectName && tab.kind !== 'context' && tab.kind !== 'schedule' && tab.kind !== 'map'}
+					{#if tab.projectName && tab.kind !== 'context' && tab.kind !== 'schedule'}
 						<span class="tab-proj">· {tab.projectName}</span>
 					{/if}
 				</button>
@@ -74,8 +71,6 @@
 					<ContextComposer projectId={tab.projectId} />
 				{:else if tab.kind === 'schedule'}
 					<ScheduledTasks projectId={tab.projectId} />
-				{:else if tab.kind === 'map'}
-					<ExplorationMap projectId={tab.projectId} />
 				{:else if tab.kind === 'claude'}
 					<ClaudePane
 						tabKey={tab.key}
