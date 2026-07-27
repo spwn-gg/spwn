@@ -42,6 +42,8 @@ spwn runs it via `sh`. A missing `<event>.sh` simply means no hook for that even
 
 A complete, runnable example lives in
 [`examples/hooks/`](https://github.com/spwn-gg/spwn/tree/main/examples/hooks) in the repo.
+For copy-paste recipes — refresh the base branch, per-session preview environment, seed a
+database, and more — see the [Hooks Cookbook](/spwn/guides/hooks-cookbook/).
 
 ## Events
 
@@ -129,5 +131,6 @@ If a hook exits non-zero, spwn shows a one-line advisory — the session still o
 
 ## Next
 
+- [Hooks Cookbook](/spwn/guides/hooks-cookbook/) — copy-paste recipes.
 - [Parallel Sessions](/spwn/guides/parallel-sessions/)
 - [Scheduled Tasks](/spwn/guides/scheduled-tasks/)
