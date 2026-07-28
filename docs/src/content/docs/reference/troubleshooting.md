@@ -38,7 +38,7 @@ in the project folder and start a new session to get isolation. See
 ## A merge conflicted, or I can't merge
 
 **⤵ Merge** uses ordinary git. If it can't fast-forward or hits a conflict, resolve it
-the way you would any merge — in a shell, `git merge cm/<id>` from the base branch and
+the way you would any merge — in a shell, `git merge spwn/<id>` from the base branch and
 fix the conflicts. The session's branch is real git history, so nothing is stuck. See
 [Merging Work](/spwn/guides/merging/).
 
@@ -74,7 +74,8 @@ it never writes there. See [How it works & your data](/spwn/reference/architectu
 1. Quit spwn from its menu-bar icon.
 2. Delete `/Applications/spwn.app`.
 3. Remove its data folder: `~/Library/Application Support/com.markbarta.spwn/`.
-4. Optionally delete any leftover `cm/…` branches or worktrees in repos you used (`git
-   branch -D cm/<id>`, `git worktree prune`).
+4. Optionally delete any leftover session branches or worktrees in repos you used —
+   `spwn/…` branches (and legacy `cm/…` ones from older versions): `git branch -D
+   spwn/<id>`, then `git worktree prune`.
 
 Your Claude login and history under `~/.claude/` are untouched — spwn never owned them.

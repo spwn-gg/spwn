@@ -11,7 +11,7 @@ you're happy with them.
 ## Each session gets its own branch
 
 When you start a Claude session in a project that's a git repository, spwn creates a
-branch for it in **your real repo** (named `cm/…`) and gives the session its own
+branch for it in **your real repo** (named `spwn/…`) and gives the session its own
 checkout to work in. The branch shows up as a small **⎇ chip** on the session in the
 sidebar, and it's a normal git branch — you can see it with `git branch` and work with
 it like any other.
@@ -42,7 +42,7 @@ build, test, and run from the first moment — no cold reinstall.
 
 Each turn's work is committed on the session's branch as it goes, so the branch always
 has real, mergeable history. When a session has produced something you want to keep, use
-**⤵ Merge…** in the session's Inspector — or merge it yourself with `git merge cm/…`.
+**⤵ Merge…** in the session's Inspector — or merge it yourself with `git merge spwn/…`.
 Nothing is merged automatically; you decide what lands and when. See
 [Merging Work](/spwn/guides/merging/) for the full flow, including safe deletes.
 

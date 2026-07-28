@@ -9,10 +9,11 @@ set -euo pipefail
 
 base="${SPWN_BASE_BRANCH:-}"
 
-# Child/fork sessions branch off a parent session's `cm/…` branch, not off a real
+# Child/fork sessions branch off a parent session's `spwn/…` branch, not off a real
 # branch. They should inherit the parent's tree as-is, so skip the pull for them.
+# (`cm/*` is the legacy prefix — matched too so older sessions keep working.)
 case "$base" in
-  cm/*|"")
+  spwn/*|cm/*|"")
     echo "[$SPWN_EVENT] base is '$base' (child/unknown session); skipping base-branch pull"
     exit 0
     ;;

@@ -34,7 +34,7 @@ its own way. "Fork" is the only word spwn uses for branching a conversation — 
 
 ## branch *(noun)*
 
-The **git branch** a session's worktree lives on (spwn names them `cm/<id>`). It's a
+The **git branch** a session's worktree lives on (spwn names them `spwn/<id>`). It's a
 **property** of a session — shown as a `⎇` chip — never an action you take. To create
 a new line of work you *fork a session*; the git branch comes with it.
 
@@ -55,7 +55,7 @@ tray from a conversation, use **＋ ctx** on that message.
 ## Merge
 
 Bringing a session's committed work back into its base branch with ordinary git. The
-session's worktree branch (`cm/<id>`) merges into the branch it was forked from.
+session's worktree branch (`spwn/<id>`) merges into the branch it was forked from.
 
 ## Checkpoint / Timeline
 

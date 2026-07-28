@@ -22,7 +22,7 @@ automatically as sessions start — including ones created by forking.
 Inside a project you can open two things:
 
 - **＋ New session** — a **Claude session** with an isolated worktree and conversation.
-  In a git repo it runs on its own `cm/…` branch.
+  In a git repo it runs on its own `spwn/…` branch.
 - **＋ New shell** — a plain terminal in the project folder, for git, builds, and tests.
 
 Either way it keeps running in the background and is **still there when you reopen the
@@ -42,7 +42,7 @@ worktrees work.
 ## 4. Merge the good work back
 
 When a session has produced something you want to keep, bring it into your base branch:
-use the **⤵ Merge** action, or merge its `cm/…` branch yourself with plain `git`.
+use the **⤵ Merge** action, or merge its `spwn/…` branch yourself with plain `git`.
 Nothing merges automatically — you decide what lands. See
 [Merging Work](/spwn/guides/merging/).
 

@@ -8,7 +8,7 @@ swap for your stack. Start from the minimal mechanics example in [`../`](../READ
 
 | Recipe | Event | What it does |
 |--------|-------|--------------|
-| [`pull-base-branch.sh`](pull-base-branch.sh) | `session-created` | Fast-forward the parent repo's base branch so the session starts current. Skips child (`cm/…`) sessions. |
+| [`pull-base-branch.sh`](pull-base-branch.sh) | `session-created` | Fast-forward the parent repo's base branch so the session starts current. Skips child (`spwn/…`) sessions. |
 | [`copy-secrets.sh`](copy-secrets.sh) | `session-created` | Copy gitignored config (`.env`, certs) from the project dir into the worktree — a fresh checkout won't have them. |
 | [`preview-env.sh`](preview-env.sh) | `session-created` | Install deps and start a dev server on a per-session port, backgrounded, with a pidfile. |
 | [`seed-db.sh`](seed-db.sh) | `session-created` | Migrate + seed a per-session database (idempotent). |

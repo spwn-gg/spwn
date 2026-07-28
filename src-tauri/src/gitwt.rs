@@ -6,6 +6,11 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Prefix for the git branch each Claude session works on (e.g. `spwn/<short>`).
+/// Single source of truth — both interactive and scheduled session creation use it.
+/// (Historically this was `cm/`; existing branches keep their stored name.)
+pub const SESSION_BRANCH_PREFIX: &str = "spwn/";
+
 /// Heavy, gitignored dirs COW-cloned into a fresh worktree so an autonomous agent
 /// can build/run immediately instead of paying a cold `npm install` / `cargo build`.
 /// (A worktree only checks out *tracked* files, so these are otherwise absent.)
@@ -197,7 +202,7 @@ pub fn remove_worktree(repo: &Path, path: &Path) -> Result<(), String> {
 }
 
 /// Delete `branch`, **including commits it alone carries** (`-D`, not `-d`), so a
-/// deleted session doesn't leave a `cm/*` branch behind forever.
+/// deleted session doesn't leave a `spwn/*` branch behind forever.
 ///
 /// Call this only *after* [`remove_worktree`]: git refuses to delete a branch that's
 /// still checked out somewhere, so the order isn't optional. Unmerged commits become

@@ -602,7 +602,7 @@ mod tests {
             terminal_id: "abc123".into(),
             project_dir: wt.to_string_lossy().into_owned(),
             worktree: wt.to_path_buf(),
-            branch: Some("cm/abc123".into()),
+            branch: Some("spwn/abc123".into()),
             base_branch: None,
             session_id: None,
         }
@@ -623,7 +623,7 @@ mod tests {
         assert!(run.ok);
         assert!(run.output.contains("id=abc123"));
         assert!(run.output.contains("event=session-created"));
-        assert!(run.output.contains("branch=cm/abc123"));
+        assert!(run.output.contains("branch=spwn/abc123"));
     }
 
     #[test]

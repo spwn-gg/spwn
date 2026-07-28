@@ -16,7 +16,7 @@ the app.
 
 From a project in the sidebar:
 
-- **＋ New session** starts a Claude session (in a git repo, on its own `cm/…` branch in
+- **＋ New session** starts a Claude session (in a git repo, on its own `spwn/…` branch in
   its own worktree).
 - **＋ New shell** starts an ordinary interactive shell in the project folder.
 

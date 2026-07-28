@@ -6,7 +6,7 @@ description: Create, list, test, or remove spwn project hooks — the .spwn/hook
 # Manage spwn project hooks
 
 spwn runs a user shell script on each session lifecycle event. A session works in its
-own git worktree on a `cm/<id>` branch; if the repo has a hook file for an event, spwn
+own git worktree on a `spwn/<id>` branch; if the repo has a hook file for an event, spwn
 runs it. This skill scaffolds, inspects, tests, and removes those hooks.
 
 **Source of truth:** `src-tauri/src/hooks.rs` (discovery + env injection) and

@@ -78,7 +78,7 @@ Each script is run with the **worktree as its working directory** and these vari
 | `SPWN_TERMINAL_ID` | The session's stable id. |
 | `SPWN_PROJECT_DIR` | The project's root directory (the main checkout). |
 | `SPWN_WORKTREE` | The session's worktree path (also the working directory). |
-| `SPWN_BRANCH` | The session's branch (`cm/<short>`). |
+| `SPWN_BRANCH` | The session's branch (`spwn/<short>`). |
 | `SPWN_BASE_BRANCH` | The branch it will merge back into. |
 | `SPWN_SESSION_ID` | The Claude session id — set for `session-ready`/`session-deleted`; absent on `session-created` (not known yet). |
 | `SPWN_BIN` | Path to the spwn binary — run `"$SPWN_BIN" prompt …` to [ask the user](#ask-the-user). |

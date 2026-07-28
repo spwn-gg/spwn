@@ -33,7 +33,7 @@ the first writes `.spwn/run/preview.pid` / `.url`, the second consumes them.
 ## Pull the base branch
 
 When a new top-level session starts, fast-forward the parent repo's base branch so the
-worktree is cut from up-to-date code. Skips child/fork (`cm/…`) sessions, which inherit
+worktree is cut from up-to-date code. Skips child/fork (`spwn/…`) sessions, which inherit
 their parent's tree as-is.
 
 ```sh
@@ -43,10 +43,11 @@ set -euo pipefail
 
 base="${SPWN_BASE_BRANCH:-}"
 
-# Child/fork sessions branch off a parent session's `cm/…` branch, not a real
+# Child/fork sessions branch off a parent session's `spwn/…` branch, not a real
 # branch. They should inherit the parent's tree as-is, so skip the pull for them.
+# (`cm/*` is the legacy prefix — matched too so older sessions keep working.)
 case "$base" in
-  cm/*|"")
+  spwn/*|cm/*|"")
     echo "[$SPWN_EVENT] base is '$base' (child/unknown session); skipping base-branch pull"
     exit 0
     ;;
