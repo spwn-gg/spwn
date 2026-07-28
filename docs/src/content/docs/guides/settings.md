@@ -5,8 +5,6 @@ description: Point spwn at your Claude CLI and manage updates.
 
 Open **Settings** to configure how spwn finds Claude and how it updates.
 
-![Settings](../../../assets/screenshots/settings.png)
-
 ## Claude CLI
 
 spwn uses your own authenticated `claude` command. It **auto-detects** it in the

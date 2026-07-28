@@ -14,8 +14,6 @@ A **project** is a name plus a folder that groups everything you do there.
 2. Click **New Project**, give it a name, and pick the folder you want Claude to work
    in.
 
-![The project tree](../../../assets/screenshots/project-tree.png)
-
 The tree on the left lists your projects and the sessions under each, and updates
 automatically as sessions start — including ones created by forking.
 
@@ -29,8 +27,6 @@ Inside a project, open a session:
 
 Either way, the session keeps running in the background and is **still there when you
 reopen the app**.
-
-![A Claude session: the conversation with the full Claude experience beside it](../../../assets/screenshots/claude-session.png)
 
 A Claude session gives you a clean, scrollable conversation on one side and the full
 Claude experience — every slash-command and tool prompt — on the other.
