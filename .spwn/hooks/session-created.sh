@@ -5,11 +5,12 @@
 set -euo pipefail
 
 # Only pull for TOP-LEVEL sessions. A child/fork session branches off its parent
-# session's `cm/…` branch (SPWN_BASE_BRANCH), not off main — those should inherit the
+# session's `spwn/…` branch (SPWN_BASE_BRANCH), not off main — those should inherit the
 # parent's tree as-is, so we skip them. A top-level session is cut from the repo's
-# real branch (e.g. `main`), so its base is not a `cm/…` session branch.
+# real branch (e.g. `main`), so its base is not a `spwn/…` session branch.
+# (`cm/*` is the legacy prefix — matched too so older sessions keep working.)
 case "${SPWN_BASE_BRANCH:-}" in
-  cm/*)
+  spwn/*|cm/*)
     echo "[$SPWN_EVENT] child session (base=$SPWN_BASE_BRANCH); skipping main pull"
     exit 0
     ;;

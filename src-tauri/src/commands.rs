@@ -373,7 +373,7 @@ pub async fn open_terminal(
                 (base, session_worktree_path(&state, &repo, &terminal_id))
             {
                 let short = terminal_id.split('-').next().unwrap_or(terminal_id.as_str());
-                let branch = format!("cm/{short}");
+                let branch = format!("{}{short}", gitwt::SESSION_BRANCH_PREFIX);
                 match gitwt::add_worktree(&repo, &wt_path, &branch, &base) {
                     Ok(()) => {
                         gitwt::seed_heavy_dirs(Path::new(&project_dir), &wt_path);
@@ -509,7 +509,7 @@ pub async fn delete_terminal(
             if let Err(e) = gitwt::remove_worktree(&repo, Path::new(&wt_path)) {
                 eprintln!("worktree remove failed: {e}");
             }
-            // Then the branch, so deleted sessions don't leave `cm/*` behind forever.
+            // Then the branch, so deleted sessions don't leave `spwn/*` behind forever.
             // Strictly after the removal above — git won't delete a checked-out branch.
             // The UI has already warned about any unmerged commits by this point.
             if let Err(e) = gitwt::delete_branch(&repo, &branch) {

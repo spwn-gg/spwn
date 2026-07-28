@@ -130,7 +130,7 @@ pub fn fire(app: &AppHandle, project_id: &str, task_id: &str) {
             session_worktree_path(&state, &repo, &terminal_id),
         ) {
             let short = terminal_id.split('-').next().unwrap_or(terminal_id.as_str());
-            let branch = format!("cm/{short}");
+            let branch = format!("{}{short}", gitwt::SESSION_BRANCH_PREFIX);
             if gitwt::add_worktree(&repo, &wt_path, &branch, &base).is_ok() {
                 gitwt::seed_heavy_dirs(Path::new(&directory), &wt_path);
                 run_dir = wt_path.to_string_lossy().into_owned();

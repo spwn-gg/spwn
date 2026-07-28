@@ -29,7 +29,7 @@ spwn adds a thin layer over your existing Claude Code setup that makes parallel,
 disposable exploration the default:
 
 1. **A branch and workspace per session.** Each Claude session runs on its own
-   `cm/…` git branch in its own worktree, copy-on-write seeded with your build folders
+   `spwn/…` git branch in its own worktree, copy-on-write seeded with your build folders
    so it's ready to build immediately. Sessions run side by side without clashing.
 2. **Merge back only the winners.** Every session commits as it goes, so its branch is
    always real, mergeable history. Merge with a click or with plain `git` — nothing

@@ -33,7 +33,7 @@ session — instead of fighting one ever-growing linear chat.
 ## 2. A git worktree per session
 
 A fresh Claude session in a git repo runs in its **own git worktree on a new
-`cm/<id>` branch** — forked from the repo's current branch, or from the parent
+`spwn/<id>` branch** — forked from the repo's current branch, or from the parent
 session's branch for a fork. Sessions run concurrently without clobbering each
 other's files, and the work merges back with normal git.
 
@@ -41,7 +41,7 @@ spwn **COW-clones heavy gitignored build dirs** (`node_modules`, `target`, `.ven
 `dist`, `build`, `.next`, `.svelte-kit`, `.turbo`, …) into each new worktree, so an
 agent can build immediately instead of waiting on a cold install.
 
-Deleting a session removes **both its worktree and its `cm/<id>` branch**, so they
+Deleting a session removes **both its worktree and its `spwn/<id>` branch**, so they
 don't pile up in your repo. If the branch still holds commits that aren't in its base
 — or uncommitted changes — the confirm dialog names exactly what you'd lose before
 you go through with it. Merge first (`Merge session`) to keep the work.

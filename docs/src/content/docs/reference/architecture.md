@@ -33,10 +33,10 @@ branched session, and the Timeline rolls a session back to an earlier checkpoint
 ## Sessions work on their own branch
 
 In a git project, each Claude session works on **its own branch in your real repo**
-(named `cm/…`), with its own checkout kept in the app's data folder. This is what lets
+(named `spwn/…`), with its own checkout kept in the app's data folder. This is what lets
 sessions run in parallel without clashing, and it keeps their work off to the side
 until you merge it back. Your project folder stays on whatever branch you had checked
-out; spwn only ever adds `cm/…` branches and never moves your branch or rewrites your
+out; spwn only ever adds `spwn/…` branches and never moves your branch or rewrites your
 history. Non-git projects run in the project folder directly, with no branches. See
 [Parallel Sessions](/spwn/guides/parallel-sessions/).
 
