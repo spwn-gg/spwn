@@ -40,11 +40,17 @@ a new line of work you *fork a session*; the git branch comes with it.
 
 ## Merge tray
 
-A per-project space where you collect reusable **blocks** — notes, files, and
+A per-project space (**▦**) where you collect reusable **blocks** — notes, files, and
 individual turns picked from any session — and then **Inject** them as the first
 message of a fresh session. It's how you bring the good parts of several explorations
 back together. (Formerly called "Context"; renamed so it isn't confused with the
 model's *context window*.)
+
+## Inject
+
+The action on the Merge tray — **Inject → new session** — that assembles the tray's
+blocks into a first message and opens a new session seeded with it. To add a turn to the
+tray from a conversation, use **＋ ctx** on that message.
 
 ## Merge
 
@@ -54,5 +60,12 @@ session's worktree branch (`cm/<id>`) merges into the branch it was forked from.
 ## Checkpoint / Timeline
 
 A **checkpoint** is a copy-on-write snapshot of a session's files, captured after each
-turn. The **Timeline** is the single place you return to an earlier point — choosing
-whether to roll back the *conversation*, the *files*, or both.
+turn. The **Timeline** (a tab in a session's Inspector) is the single place you return to
+an earlier point — the **↺ Return here** action lets you roll back the *conversation*, the
+*files*, or both.
+
+## Scheduled task
+
+A read-only task Claude runs against a project on a daily or weekly schedule (**◷**),
+optionally reusing the project's Merge tray. The result arrives as a new session flagged
+for your attention.

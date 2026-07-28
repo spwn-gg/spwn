@@ -1,41 +1,49 @@
 ---
-title: Sessions
-description: Shell and Claude sessions, and how they keep running across restarts.
+title: Sessions & Shells
+description: The two things you open inside a project — an isolated Claude session, or a plain shell — and how they keep running across restarts.
 ---
 
-Inside a project you open **sessions**. A session is either a **shell** (the default)
-or a **Claude** session. Both live in the project's folder and both keep running in
-the background.
+Inside a project you open two kinds of thing:
 
-## Open a session
+- a **Session** — an isolated **Claude** workspace: its own conversation *and* its own
+  copy of your code, on its own git branch, or
+- a **Shell** — a plain terminal in the project folder.
 
-From a project in the sidebar, start a new session and choose its type:
+Both keep running in the background and are right where you left them when you reopen
+the app.
 
-- a **shell** session, or
-- a **Claude** session.
+## Open one
 
-It opens as a tab in the main area. Click any session in the sidebar to jump back to
-it.
+From a project in the sidebar:
 
-## Sessions survive restarts
+- **＋ New session** starts a Claude session (in a git repo, on its own `cm/…` branch in
+  its own worktree).
+- **＋ New shell** starts an ordinary interactive shell in the project folder.
 
-Every session keeps running even when you close spwn. Quit the app and reopen it, and
-the session is exactly where you left it — its scrollback, history, and any running
-program (a build, a dev server, a long Claude task) all intact. You never lose work
-just because you closed the window.
+Each opens as a tab in the main area. Click any entry in the sidebar to jump back to it.
 
-## Shell sessions
+## Sessions vs shells
 
-A shell session is an ordinary interactive shell running in your project's folder.
-Use it for git, builds, tests, and anything else you'd do in a terminal.
+|  | Session | Shell |
+|---|---|---|
+| **What it is** | Claude, in a clean conversation view | A plain interactive terminal |
+| **Isolation** | Own git branch + worktree (in a git repo) | Runs in the project folder directly |
+| **Use it for** | Building features, exploring, agent work | git, builds, tests, one-off commands |
+| **Fork / Timeline / Merge** | Yes | No |
 
-## Claude sessions
-
-A Claude session lets you work with Claude in the project, with a clean conversation
-view and the full Claude experience beside it. See
+A **shell** is just a terminal — no conversation, no branch. Reach for it when you want
+to run something yourself. A **session** is the unit you explore, fork, and merge; see
 [Claude Sessions](/spwn/guides/claude-sessions/).
+
+## They survive restarts
+
+Every session and shell keeps running even when you close spwn. Quit the app and reopen
+it, and each is exactly where you left it — scrollback, history, and any running program
+(a build, a dev server, a long Claude task) all intact. You never lose work just because
+you closed the window.
 
 ## Next
 
 - [Claude Sessions](/spwn/guides/claude-sessions/) — the conversation view.
-- [Fork & Rewind](/spwn/guides/fork-and-rewind/) — branch and roll back sessions.
+- [Parallel Sessions](/spwn/guides/parallel-sessions/) — how sessions get their own branch.
+- [Fork & Timeline](/spwn/guides/fork-and-rewind/) — branch and roll back sessions.

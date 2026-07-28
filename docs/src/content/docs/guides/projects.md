@@ -14,16 +14,16 @@ and what it's called.
 3. Pick the folder you want to work in — this is where Claude reads and writes files
    for the project.
 
-That's it. The project appears in the sidebar, ready for you to open sessions,
-compose context, and schedule tasks.
+That's it. The project appears in the sidebar, ready for you to open sessions, gather a
+Merge tray, and schedule tasks.
 
 ## The project tree
 
-The sidebar lists your projects and, under each, the sessions you've opened. It
-updates automatically as sessions start — including ones created by
+The sidebar lists your projects and, under each, the sessions and shells you've opened.
+It updates automatically as sessions start — including ones created by
 [forking](/spwn/guides/fork-and-rewind/) — so you never have to refresh it.
 
-Each project also has a **Context** view and a **Scheduled Tasks** view, reachable
+Each project also has a **▦ Merge tray** and a **◷ Scheduled Tasks** view, reachable
 from its row in the tree.
 
 ## Working folder
@@ -35,6 +35,6 @@ sessions cleanly separated.
 
 ## Next
 
-- [Sessions](/spwn/guides/terminals/) — open shells and Claude sessions.
-- [Composing Context](/spwn/guides/context-composer/) — build a reusable context per project.
+- [Sessions & Shells](/spwn/guides/terminals/) — open Claude sessions and shells.
+- [Merge Tray](/spwn/guides/context-composer/) — gather a reusable starting context per project.
 - [Scheduled Tasks](/spwn/guides/scheduled-tasks/) — run tasks on a schedule.
