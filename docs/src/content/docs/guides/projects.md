@@ -7,8 +7,6 @@ A **project** is the top-level unit of organization in spwn: a **name** plus a
 **folder** that groups the sessions you open inside it. You decide what's a project
 and what it's called.
 
-![The project tree](../../../assets/screenshots/project-tree.png)
-
 ## Create a project
 
 1. Click **New Project** at the top of the sidebar.

@@ -7,8 +7,6 @@ A **Claude session** is the centerpiece of spwn. You get a clean, readable
 conversation on one side and the complete Claude Code experience on the other — so
 you can read and work comfortably without giving anything up.
 
-![A Claude session: the conversation on one side, the full Claude experience on the other](../../../assets/screenshots/claude-session.png)
-
 ## The full Claude experience
 
 The working side is Claude Code itself, not a stripped-down copy. That means:
