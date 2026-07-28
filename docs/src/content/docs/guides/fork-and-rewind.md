@@ -20,7 +20,7 @@ like.
 
 In a git project, the fork also gets its **own git branch**, created from the parent
 session's branch — so its files start where the parent left off and then diverge. See
-[Parallel Sessions](/spwn/guides/parallel-sessions/).
+[Branches & Merging](/spwn/guides/branches-and-merging/).
 
 ## Timeline
 
@@ -48,6 +48,5 @@ up and retry than start over.
 
 ## Next
 
-- [Claude Sessions](/spwn/guides/claude-sessions/)
-- [Parallel Sessions](/spwn/guides/parallel-sessions/)
-- [Merging Work](/spwn/guides/merging/)
+- [Sessions & Shells](/spwn/guides/terminals/)
+- [Branches & Merging](/spwn/guides/branches-and-merging/)

@@ -32,14 +32,10 @@ export default defineConfig({
 					items: [
 						{ label: 'Projects', slug: 'guides/projects' },
 						{ label: 'Sessions & Shells', slug: 'guides/terminals' },
-						{ label: 'Claude Sessions', slug: 'guides/claude-sessions' },
-						{ label: 'Parallel Sessions', slug: 'guides/parallel-sessions' },
+						{ label: 'Branches & Merging', slug: 'guides/branches-and-merging' },
 						{ label: 'Fork & Timeline', slug: 'guides/fork-and-rewind' },
-						{ label: 'Merging Work', slug: 'guides/merging' },
 						{ label: 'Merge Tray', slug: 'guides/context-composer' },
 						{ label: 'Scheduled Tasks', slug: 'guides/scheduled-tasks' },
-						{ label: 'Project Hooks', slug: 'guides/hooks' },
-						{ label: 'Settings', slug: 'guides/settings' },
 					],
 				},
 				{
@@ -52,6 +48,8 @@ export default defineConfig({
 					label: 'Reference',
 					items: [
 						{ label: 'How it works & your data', slug: 'reference/architecture' },
+						{ label: 'Project Hooks', slug: 'reference/hooks' },
+						{ label: 'Settings', slug: 'reference/settings' },
 						{ label: 'Glossary', slug: 'reference/glossary' },
 						{ label: 'Troubleshooting', slug: 'reference/troubleshooting' },
 						{ label: 'Building from Source', slug: 'reference/building' },

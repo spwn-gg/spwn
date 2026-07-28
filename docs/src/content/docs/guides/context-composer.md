@@ -52,5 +52,5 @@ hand.
 ## Next
 
 - [Scheduled Tasks](/spwn/guides/scheduled-tasks/) — reuse this tray on a schedule.
-- [Claude Sessions](/spwn/guides/claude-sessions/)
-- [Merging Work](/spwn/guides/merging/)
+- [Sessions & Shells](/spwn/guides/terminals/)
+- [Branches & Merging](/spwn/guides/branches-and-merging/)

@@ -56,4 +56,4 @@ To stop everything, quit spwn from its menu-bar icon.
 ## Next
 
 - [Merge Tray](/spwn/guides/context-composer/) — build the tray these runs reuse.
-- [Settings](/spwn/guides/settings/) — the menu-bar behavior that keeps tasks running.
+- [Settings](/spwn/reference/settings/) — the menu-bar behavior that keeps tasks running.

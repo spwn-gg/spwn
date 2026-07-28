@@ -15,7 +15,7 @@ server in between. Your conversations go straight to Claude the same way they do
 you run `claude` yourself.
 
 If your `claude` is installed somewhere unusual, point spwn at it in
-[Settings](/spwn/guides/settings/).
+[Settings](/spwn/reference/settings/).
 
 ## It reads your real Claude history
 
@@ -38,7 +38,7 @@ sessions run in parallel without clashing, and it keeps their work off to the si
 until you merge it back. Your project folder stays on whatever branch you had checked
 out; spwn only ever adds `spwn/…` branches and never moves your branch or rewrites your
 history. Non-git projects run in the project folder directly, with no branches. See
-[Parallel Sessions](/spwn/guides/parallel-sessions/).
+[Branches & Merging](/spwn/guides/branches-and-merging/).
 
 ## Your data stays local
 

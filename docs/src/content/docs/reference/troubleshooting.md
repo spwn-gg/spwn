@@ -33,14 +33,14 @@ Updates installed by the in-app updater are never quarantined. See
 Per-session branches and worktrees only exist when the project folder is a **git
 repository**. In a non-git folder, sessions run in the folder directly. Run `git init`
 in the project folder and start a new session to get isolation. See
-[Parallel Sessions](/spwn/guides/parallel-sessions/).
+[Branches & Merging](/spwn/guides/branches-and-merging/).
 
 ## A merge conflicted, or I can't merge
 
 **⤵ Merge** uses ordinary git. If it can't fast-forward or hits a conflict, resolve it
 the way you would any merge — in a shell, `git merge spwn/<id>` from the base branch and
 fix the conflicts. The session's branch is real git history, so nothing is stuck. See
-[Merging Work](/spwn/guides/merging/).
+[Branches & Merging](/spwn/guides/branches-and-merging/).
 
 ## Deleting a session warns I'll lose work
 
@@ -60,7 +60,7 @@ time the app was closed runs once the next time spwn is open. See
 - A hook must be **committed** at `.spwn/hooks/<event>.sh` — it travels into a session via
   the git checkout, so an uncommitted hook never runs.
 - Check the **Hooks** tab in the session's Inspector for the last run's output and exit
-  status. See [Project Hooks](/spwn/guides/hooks/).
+  status. See [Project Hooks](/spwn/reference/hooks/).
 
 ## Where does spwn store my data?
 
