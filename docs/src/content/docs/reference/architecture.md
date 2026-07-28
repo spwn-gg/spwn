@@ -27,8 +27,8 @@ sessions you'd see in the terminal, not a separate copy kept somewhere else.
 
 Your shell and Claude sessions run in the background and are managed so they **survive
 closing the app**. That's why reopening spwn brings everything back exactly where you
-left it, including running programs. Fork and Rewind build on this: a fork is a real
-branched session, and a rewind rolls a session back to an earlier point.
+left it, including running programs. Fork and the Timeline build on this: a fork is a real
+branched session, and the Timeline rolls a session back to an earlier checkpoint.
 
 ## Sessions work on their own branch
 
@@ -42,10 +42,10 @@ history. Non-git projects run in the project folder directly, with no branches. 
 
 ## Your data stays local
 
-- **Projects, context, and scheduled tasks** you create in spwn are stored **locally
+- **Projects, Merge trays, and scheduled tasks** you create in spwn are stored **locally
   on your Mac**, in the app's own data folder. They're yours; spwn doesn't upload
   them anywhere.
-- **Scheduled tasks run read-only** — they can read your project and its context but
+- **Scheduled tasks run read-only** — they can read your project and its Merge tray but
   never modify your files.
 - spwn talks to exactly two things: your local **Claude** and your local **files**.
   Nothing else leaves your machine.

@@ -40,16 +40,11 @@ build, test, and run from the first moment — no cold reinstall.
 
 ## Merge the work back
 
-When a session has produced something you want to keep, bring it into your main branch:
-
-- Use the **⤵ Merge** button in the conversation view to merge the session's branch
-  back into the branch it started from, or
-- Merge it yourself with normal git (`git merge cm/…`) — it's your repo and your
-  branch.
-
 Each turn's work is committed on the session's branch as it goes, so the branch always
-has real, mergeable history. Nothing is merged automatically; you decide what lands and
-when.
+has real, mergeable history. When a session has produced something you want to keep, use
+**⤵ Merge…** in the session's Inspector — or merge it yourself with `git merge cm/…`.
+Nothing is merged automatically; you decide what lands and when. See
+[Merging Work](/spwn/guides/merging/) for the full flow, including safe deletes.
 
 ## Forks branch from their parent
 
@@ -66,5 +61,6 @@ make the project a git repo (`git init`) and start a new session.
 
 ## Next
 
-- [Fork & Rewind](/spwn/guides/fork-and-rewind/)
+- [Merging Work](/spwn/guides/merging/)
+- [Fork & Timeline](/spwn/guides/fork-and-rewind/)
 - [Claude Sessions](/spwn/guides/claude-sessions/)

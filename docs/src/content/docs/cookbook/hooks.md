@@ -158,7 +158,7 @@ echo "[$SPWN_EVENT] preview -> $(cat "$run_dir/preview.url") (pid $(cat "$run_di
 ## Seed a database
 
 Run migrations and load fixtures against a database **namespaced per session**, so
-parallel sessions don't clobber each other. Keep it idempotent — the ▸ Hooks panel's
+parallel sessions don't clobber each other. Keep it idempotent — the Hooks panel's
 **Run** button lets you re-fire it by hand.
 
 ```sh

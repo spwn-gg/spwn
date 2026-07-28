@@ -6,7 +6,7 @@ description: Have Claude run a read-only task against a project on a daily or we
 A **scheduled task** has Claude run a prompt against a project on a schedule, so a
 report or review is waiting for you without you starting it. Runs are **read-only** —
 they can read your project and its context but never change your files — and each run
-reuses the project's [composed context](/spwn/guides/context-composer/).
+can reuse the project's [Merge tray](/spwn/guides/context-composer/).
 
 ## Create a task
 
@@ -16,7 +16,7 @@ On a project in the sidebar, open its **◷ Scheduled Tasks** view, then add a t
 2. Write the **prompt** — what you want Claude to do each run.
 3. Pick a **time**, and optionally the **days** of the week it should run on. Leave
    the days empty to run every day.
-4. Choose whether to **use the project context** — on by default, so the run starts
+4. Choose whether to **use the project's Merge tray** — on by default, so the run starts
    with the same background you'd give it by hand.
 
 Tasks can be enabled or disabled at any time, and **Run now** fires one immediately if
@@ -27,9 +27,9 @@ you want to see what it produces.
 At the scheduled time, spwn opens a new Claude session under the project and runs your
 task in it. When it finishes, the session is **flagged for your attention** in the
 sidebar. Open it to read the result like any other session — with the full
-conversation, ready to fork or reuse.
+conversation, ready to [fork](/spwn/guides/fork-and-rewind/) or reuse.
 
-Because runs reuse your project context, an automated review or summary starts from
+Because runs reuse your project's Merge tray, an automated review or summary starts from
 the same notes and files you'd normally provide, not from scratch.
 
 ## Read-only by design
@@ -55,5 +55,5 @@ To stop everything, quit spwn from its menu-bar icon.
 
 ## Next
 
-- [Composing Context](/spwn/guides/context-composer/) — build the context these runs reuse.
+- [Merge Tray](/spwn/guides/context-composer/) — build the tray these runs reuse.
 - [Settings](/spwn/guides/settings/) — the menu-bar behavior that keeps tasks running.

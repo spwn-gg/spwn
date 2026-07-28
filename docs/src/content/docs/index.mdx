@@ -1,9 +1,9 @@
 ---
 title: spwn
-description: A desktop app that gives Claude Code a per-project context space, persistent sessions, and scheduled runs.
+description: A desktop app for running Claude Code agents in parallel — each on its own git branch and workspace — so you can explore several approaches at once and merge the one that worked.
 template: splash
 hero:
-  tagline: Give every project a reusable context, seed Claude Code sessions with it, and keep those sessions running — plus schedule read-only runs that report back on their own.
+  tagline: Run Claude Code agents in parallel — each on its own git branch, in its own workspace. Explore several approaches at once, keep the sessions running, and merge the one that worked.
   image:
     file: ../../assets/screenshots/app-main.png
   actions:
@@ -20,47 +20,72 @@ import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
 ## What is spwn?
 
-Claude Code is powerful, but every session starts from scratch and lives and dies
-in one terminal window. spwn fixes both. It's a desktop app that organizes your work
-into **projects**, lets you build a **reusable context** for each one, and starts new
-Claude sessions already primed with it — so you stop re-explaining your project every
-time. Sessions keep running even after you close the app, and you can schedule
-read-only runs to check in on a project while you're away.
+Claude Code is a single conversation in a single terminal. Real work isn't linear:
+you want to try an idea one way, try it another, run a few agents at once, and keep
+whichever result is best. Doing that by hand means juggling git worktrees, terminal
+tabs, and copy-pasted context — and losing running work every time a window closes.
+
+**spwn is a native macOS app that makes that the default.** Every Claude session runs
+on **its own git branch, in its own isolated copy of your code**, so several can run at
+the same time — even unattended — without clobbering each other or your working tree.
+Sessions keep running after you close the app, and you merge back only what you want to
+keep.
 
 <CardGrid stagger>
-	<Card title="Projects" icon="open-book">
-		Group your work by folder. Each project keeps its own sessions and context
-		together, so switching between projects is one click, not a mental reset.
+	<Card title="Parallel sessions, no collisions" icon="code-branch">
+		Every Claude session gets its own git branch and its own worktree. Launch several
+		at once on different approaches — one refactor, one experiment, one bug hunt — and
+		none of them touches the others or your project folder.
 	</Card>
-	<Card title="Sessions that survive restarts" icon="laptop">
-		Open a shell or a Claude session in a project and it keeps running in the
-		background. Quit spwn, reopen it, and your sessions are still there — output,
-		history, and running programs intact.
+	<Card title="Build from the first second" icon="rocket">
+		Each new workspace is copy-on-write seeded with your heavy folders
+		(`node_modules`, `target`, `dist`, …), so an agent can build, test, and run
+		immediately — no cold reinstall in every branch.
 	</Card>
-	<Card title="Chat, without losing the terminal" icon="comment">
-		Work with Claude in a clean, scrollable conversation while the full Claude
-		experience — every slash-command and tool prompt — stays available beside it.
+	<Card title="Merge only what worked" icon="approve-check-circle">
+		Each session commits its work as it goes. When one produces something you want,
+		merge its branch back with a click — or with plain `git`. Nothing lands
+		automatically; you decide what and when.
 	</Card>
-	<Card title="Fork & Rewind" icon="random">
-		Branch a promising session to explore a different direction without losing the
-		original, or roll a session back to an earlier point and try again.
+	<Card title="Fork & Timeline" icon="random">
+		Fork a promising session to try a different direction without losing the original,
+		or use the Timeline to return to an earlier point — conversation, files, or both.
 	</Card>
-	<Card title="Reusable context" icon="document">
-		Collect notes, files, and useful answers into a per-project context, then seed a
-		fresh session with all of it in one click instead of starting cold.
+	<Card title="Merge tray" icon="document">
+		Collect notes, files, and the best turns from any session into a per-project
+		tray, then **Inject** them as the first message of a fresh session — so you start
+		primed instead of cold.
 	</Card>
-	<Card title="Scheduled tasks" icon="rocket">
+	<Card title="Scheduled tasks" icon="clock">
 		Have Claude run a read-only task on a schedule — a daily status report, a nightly
-		review — using your project's context. Results wait for you as ready-to-read
-		sessions.
+		review — reusing the project's Merge tray. Results wait as ready-to-read sessions.
 	</Card>
 </CardGrid>
+
+Sessions also **survive restarts** — quit spwn, reopen it, and every session is right
+where you left it, running programs and all. And a Claude session is the real thing: a
+clean, scrollable conversation on one side and full Claude Code — every slash-command
+and tool prompt — on the other.
+
+## Why not just do this by hand?
+
+You can wire up git worktrees, tmux, and a prompt library yourself. spwn is what you'd
+build if you did — and then maintained:
+
+| Doing it by hand | With spwn |
+|---|---|
+| `git worktree add` + branch per experiment, cleaned up manually | A branch + worktree per session, created and removed for you |
+| Cold `npm install` / rebuild in every worktree | Heavy build dirs COW-cloned in — build instantly |
+| Re-paste project background into each new chat | A **Merge tray** you Inject in one click |
+| Lost running work when a terminal closes | Sessions survive quitting the app |
+| Per-branch setup scripts you run by memory | **Project hooks** fire on session lifecycle events |
+| Merge experiments back and hope you cleaned up | One-click **Merge**, with a dialog naming anything you'd lose |
 
 ## Next steps
 
 <CardGrid>
 	<LinkCard title="Introduction" href="/spwn/getting-started/introduction/" description="What spwn is and how it fits into your workflow." />
 	<LinkCard title="Installation" href="/spwn/getting-started/installation/" description="Get spwn running on your Mac." />
-	<LinkCard title="Quick Start" href="/spwn/getting-started/quick-start/" description="Create a project and seed your first session." />
+	<LinkCard title="Quick Start" href="/spwn/getting-started/quick-start/" description="Create a project and run your first parallel sessions." />
 	<LinkCard title="How it works & your data" href="/spwn/reference/architecture/" description="What spwn touches, and where your data lives." />
 </CardGrid>

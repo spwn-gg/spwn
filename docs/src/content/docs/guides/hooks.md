@@ -113,8 +113,8 @@ profile=$("$SPWN_BIN" prompt --header env 'Which services?' none web 'web+worker
 
 ## The Hooks panel
 
-When a session has a worktree, a **▸ Hooks** button appears in the conversation toolbar.
-It lists each event with:
+When a session has a worktree, a **Hooks** tab appears in the session's Inspector. It
+lists each event with:
 
 - a status dot (green = the last run passed, red = the hook exited non-zero),
 - the hook file discovered for that event (if any),
