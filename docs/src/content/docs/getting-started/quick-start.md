@@ -36,7 +36,7 @@ open several and let them work at the same time without them clashing. Start a s
 session on a different task and switch between their tabs freely — nothing on disk
 moves when you switch.
 
-See [Parallel Sessions](/spwn/guides/parallel-sessions/) for how the branches and
+See [Branches & Merging](/spwn/guides/branches-and-merging/) for how the branches and
 worktrees work.
 
 ## 4. Merge the good work back
@@ -44,7 +44,7 @@ worktrees work.
 When a session has produced something you want to keep, bring it into your base branch:
 use the **⤵ Merge** action, or merge its `spwn/…` branch yourself with plain `git`.
 Nothing merges automatically — you decide what lands. See
-[Merging Work](/spwn/guides/merging/).
+[Branches & Merging](/spwn/guides/branches-and-merging/).
 
 ## 5. Seed a session from the Merge tray
 
@@ -84,8 +84,7 @@ See [Scheduled Tasks](/spwn/guides/scheduled-tasks/) for details.
 
 ## Where to go next
 
-- [Parallel Sessions](/spwn/guides/parallel-sessions/)
+- [Branches & Merging](/spwn/guides/branches-and-merging/)
 - [Fork & Timeline](/spwn/guides/fork-and-rewind/)
-- [Merging Work](/spwn/guides/merging/)
 - [Merge Tray](/spwn/guides/context-composer/)
 - [Scheduled Tasks](/spwn/guides/scheduled-tasks/)

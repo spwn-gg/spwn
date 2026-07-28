@@ -18,7 +18,7 @@ nothing is re-uploaded or proxied. See
 
 ## Session worktree location
 
-Each Claude session in a git repo runs in its own [worktree](/spwn/guides/parallel-sessions/).
+Each Claude session in a git repo runs in its own [worktree](/spwn/guides/branches-and-merging/).
 **Session worktree location** controls where those worktrees are created. It applies to
 **new sessions only** — existing worktrees stay where they were created.
 

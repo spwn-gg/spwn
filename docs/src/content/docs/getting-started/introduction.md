@@ -43,6 +43,9 @@ disposable exploration the default:
 
 ## Core concepts
 
+Three terms cover most of spwn; the rest are defined in the
+[Glossary](/spwn/reference/glossary/).
+
 - **Project** — a name and a folder that groups everything you do there: its sessions,
   shells, Merge tray, and scheduled tasks. You decide what's a project and what it's
   called.
@@ -50,13 +53,6 @@ disposable exploration the default:
   your code, on its own git branch. This is the unit you explore, fork, and merge.
 - **Shell** — a plain terminal in the project folder. No conversation, no branch — just
   a shell for git, builds, and tests.
-- **Merge tray** — the per-project collection of notes, files, and saved turns you
-  **Inject** into a new session as its starting point.
-- **Fork / Timeline** — branch a session into a new one (**Fork**), or return the
-  current one to an earlier point (**Timeline**).
-- **Merge** — bring a session's committed work back into its base branch with git.
-- **Scheduled task** — a read-only task Claude runs against a project on a schedule,
-  reusing the project's Merge tray.
 
 ## Next
 

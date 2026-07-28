@@ -3,7 +3,7 @@ title: Project Hooks
 description: Run your own shell scripts on session lifecycle events — discovered inside your repo, per branch, with the session's details in the environment.
 ---
 
-Each Claude session works on [its own branch in its own worktree](/spwn/guides/parallel-sessions/).
+Each Claude session works on [its own branch in its own worktree](/spwn/guides/branches-and-merging/).
 **Project hooks** let you run your own shell scripts when a session's lifecycle changes —
 to set up (start a dev server, seed a database, install extras) and tear down per session.
 
@@ -132,5 +132,5 @@ If a hook exits non-zero, spwn shows a one-line advisory — the session still o
 ## Next
 
 - [Hooks Cookbook](/spwn/cookbook/hooks/) — copy-paste recipes.
-- [Parallel Sessions](/spwn/guides/parallel-sessions/)
+- [Branches & Merging](/spwn/guides/branches-and-merging/)
 - [Scheduled Tasks](/spwn/guides/scheduled-tasks/)

@@ -3,9 +3,9 @@ title: Hooks Cookbook
 description: Copy-paste project-hook recipes — refresh the base branch, copy secrets, stand up a per-session preview, seed a database, prompt before setup, and tear down on delete.
 ---
 
-Practical, copy-paste recipes for [project hooks](/spwn/guides/hooks/). Each one is a
+Practical, copy-paste recipes for [project hooks](/spwn/reference/hooks/). Each one is a
 **generic template** — safe no-op defaults with commented placeholders you swap for your
-stack. If you haven't set up a hook before, start with the [Project Hooks](/spwn/guides/hooks/)
+stack. If you haven't set up a hook before, start with the [Project Hooks](/spwn/reference/hooks/)
 guide for the mechanics.
 
 All of these also live, runnable, in
@@ -115,7 +115,7 @@ vault kv get -field=env secret/app > .env # HashiCorp Vault
 
 Install deps and start a dev server on a **per-session port** derived from
 `SPWN_TERMINAL_ID`, so parallel sessions don't collide. Because hooks are
-[synchronous](/spwn/guides/hooks/#hooks-are-synchronous) with no timeout, the server is
+[synchronous](/spwn/reference/hooks/#hooks-are-synchronous) with no timeout, the server is
 backgrounded (`& disown`) and its PID/URL written under `.spwn/run/` for
 [teardown](#tear-down-on-delete) to consume.
 
@@ -193,7 +193,7 @@ this to `.spwn/hooks/session-ready.sh` instead.
 
 ## Prompt before setup
 
-Gate expensive or optional setup on your answer. [`spwn prompt`](/spwn/guides/hooks/#ask-the-user)
+Gate expensive or optional setup on your answer. [`spwn prompt`](/spwn/reference/hooks/#ask-the-user)
 shows a picker in the app and blocks until you answer, printing the chosen label to stdout.
 
 ```sh
@@ -288,6 +288,6 @@ delete, and deprovisioning cloud previews for the branch.
 
 ## Next
 
-- [Project Hooks](/spwn/guides/hooks/) — the mechanics, events, and environment.
-- [Parallel Sessions](/spwn/guides/parallel-sessions/)
+- [Project Hooks](/spwn/reference/hooks/) — the mechanics, events, and environment.
+- [Branches & Merging](/spwn/guides/branches-and-merging/)
 - [Scheduled Tasks](/spwn/guides/scheduled-tasks/)
