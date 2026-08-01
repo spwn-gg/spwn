@@ -63,6 +63,15 @@ pub struct CheckpointMeta {
     pub kind: String,
 }
 
+/// The app data dir spwn uses, resolved WITHOUT a running Tauri app — for the
+/// `spwn checkpoint` sub-CLI, which runs as a short-lived subprocess of a hook. Mirrors
+/// Tauri's `app_data_dir()` for the `com.markbarta.spwn` bundle id (macOS:
+/// `~/Library/Application Support/com.markbarta.spwn`). Keep the identifier in sync with
+/// `tauri.conf.json`.
+pub fn default_app_data_dir() -> Option<PathBuf> {
+    directories::BaseDirs::new().map(|b| b.data_dir().join("com.markbarta.spwn"))
+}
+
 fn now_millis() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

@@ -46,9 +46,9 @@ pub struct AppState {
     /// ExitRequested handler knows to let the process die instead of staying
     /// alive in the background for the scheduler.
     pub quitting: AtomicBool,
-    /// Most recent hook run per session: terminal id → (event name → run). Drives
-    /// the Hooks panel; cleared when the session is deleted.
-    pub hook_runs: Mutex<HashMap<String, BTreeMap<String, HookRun>>>,
+    /// Most recent hook runs per session: terminal id → (event name → runs, one per
+    /// scope that ran, global-first). Drives the Hooks panel; cleared on session delete.
+    pub hook_runs: Mutex<HashMap<String, BTreeMap<String, Vec<HookRun>>>>,
     /// Sessions with a hook executing right now: terminal id → event name. Drives the
     /// live "running" spinner on tabs / the project tree while a hook streams output.
     pub hooks_running: Mutex<HashMap<String, String>>,

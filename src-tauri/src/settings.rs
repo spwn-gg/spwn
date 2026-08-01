@@ -19,7 +19,11 @@ pub enum WorktreeLocation {
     AppData,
 }
 
-#[derive(Serialize, Deserialize, Default, Clone, Debug)]
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     /// Override for the `claude` CLI path. Empty/None falls back to auto-detect.
@@ -29,6 +33,21 @@ pub struct Settings {
     /// it's changed; existing worktrees stay where they were made.
     #[serde(default)]
     pub worktree_location: WorktreeLocation,
+    /// Whether the shared global hooks in `~/.spwn/hooks` run. When off, spwn falls
+    /// back to its native built-in behavior (worktree create/remove) and only per-repo
+    /// `.spwn/hooks` still run. Defaults to on.
+    #[serde(default = "default_true")]
+    pub global_hooks_enabled: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            claude_path: None,
+            worktree_location: WorktreeLocation::default(),
+            global_hooks_enabled: true,
+        }
+    }
 }
 
 impl Settings {

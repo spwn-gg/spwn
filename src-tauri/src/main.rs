@@ -12,5 +12,9 @@ fn main() {
         }
         std::process::exit(code);
     }
+    // `spwn checkpoint <turn_uuid>`: the default session-turn hook's snapshot helper.
+    if args.get(1).map(String::as_str) == Some("checkpoint") {
+        std::process::exit(spwn_lib::run_checkpoint_cli(&args[2..]));
+    }
     spwn_lib::run()
 }

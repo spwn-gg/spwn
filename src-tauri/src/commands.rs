@@ -368,38 +368,13 @@ pub async fn open_terminal(
     let mut cwd = cwd;
     if is_new && kind == "claude" {
         if let Some(repo) = gitwt::repo_root(Path::new(&project_dir)) {
-            let base = fork_base.or_else(|| gitwt::current_branch(&repo));
-            if let (Some(base), Some(wt_path)) =
-                (base, session_worktree_path(&state, &repo, &terminal_id))
-            {
-                let short = terminal_id.split('-').next().unwrap_or(terminal_id.as_str());
-                let branch = format!("{}{short}", gitwt::SESSION_BRANCH_PREFIX);
-                match gitwt::add_worktree(&repo, &wt_path, &branch, &base) {
-                    Ok(()) => {
-                        gitwt::seed_heavy_dirs(Path::new(&project_dir), &wt_path);
-                        cwd = wt_path.to_string_lossy().into_owned();
-                        {
-                            let mut store = state.store.lock();
-                            if let Some(t) = store.terminal_mut(&terminal_id) {
-                                t.cwd = cwd.clone();
-                                t.branch = Some(branch);
-                                t.base_branch = Some(base);
-                            }
-                        }
-                        persist(&state);
-                        // Run the project `session-created` hook (synchronous). Interactive
-                        // session → hooks may raise UI prompts (headless = false).
-                        hooks_on_session_created(&state, &terminal_id, &project_dir, &wt_path, false);
-                    }
-                    Err(e) => {
-                        eprintln!("worktree create failed (using project dir): {e}");
-                        if let Some(app2) = state.app.lock().as_ref() {
-                            let _ = app2.emit(
-                                "store://error",
-                                format!("Couldn't create a git worktree for the session; using the project folder. {e}"),
-                            );
-                        }
-                    }
+            if let Some(base) = fork_base.or_else(|| gitwt::current_branch(&repo)) {
+                // Create the worktree via the `session-created` hooks (native fallback
+                // inside). Interactive → hooks may raise UI prompts (headless = false).
+                if let Some(new_cwd) =
+                    setup_session_worktree(&state, &terminal_id, &project_dir, &repo, base, false)
+                {
+                    cwd = new_cwd;
                 }
             }
         }
@@ -493,9 +468,6 @@ pub async fn delete_terminal(
     }
     persist(&state);
     if let Some((proj_dir, wt_path, branch)) = worktree {
-        // Run the project `session-deleted` hook BEFORE removing the worktree (it runs
-        // inside it) — and, like all hooks, synchronously, which matters doubly here
-        // since the worktree disappears right after.
         let ctx = hooks::HookCtx {
             terminal_id: terminal_id.clone(),
             project_dir: proj_dir.clone(),
@@ -503,19 +475,16 @@ pub async fn delete_terminal(
             branch: Some(branch.clone()),
             base_branch,
             session_id: session_id.clone(),
+            turn_uuid: None,
         };
-        fire_hooks(&state, &ctx, "session-deleted", false);
-        if let Some(repo) = gitwt::repo_root(Path::new(&proj_dir)) {
-            if let Err(e) = gitwt::remove_worktree(&repo, Path::new(&wt_path)) {
-                eprintln!("worktree remove failed: {e}");
-            }
-            // Then the branch, so deleted sessions don't leave `spwn/*` behind forever.
-            // Strictly after the removal above — git won't delete a checked-out branch.
-            // The UI has already warned about any unmerged commits by this point.
-            if let Err(e) = gitwt::delete_branch(&repo, &branch) {
-                eprintln!("branch delete failed: {e}");
-            }
-        }
+        // Repo `session-deleted` hook runs FIRST, inside the worktree (user cleanup that
+        // must happen before the tree disappears) — synchronously, like all hooks.
+        fire_hooks_scope(&state, &ctx, "session-deleted", hooks::Scope::Repo, false);
+        // Then the GLOBAL `session-deleted` script (runs in the project dir) removes the
+        // worktree + branch. Worktree removal lives entirely in the hook — if global
+        // hooks are disabled or the script was deleted, the worktree/branch is left in
+        // place (spwn no longer manages it); the user can prune it with git.
+        fire_hooks_scope(&state, &ctx, "session-deleted", hooks::Scope::Global, false);
     }
     state.hook_runs.lock().remove(&terminal_id);
     state.hooks_running.lock().remove(&terminal_id);
@@ -1202,6 +1171,7 @@ fn hook_ctx(
         branch,
         base_branch,
         session_id,
+        turn_uuid: None,
     }
 }
 
@@ -1221,17 +1191,34 @@ fn hook_ctx_by_id(state: &AppState, terminal_id: &str) -> Option<hooks::HookCtx>
     Some(hook_ctx(state, terminal_id, &project_dir, &PathBuf::from(cwd)))
 }
 
-/// Store an event's latest runs and notify the Hooks panel; surface a one-line
-/// advisory if any hook failed.
-fn record_hook_run(state: &AppState, terminal_id: &str, event: &str, run: hooks::HookRun) {
-    let failed = (!run.ok).then(|| run.script.clone());
+/// The shared global hooks dir (`~/.spwn/hooks`), or None when global hooks are
+/// disabled in settings — in which case hook discovery uses the repo scope only and
+/// worktree create/remove fall back to spwn's native behavior.
+fn enabled_global_hooks_dir(state: &AppState) -> Option<PathBuf> {
+    if !state.settings.lock().global_hooks_enabled {
+        return None;
+    }
+    hooks::global_hooks_dir()
+}
+
+/// Store one scope's latest run for an event and notify the Hooks panel; surface a
+/// one-line advisory if the hook failed. Replaces any prior run for the same scope,
+/// keeping the other scope's run intact.
+fn record_hook_run(state: &AppState, terminal_id: &str, run: hooks::HookRun) {
+    let failed = (!run.ok).then(|| (run.event.clone(), run.script.clone()));
     {
         let mut all = state.hook_runs.lock();
-        all.entry(terminal_id.to_string())
+        let runs = all
+            .entry(terminal_id.to_string())
             .or_default()
-            .insert(event.to_string(), run);
+            .entry(run.event.clone())
+            .or_default();
+        // Keyed by (scope, script): there can be several scripts per scope now
+        // (a bare `<event>.sh` plus `<event>.d/*`), each with its own last run.
+        runs.retain(|r| !(r.scope == run.scope && r.script == run.script));
+        runs.push(run);
     }
-    if let Some(script) = failed {
+    if let Some((event, script)) = failed {
         emit_store_error(state, &format!("Hook failed on {event}: {script}"));
     }
     emit_hooks_event(state, terminal_id);
@@ -1447,15 +1434,24 @@ pub async fn hooks_prompt_answer(
 /// spwn shows a picker and waits (up to [`HOOK_PROMPT_TIMEOUT`]) for the user's answer,
 /// which is written back to the script's stdin. When `headless` (no UI window, e.g. a
 /// scheduled run) prompts auto-decline immediately so the run can't deadlock.
-fn fire_hooks(state: &AppState, ctx: &hooks::HookCtx, event: &str, headless: bool) {
-    // Only announce a run when a hook actually exists for this event, so idle events
-    // don't flash a spinner.
-    if hooks::discover(&ctx.worktree, event).is_none() {
-        return;
+/// Run a set of already-discovered `(scope, script)` entries for an event, streaming
+/// output to the panel and recording each run. Returns the union of values the scripts
+/// reported via `::spwn:set::` (repo overrides global on key collision, since entries
+/// are global-first). No-op when `entries` is empty.
+fn run_hook_entries(
+    state: &AppState,
+    ctx: &hooks::HookCtx,
+    event: &str,
+    entries: Vec<(hooks::Scope, PathBuf)>,
+    headless: bool,
+) -> std::collections::BTreeMap<String, String> {
+    let mut reported = std::collections::BTreeMap::new();
+    if entries.is_empty() {
+        return reported;
     }
     let terminal_id = ctx.terminal_id.clone();
     set_hook_running(state, &terminal_id, Some(event));
-    let run = {
+    let runs = {
         let mut on_line = |line: &str| emit_hook_output(state, &terminal_id, event, line);
         let mut on_prompt = |req: hooks::HookPromptRequest| -> String {
             // No window to answer → decline at once (don't emit/leak a pending prompt).
@@ -1473,25 +1469,122 @@ fn fire_hooks(state: &AppState, ctx: &hooks::HookCtx, event: &str, headless: boo
             emit_hook_prompt_close(state, &terminal_id, &id);
             answer
         };
-        hooks::run_event_sync(ctx, event, &mut on_line, &mut on_prompt)
+        hooks::run_entries(ctx, event, &entries, &mut on_line, &mut on_prompt)
     };
     set_hook_running(state, &terminal_id, None);
-    if let Some(run) = run {
-        record_hook_run(state, &terminal_id, event, run);
+    for run in runs {
+        for (k, v) in &run.reported {
+            reported.insert(k.clone(), v.clone());
+        }
+        record_hook_run(state, &terminal_id, run);
     }
+    reported
 }
 
-/// Run the `session-created` hook (synchronously) for a freshly-worktree'd session.
-/// Shared by interactive `open_terminal` and the headless scheduler.
-pub(crate) fn hooks_on_session_created(
+/// Fire an event's hooks across BOTH scopes (global first, then repo), each in its
+/// proper working directory. Returns the merged reported values.
+fn fire_hooks(
+    state: &AppState,
+    ctx: &hooks::HookCtx,
+    event: &str,
+    headless: bool,
+) -> std::collections::BTreeMap<String, String> {
+    let entries =
+        hooks::discover_all(enabled_global_hooks_dir(state).as_deref(), &ctx.worktree, event);
+    run_hook_entries(state, ctx, event, entries, headless)
+}
+
+/// Fire only ONE scope's hook for an event. Used where scope ordering matters relative
+/// to native worktree create/remove: the global `session-created` script (creates the
+/// worktree, runs in the project dir) fires before the repo one (runs in the worktree),
+/// and on delete the repo script (in the worktree) fires before the global one.
+fn fire_hooks_scope(
+    state: &AppState,
+    ctx: &hooks::HookCtx,
+    event: &str,
+    scope: hooks::Scope,
+    headless: bool,
+) -> std::collections::BTreeMap<String, String> {
+    let entries = hooks::discover_scope(
+        enabled_global_hooks_dir(state).as_deref(),
+        &ctx.worktree,
+        event,
+        scope,
+    )
+    .into_iter()
+    .map(|p| (scope, p))
+    .collect();
+    run_hook_entries(state, ctx, event, entries, headless)
+}
+
+/// Create a fresh Claude session's worktree via the `session-created` hooks (with a
+/// native fallback), returning the resolved worktree path. Shared by interactive
+/// `open_terminal` and the headless scheduler.
+///
+/// Flow: the GLOBAL `session-created` script runs in the project dir and creates +
+/// seeds the worktree, reporting it back via `::spwn:set::`. If no global script
+/// created one (e.g. it was deleted) or it failed, spwn falls back to native
+/// `add_worktree` + `seed_heavy_dirs`. The resolved path/branch/base are stored on the
+/// `TerminalRec`, then the REPO `session-created` script runs inside the worktree.
+/// Returns None (and leaves the session in the project dir) if the worktree couldn't be
+/// created.
+pub(crate) fn setup_session_worktree(
     state: &AppState,
     terminal_id: &str,
     project_dir: &str,
-    worktree: &Path,
+    repo: &Path,
+    base: String,
     headless: bool,
-) {
-    let ctx = hook_ctx(state, terminal_id, project_dir, worktree);
-    fire_hooks(state, &ctx, "session-created", headless);
+) -> Option<String> {
+    let wt_path = session_worktree_path(state, repo, terminal_id)?;
+    let short = terminal_id.split('-').next().unwrap_or(terminal_id);
+    let branch = format!("{}{short}", gitwt::SESSION_BRANCH_PREFIX);
+
+    // Context carrying the INTENDED worktree/branch/base, so the global hook can create
+    // it. (session_id is unknown until the sidecar binds it later.)
+    let ctx = hooks::HookCtx {
+        terminal_id: terminal_id.to_string(),
+        project_dir: project_dir.to_string(),
+        worktree: wt_path.clone(),
+        branch: Some(branch.clone()),
+        base_branch: Some(base.clone()),
+        session_id: None,
+        turn_uuid: None,
+    };
+
+    // Worktree creation lives ENTIRELY in the hook: the global `session-created` script
+    // (runs in the project dir) creates the worktree and reports it back. If no hook
+    // creates one — the script was deleted, global hooks are disabled, or it failed —
+    // the session simply runs in the project dir with no isolated worktree/branch.
+    let reported = fire_hooks_scope(state, &ctx, "session-created", hooks::Scope::Global, headless);
+
+    // Resolve the worktree from what the hook reported (or the intended path if a custom
+    // hook created it there without reporting). None → no worktree; stay in project dir.
+    let wt = reported
+        .get("worktree")
+        .map(PathBuf::from)
+        .filter(|p| p.exists())
+        .or_else(|| wt_path.exists().then(|| wt_path.clone()))?;
+
+    let final_branch = reported.get("branch").cloned().unwrap_or(branch);
+    let final_base = reported.get("base").cloned().unwrap_or(base);
+    let cwd = wt.to_string_lossy().into_owned();
+    {
+        let mut store = state.store.lock();
+        if let Some(t) = store.terminal_mut(terminal_id) {
+            t.cwd = cwd.clone();
+            t.branch = Some(final_branch);
+            t.base_branch = Some(final_base);
+        }
+    }
+    persist(state);
+
+    // 3) Repo session-created hook runs inside the now-existing worktree (unchanged
+    //    behavior for committed `.spwn/hooks/session-created.sh`).
+    let ctx2 = hook_ctx(state, terminal_id, project_dir, &wt);
+    fire_hooks_scope(state, &ctx2, "session-created", hooks::Scope::Repo, headless);
+
+    Some(cwd)
 }
 
 /// Discovered hooks + last-run results for a session's worktree, for the Hooks panel.
@@ -1513,7 +1606,7 @@ pub async fn hooks_status(
         .get(&terminal_id)
         .cloned()
         .unwrap_or_default();
-    let mut st = hooks::status(&ctx.worktree, &last);
+    let mut st = hooks::status(enabled_global_hooks_dir(&state).as_deref(), &ctx.worktree, &last);
     st.running = state.hooks_running.lock().get(&terminal_id).cloned();
     Ok(st)
 }
@@ -1529,6 +1622,28 @@ pub async fn hooks_run(
     let ctx = hook_ctx_by_id(&state, &terminal_id)
         .ok_or_else(|| "this session has no worktree".to_string())?;
     fire_hooks(&state, &ctx, &event, false);
+    Ok(())
+}
+
+/// Fire the `session-turn` hooks for a session after a completed Claude turn (the
+/// default global script commits the turn onto the session branch and snapshots a
+/// checkpoint). No-op for sessions without a worktree branch. Called by the frontend
+/// once each turn finishes.
+#[tauri::command]
+pub async fn hooks_run_turn(
+    state: State<'_, AppState>,
+    terminal_id: String,
+    turn_uuid: String,
+) -> Result<(), String> {
+    let Some(mut ctx) = hook_ctx_by_id(&state, &terminal_id) else {
+        return Ok(());
+    };
+    // Only sessions with their own worktree branch get per-turn commit/checkpoint.
+    if ctx.branch.is_none() {
+        return Ok(());
+    }
+    ctx.turn_uuid = Some(turn_uuid);
+    fire_hooks(&state, &ctx, "session-turn", false);
     Ok(())
 }
 
@@ -1660,6 +1775,19 @@ pub fn set_settings(state: State<AppState>, settings: Settings) -> Result<(), St
             .save(&path)
             .map_err(|e| e.to_string())?;
     }
+    Ok(())
+}
+
+/// Reveal the shared global hooks folder (`~/.spwn/hooks`) in Finder, creating it first
+/// if needed. So users can view/edit the default hook scripts spwn installed.
+#[tauri::command]
+pub fn open_global_hooks_dir() -> Result<(), String> {
+    let dir = hooks::global_hooks_dir().ok_or_else(|| "could not resolve ~/.spwn/hooks".to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::process::Command::new("open")
+        .arg(&dir)
+        .status()
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 

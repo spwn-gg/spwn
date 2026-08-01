@@ -28,6 +28,25 @@ Each Claude session in a git repo runs in its own [worktree](/spwn/guides/branch
 | **Inside repo** | `<repo>/.spwn/worktrees/…` | Excluded via the repo's `.git/info/exclude` (your tracked `.gitignore` is untouched). Some tools with explicit include globs may still scan it. |
 | **App data** | Under spwn's app-data directory | Away from your repos entirely. |
 
+## Global hooks
+
+spwn's shared [hooks](/spwn/reference/hooks/) live in `~/.spwn/hooks/` and run for every
+session in every project. This is also where spwn's own built-in behavior ships as default
+scripts — creating the session worktree, committing each turn, and taking checkpoints.
+
+- **Run shared global hooks** — the toggle that enables or disables the whole
+  `~/.spwn/hooks/` folder. Per-repo `.spwn/hooks` are unaffected.
+- **Open hooks folder** — reveals `~/.spwn/hooks/` in Finder (creating it if needed), so
+  you can read or edit the default scripts and add your own.
+
+:::caution[Disabling turns off worktree management]
+Because creating and removing session worktrees is one of those default global hooks,
+turning global hooks **off** means spwn no longer manages worktrees: new sessions run in
+the project folder with no isolated worktree or branch, existing session worktrees aren't
+auto-removed on delete, and the per-turn commit + checkpoint stop. Leave it on unless you
+specifically want spwn to stop managing sessions' git state.
+:::
+
 ## Updates
 
 spwn has a built-in updater. When a new release is available, an update banner appears —

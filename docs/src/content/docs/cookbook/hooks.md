@@ -23,11 +23,14 @@ in the repo.
 | [Prompt before setup](#prompt-before-setup) | `session-created` | Ask before expensive setup with `spwn prompt`, gating what runs. |
 | [Tear down on delete](#tear-down-on-delete) | `session-deleted` | Stop the preview server and drop ephemeral data before the worktree is removed. |
 
-:::note[One file per event]
-spwn runs exactly **one file per event** — `.spwn/hooks/<event>.sh`. To combine several
-`session-created` recipes, put them in the *same* `session-created.sh` and call them in
-sequence (or paste the bodies together). The preview and teardown recipes are a **pair** —
-the first writes `.spwn/run/preview.pid` / `.url`, the second consumes them.
+:::note[Combining recipes]
+Each recipe below is a repo hook committed at `.spwn/hooks/<event>.sh`. To run several for
+the same event, either paste the bodies into that one script, or split them into a
+[`<event>.d/` folder](/spwn/reference/hooks/#where-hooks-live) of numbered files
+(`session-created.d/20-secrets.sh`, `30-seed.sh`, …) that spwn runs in order. To apply a
+recipe to **every** project instead of one repo, put it in the shared `~/.spwn/hooks/`
+folder. The preview and teardown recipes are a **pair** — the first writes
+`.spwn/run/preview.pid` / `.url`, the second consumes them.
 :::
 
 ## Pull the base branch
@@ -267,9 +270,8 @@ echo "[$SPWN_EVENT] teardown complete"
 
 ## Install a recipe
 
-spwn discovers exactly one file per event at `.spwn/hooks/<event>.sh`. Copy a recipe into
-that path, then **commit** — hooks travel into each session via the git checkout, so an
-uncommitted hook never runs.
+Copy a recipe to `.spwn/hooks/<event>.sh` in your repo, then **commit** — hooks travel into
+each session via the git checkout, so an uncommitted hook never runs.
 
 ```sh
 mkdir -p .spwn/hooks
@@ -278,6 +280,21 @@ cp examples/hooks/cookbook/teardown.sh         .spwn/hooks/session-deleted.sh
 chmod +x .spwn/hooks/*.sh
 git add .spwn/hooks && git commit -m "Add spwn hooks"
 ```
+
+To run several recipes for one event, use a `<event>.d/` folder of numbered scripts
+instead of a single file — spwn runs `.spwn/hooks/<event>.d/*` in filename order (see
+[Where hooks live](/spwn/reference/hooks/#where-hooks-live)):
+
+```sh
+mkdir -p .spwn/hooks/session-created.d
+cp examples/hooks/cookbook/pull-base-branch.sh .spwn/hooks/session-created.d/10-pull-base.sh
+cp examples/hooks/cookbook/copy-secrets.sh     .spwn/hooks/session-created.d/20-secrets.sh
+chmod +x .spwn/hooks/session-created.d/*.sh
+git add .spwn/hooks && git commit -m "Add spwn hooks"
+```
+
+To apply a recipe to **every** project, drop it in the shared `~/.spwn/hooks/` folder
+instead of a repo (no commit needed — it isn't tied to any repo).
 
 ## More ideas
 

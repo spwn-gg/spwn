@@ -1,20 +1,35 @@
-//! Project shell hooks: one user script per session lifecycle event, discovered
-//! inside a session's worktree, that spwn runs with useful environment variables.
-//! This replaces the old opinionated per-session docker-compose integration with a
-//! generic, unix-y mechanism — spwn just runs the script; it has no opinion about
-//! what it does (and the script is free to orchestrate other files/code).
+//! Shell hooks: one script per session lifecycle event that spwn runs with useful
+//! environment variables. This replaces the old opinionated per-session
+//! docker-compose integration with a generic, unix-y mechanism — spwn just runs the
+//! script; it has no opinion about what it does (and the script is free to
+//! orchestrate other files/code). spwn's own built-in per-session behaviors
+//! (worktree create/remove, heavy-dir seeding, per-turn commit + checkpoint) ship as
+//! *default global hooks* (see [`install_default_global_hooks`]), so they're editable
+//! and overridable instead of hardcoded.
 //!
-//! Discovery: `<worktree>/.spwn/hooks/<event>.sh` — a single entry-point file per
-//! event. Because hooks live in the worktree (a git checkout), a committed hook
-//! travels into every session automatically. The file runs directly when it's
-//! executable (honoring its shebang); otherwise it's run via `sh`.
+//! Discovery is layered across two [`Scope`]s, global first then repo, and each scope
+//! resolves to a root — `~/.spwn/hooks` (global, every session everywhere) and
+//! `<worktree>/.spwn/hooks` (repo, committed with a repo). Within a root an event runs,
+//! in order: a bare `<event>.sh` (if present), then every runnable file in `<event>.d/`
+//! sorted by filename — so numeric prefixes (`10-`, `20-`) order independent steps and
+//! users can drop their own `NN-*.sh` alongside spwn's defaults without editing them.
+//! A file runs directly when it's executable (honoring its shebang); otherwise via `sh`.
 //!
-//! Events (see [`EVENTS`]): `session-created`, `session-ready`, `session-deleted`.
+//! Events (see [`EVENTS`]): `session-created`, `session-ready`, `session-turn`,
+//! `session-deleted`. Most hooks run with the worktree as their cwd, EXCEPT the
+//! *global* `session-created` / `session-deleted` scripts, which run in the *project
+//! dir* — the global `session-created` script creates the worktree (which doesn't
+//! exist yet), and the global `session-deleted` script removes it.
 //!
 //! Injected environment (a hook reads these): `SPWN_EVENT`, `SPWN_TERMINAL_ID`,
 //! `SPWN_PROJECT_DIR`, `SPWN_WORKTREE`, `SPWN_BRANCH`, `SPWN_BASE_BRANCH`,
-//! `SPWN_SESSION_ID` (the last three only when known). Hooks run with the worktree
-//! as their working directory.
+//! `SPWN_SESSION_ID`, `SPWN_TURN_UUID` (all but the first four only when known).
+//!
+//! Callback: a hook reports values back to spwn by printing a sentinel line
+//! `::spwn:set:: key=value` (one key per line — values may contain spaces). spwn
+//! parses these out of the stream (they never appear in captured output) — the global
+//! `session-created` script uses `worktree=`/`branch=`/`base=` to tell spwn which
+//! worktree it made.
 //!
 //! Style mirrors `gitwt.rs`/the old `compose.rs`: thin `std::process::Command`
 //! shell-outs, best-effort, never fail a session.
@@ -32,7 +47,33 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// The lifecycle events spwn fires hooks for (also the discoverable file stems).
-pub const EVENTS: &[&str] = &["session-created", "session-ready", "session-deleted"];
+pub const EVENTS: &[&str] = &[
+    "session-created",
+    "session-ready",
+    "session-turn",
+    "session-deleted",
+];
+
+/// Prefix of a callback line a hook prints to report a value back to spwn:
+/// `::spwn:set:: key=value` (one key per line). Parsed out of the stream, so these
+/// lines never appear in the captured/streamed output.
+const SET_SENTINEL: &str = "::spwn:set::";
+
+/// Which layer a discovered hook belongs to. Global hooks (in `~/.spwn/hooks`) apply
+/// to every session; repo hooks (in `<worktree>/.spwn/hooks`) ship with a repo. When
+/// both exist for an event, global runs first, then repo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Scope {
+    Global,
+    Repo,
+}
+
+/// The shared, cross-session global hooks dir: `~/.spwn/hooks`. None if the home dir
+/// can't be resolved.
+pub fn global_hooks_dir() -> Option<PathBuf> {
+    directories::BaseDirs::new().map(|b| b.home_dir().join(".spwn").join("hooks"))
+}
 
 /// Cap on captured hook output kept per run (tail), so a chatty script can't bloat
 /// the store / the panel.
@@ -63,11 +104,14 @@ static SOCK_SEQ: AtomicU64 = AtomicU64::new(0);
 pub struct HookCtx {
     pub terminal_id: String,
     pub project_dir: String,
-    /// The session's worktree — where the hook is discovered and run.
+    /// The session's worktree — where most hooks run (the global `session-created`
+    /// script runs in `project_dir` instead, since it *creates* this path).
     pub worktree: PathBuf,
     pub branch: Option<String>,
     pub base_branch: Option<String>,
     pub session_id: Option<String>,
+    /// The assistant turn id, set only when firing `session-turn`.
+    pub turn_uuid: Option<String>,
 }
 
 /// The result of running an event's hook script.
@@ -75,6 +119,8 @@ pub struct HookCtx {
 #[serde(rename_all = "camelCase")]
 pub struct HookRun {
     pub event: String,
+    /// Which layer this run's script came from.
+    pub scope: Scope,
     /// Hook file basename (e.g. `session-created.sh`).
     pub script: String,
     /// Process exit code, or None if the script couldn't be launched / was signalled.
@@ -84,16 +130,27 @@ pub struct HookRun {
     pub output: String,
     /// Epoch seconds when the run finished.
     pub at: u64,
+    /// Values the hook reported via `::spwn:set:: key=value` lines. Not sent to the UI.
+    #[serde(skip)]
+    pub reported: BTreeMap<String, String>,
 }
 
-/// The discovered hook plus its most recent run for one event (for the UI).
+/// One discovered hook script (a scope+file) plus its most recent run, for the UI.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HookScriptInfo {
+    pub scope: Scope,
+    /// The hook file basename (e.g. `session-created.sh`).
+    pub script: String,
+    pub last_run: Option<HookRun>,
+}
+
+/// The discovered hook scripts (0..2, global first) for one event (for the UI).
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct HookEventInfo {
     pub event: String,
-    /// The hook file basename if one exists for this event, else None.
-    pub script: Option<String>,
-    pub last_run: Option<HookRun>,
+    pub scripts: Vec<HookScriptInfo>,
 }
 
 /// Overall hooks status for a session, for the Hooks panel.
@@ -310,12 +367,23 @@ pub fn run_prompt_cli(_args: &[String]) -> PromptCliOutcome {
 // Discovery
 // ---------------------------------------------------------------------------
 
-/// The hook file for an event: `<worktree>/.spwn/hooks/<event>.sh`.
-fn hook_file(worktree: &Path, event: &str) -> PathBuf {
-    worktree
-        .join(".spwn")
-        .join("hooks")
-        .join(format!("{event}.sh"))
+/// The hooks root dir for a scope: `<global_dir>` for global, `<worktree>/.spwn/hooks`
+/// for repo. None for global when the home dir couldn't be resolved.
+fn scope_base(global_dir: Option<&Path>, worktree: &Path, scope: Scope) -> Option<PathBuf> {
+    match scope {
+        Scope::Global => global_dir.map(Path::to_path_buf),
+        Scope::Repo => Some(worktree.join(".spwn").join("hooks")),
+    }
+}
+
+/// The bare single-file hook for an event under a scope root: `<base>/<event>.sh`.
+fn bare_hook_file(base: &Path, event: &str) -> PathBuf {
+    base.join(format!("{event}.sh"))
+}
+
+/// The directory of per-event scripts under a scope root: `<base>/<event>.d`.
+fn hook_dir(base: &Path, event: &str) -> PathBuf {
+    base.join(format!("{event}.d"))
 }
 
 /// Whether `p` is a regular file with an execute bit (on unix; any regular file
@@ -338,11 +406,76 @@ fn is_executable(p: &Path) -> bool {
     }
 }
 
-/// The event's hook file, if it exists (a regular file). None means "no hook for this
-/// event" — the feature is fully opt-in.
-pub fn discover(worktree: &Path, event: &str) -> Option<PathBuf> {
-    let p = hook_file(worktree, event);
-    p.is_file().then_some(p)
+/// Whether a file inside an `<event>.d` directory should be run: a non-hidden regular
+/// file that is either executable or ends in `.sh` (so a stray `README`/`notes.txt`
+/// is ignored, but `20-setup.py` with a shebang still runs).
+fn is_runnable_hook(p: &Path) -> bool {
+    let Some(name) = p.file_name().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    if name.starts_with('.') || !p.is_file() {
+        return false;
+    }
+    name.ends_with(".sh") || is_executable(p)
+}
+
+/// The hook scripts for one scope+event, in run order: a bare `<event>.sh` first (if
+/// present), then every runnable file in `<event>.d/` sorted by filename (so numeric
+/// prefixes like `10-`, `20-` order them). Empty means "no hook for this scope" — the
+/// feature is fully opt-in.
+pub fn discover_scope(
+    global_dir: Option<&Path>,
+    worktree: &Path,
+    event: &str,
+    scope: Scope,
+) -> Vec<PathBuf> {
+    let Some(base) = scope_base(global_dir, worktree, scope) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let bare = bare_hook_file(&base, event);
+    if bare.is_file() {
+        out.push(bare);
+    }
+    if let Ok(rd) = std::fs::read_dir(hook_dir(&base, event)) {
+        let mut entries: Vec<PathBuf> = rd
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| is_runnable_hook(p))
+            .collect();
+        entries.sort();
+        out.extend(entries);
+    }
+    out
+}
+
+/// All discovered scripts for an event, ordered global-first then repo, each scope's
+/// scripts in run order — the layering contract (global defaults run first; repo hooks
+/// add to / override them).
+pub fn discover_all(
+    global_dir: Option<&Path>,
+    worktree: &Path,
+    event: &str,
+) -> Vec<(Scope, PathBuf)> {
+    let mut out = Vec::new();
+    for scope in [Scope::Global, Scope::Repo] {
+        for p in discover_scope(global_dir, worktree, event, scope) {
+            out.push((scope, p));
+        }
+    }
+    out
+}
+
+/// The working directory a hook runs in. Everything runs in the session worktree,
+/// EXCEPT the global `session-created` / `session-deleted` scripts, which run in the
+/// project dir — the former creates the worktree (it doesn't exist yet), the latter
+/// removes it.
+fn run_dir_for<'a>(ctx: &'a HookCtx, event: &str, scope: Scope) -> &'a Path {
+    match (event, scope) {
+        ("session-created", Scope::Global) | ("session-deleted", Scope::Global) => {
+            Path::new(&ctx.project_dir)
+        }
+        _ => ctx.worktree.as_path(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -386,7 +519,9 @@ fn tail(s: &str, cap: usize) -> String {
 fn run_one(
     ctx: &HookCtx,
     event: &str,
+    scope: Scope,
     script: &Path,
+    run_dir: &Path,
     on_line: &mut dyn FnMut(&str),
     on_prompt: &mut dyn FnMut(HookPromptRequest) -> String,
 ) -> HookRun {
@@ -402,7 +537,7 @@ fn run_one(
         c.arg(script);
         c
     };
-    cmd.current_dir(&ctx.worktree)
+    cmd.current_dir(run_dir)
         .env("SPWN_EVENT", event)
         .env("SPWN_TERMINAL_ID", &ctx.terminal_id)
         .env("SPWN_PROJECT_DIR", &ctx.project_dir)
@@ -420,6 +555,9 @@ fn run_one(
     }
     if let Some(s) = &ctx.session_id {
         cmd.env("SPWN_SESSION_ID", s);
+    }
+    if let Some(u) = &ctx.turn_uuid {
+        cmd.env("SPWN_TURN_UUID", u);
     }
     // So `"$SPWN_BIN" prompt …` works even when spwn isn't on PATH.
     if let Ok(exe) = std::env::current_exe() {
@@ -447,11 +585,13 @@ fn run_one(
 
     let failed = |msg: String| HookRun {
         event: event.to_string(),
+        scope,
         script: name.clone(),
         exit_code: None,
         ok: false,
         output: msg,
         at: now_secs(),
+        reported: BTreeMap::new(),
     };
 
     let mut child = match cmd.spawn() {
@@ -515,9 +655,21 @@ fn run_one(
     drop(tx); // now only the reader/socket threads hold senders; `rx` ends when they do
 
     let mut combined = String::new();
+    let mut reported: BTreeMap<String, String> = BTreeMap::new();
     for msg in rx {
         match msg {
             HookMsg::Line(line) => {
+                // A `::spwn:set:: key=value` line is a callback to spwn, not output:
+                // record it and keep it out of the streamed/captured text.
+                if let Some(rest) = line.trim_start().strip_prefix(SET_SENTINEL) {
+                    if let Some((k, v)) = rest.trim().split_once('=') {
+                        let k = k.trim();
+                        if !k.is_empty() {
+                            reported.insert(k.to_string(), v.trim().to_string());
+                        }
+                    }
+                    continue;
+                }
                 on_line(&line);
                 combined.push_str(&line);
                 combined.push('\n');
@@ -545,41 +697,173 @@ fn run_one(
     let (exit_code, ok) = exit_rx.recv().unwrap_or((None, false));
     HookRun {
         event: event.to_string(),
+        scope,
         script: name,
         exit_code,
         ok,
         output: tail(&combined, OUTPUT_CAP),
         at: now_secs(),
+        reported,
     }
 }
 
-/// Run the event's hook (if one exists), returning its result — or None when there's
-/// no hook file for this event. Each output line is streamed to `on_line` live.
+/// Run a set of already-discovered `(scope, script)` entries for an event in order,
+/// each in its proper working directory, returning one [`HookRun`] per entry. Output
+/// lines stream to `on_line` live.
+pub fn run_entries(
+    ctx: &HookCtx,
+    event: &str,
+    entries: &[(Scope, PathBuf)],
+    on_line: &mut dyn FnMut(&str),
+    on_prompt: &mut dyn FnMut(HookPromptRequest) -> String,
+) -> Vec<HookRun> {
+    entries
+        .iter()
+        .map(|(scope, script)| {
+            let run_dir = run_dir_for(ctx, event, *scope);
+            run_one(ctx, event, *scope, script, run_dir, on_line, on_prompt)
+        })
+        .collect()
+}
+
+/// Discover + run every scope's hook for an event (global first, then repo). Returns a
+/// run per script that existed (empty when none). Each output line streams live.
+/// (Commands fire hooks per-scope via `run_entries`; this all-scopes convenience is
+/// used by the tests and kept as part of the module's public API.)
+#[allow(dead_code)]
 pub fn run_event_sync(
     ctx: &HookCtx,
     event: &str,
+    global_dir: Option<&Path>,
     on_line: &mut dyn FnMut(&str),
     on_prompt: &mut dyn FnMut(HookPromptRequest) -> String,
-) -> Option<HookRun> {
-    discover(&ctx.worktree, event).map(|s| run_one(ctx, event, &s, on_line, on_prompt))
+) -> Vec<HookRun> {
+    let entries = discover_all(global_dir, &ctx.worktree, event);
+    run_entries(ctx, event, &entries, on_line, on_prompt)
 }
 
 // ---------------------------------------------------------------------------
 // Status (for the Hooks panel)
 // ---------------------------------------------------------------------------
 
-/// The discovered hook + the caller's recorded last run for each known event.
-pub fn status(worktree: &Path, last_runs: &BTreeMap<String, HookRun>) -> HooksStatus {
+/// The discovered scripts (per scope) + the caller's recorded last run for each event.
+pub fn status(
+    global_dir: Option<&Path>,
+    worktree: &Path,
+    last_runs: &BTreeMap<String, Vec<HookRun>>,
+) -> HooksStatus {
     let events = EVENTS
         .iter()
-        .map(|&event| HookEventInfo {
-            event: event.to_string(),
-            script: discover(worktree, event)
-                .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned())),
-            last_run: last_runs.get(event).cloned(),
+        .map(|&event| {
+            let runs = last_runs.get(event);
+            let scripts = discover_all(global_dir, worktree, event)
+                .into_iter()
+                .map(|(scope, p)| {
+                    let script = p
+                        .file_name()
+                        .map(|s| s.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    let last_run = runs.and_then(|rs| {
+                        rs.iter()
+                            .find(|r| r.scope == scope && r.script == script)
+                            .cloned()
+                    });
+                    HookScriptInfo { scope, script, last_run }
+                })
+                .collect();
+            HookEventInfo { event: event.to_string(), scripts }
         })
         .collect();
     HooksStatus { available: true, events, running: None }
+}
+
+// ---------------------------------------------------------------------------
+// Default global hooks (spwn's built-in per-session behaviors, as editable scripts)
+// ---------------------------------------------------------------------------
+
+/// spwn's built-in per-session behaviors ship as default *global* hook scripts under
+/// per-event `<event>.d/` directories, so users can drop their own `NN-*.sh` alongside
+/// (composing, not editing) while spwn keeps ownership of these numbered files and can
+/// update them on version bumps. Each is `(subdir, filename, body)`.
+const DEFAULT_HOOKS: &[(&str, &str, &str)] = &[
+    (
+        "session-created.d",
+        "10-worktree.sh",
+        include_str!("../assets/hooks/session-created.d/10-worktree.sh"),
+    ),
+    (
+        "session-deleted.d",
+        "90-worktree.sh",
+        include_str!("../assets/hooks/session-deleted.d/90-worktree.sh"),
+    ),
+    (
+        "session-turn.d",
+        "10-commit.sh",
+        include_str!("../assets/hooks/session-turn.d/10-commit.sh"),
+    ),
+    (
+        "session-turn.d",
+        "20-checkpoint.sh",
+        include_str!("../assets/hooks/session-turn.d/20-checkpoint.sh"),
+    ),
+];
+
+fn write_default_hook(path: &Path, body: &str) {
+    if std::fs::write(path, body).is_ok() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+}
+
+/// Install spwn's default global hook scripts into `~/.spwn/hooks/<event>.d/`. Behavior
+/// is keyed off a `.spwn-version` marker so spwn owns these numbered files without
+/// clobbering user-added ones or resurrecting intentionally-deleted ones:
+///   - Fresh install (no marker): create every default.
+///   - Version change: refresh only the defaults that still exist on disk (update
+///     spwn's own scripts in place), leaving user-deleted ones deleted.
+///   - Same version: nothing to do.
+/// Users add their own `NN-*.sh` files in the same dirs; those are never touched.
+/// Best-effort — any IO failure is ignored. Called once on startup.
+pub fn install_default_global_hooks() {
+    if let Some(dir) = global_hooks_dir() {
+        install_defaults_into(&dir, env!("CARGO_PKG_VERSION"));
+    }
+}
+
+/// Core of [`install_default_global_hooks`], parameterized on the hooks dir + version
+/// so it's testable without touching the real `~/.spwn/hooks`.
+fn install_defaults_into(dir: &Path, current: &str) {
+    if std::fs::create_dir_all(dir).is_err() {
+        return;
+    }
+    let marker = dir.join(".spwn-version");
+    let prev = std::fs::read_to_string(&marker)
+        .ok()
+        .map(|s| s.trim().to_string());
+    // refresh_existing: on a version change, overwrite spwn's own files that are still
+    // present (update them) but don't recreate ones the user deleted. On a fresh install
+    // (no marker), create everything.
+    let refresh_existing = match prev.as_deref() {
+        Some(v) if v == current => return, // already installed for this version
+        Some(_) => true,                   // version change
+        None => false,                     // fresh install
+    };
+    for (subdir, name, body) in DEFAULT_HOOKS {
+        let d = dir.join(subdir);
+        if std::fs::create_dir_all(&d).is_err() {
+            continue;
+        }
+        let path = d.join(name);
+        let exists = path.exists();
+        // Fresh: write if missing. Version change: write only if it still exists.
+        if (refresh_existing && exists) || (!refresh_existing && !exists) {
+            write_default_hook(&path, body);
+        }
+    }
+    let _ = std::fs::write(&marker, current);
 }
 
 #[cfg(test)]
@@ -597,6 +881,14 @@ mod tests {
         let _ = exec;
     }
 
+    // The bare single-file hook paths, for tests.
+    fn hook_file(wt: &Path, event: &str) -> PathBuf {
+        wt.join(".spwn").join("hooks").join(format!("{event}.sh"))
+    }
+    fn global_hook_file(dir: &Path, event: &str) -> PathBuf {
+        dir.join(format!("{event}.sh"))
+    }
+
     fn ctx(wt: &Path) -> HookCtx {
         HookCtx {
             terminal_id: "abc123".into(),
@@ -605,6 +897,7 @@ mod tests {
             branch: Some("spwn/abc123".into()),
             base_branch: None,
             session_id: None,
+            turn_uuid: None,
         }
     }
 
@@ -617,8 +910,11 @@ mod tests {
             "#!/bin/sh\necho \"id=$SPWN_TERMINAL_ID event=$SPWN_EVENT branch=$SPWN_BRANCH\"\n",
             true,
         );
-        let run =
-            run_event_sync(&ctx(wt), "session-created", &mut |_| {}, &mut |_| String::new()).expect("hook present");
+        let runs =
+            run_event_sync(&ctx(wt), "session-created", None, &mut |_| {}, &mut |_| String::new());
+        assert_eq!(runs.len(), 1, "one repo-scope hook present");
+        let run = &runs[0];
+        assert_eq!(run.scope, Scope::Repo);
         assert_eq!(run.script, "session-created.sh");
         assert!(run.ok);
         assert!(run.output.contains("id=abc123"));
@@ -627,10 +923,97 @@ mod tests {
     }
 
     #[test]
-    fn missing_hook_is_none() {
+    fn missing_hook_is_empty() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(discover(dir.path(), "session-deleted").is_none());
-        assert!(run_event_sync(&ctx(dir.path()), "session-deleted", &mut |_| {}, &mut |_| String::new()).is_none());
+        assert!(discover_scope(None, dir.path(), "session-deleted", Scope::Repo).is_empty());
+        assert!(run_event_sync(&ctx(dir.path()), "session-deleted", None, &mut |_| {}, &mut |_| String::new()).is_empty());
+    }
+
+    #[test]
+    fn install_defaults_fresh_upgrade_and_respects_deletion() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let worktree_hook = root.join("session-created.d").join("10-worktree.sh");
+        let checkpoint_hook = root.join("session-turn.d").join("20-checkpoint.sh");
+
+        // Fresh install: all defaults created, discoverable, and a user file is untouched.
+        install_defaults_into(root, "1.0.0");
+        assert!(worktree_hook.is_file());
+        assert!(checkpoint_hook.is_file());
+        let user_hook = root.join("session-created.d").join("50-user.sh");
+        write(&user_hook, "#!/bin/sh\necho mine\n", true);
+
+        // The user deletes one spwn default and re-runs the SAME version: not resurrected.
+        std::fs::remove_file(&checkpoint_hook).unwrap();
+        install_defaults_into(root, "1.0.0");
+        assert!(!checkpoint_hook.exists(), "same version must not recreate a deleted default");
+
+        // Version bump: refreshes defaults that still exist (worktree) but does NOT
+        // resurrect the deleted one, and never touches the user's file.
+        std::fs::write(&worktree_hook, "# edited by spwn-owner test\n").unwrap();
+        install_defaults_into(root, "2.0.0");
+        assert!(worktree_hook.is_file());
+        assert!(
+            std::fs::read_to_string(&worktree_hook).unwrap().contains("git worktree add"),
+            "upgrade should refresh spwn's own file in place"
+        );
+        assert!(!checkpoint_hook.exists(), "upgrade must not resurrect a deleted default");
+        assert!(user_hook.is_file(), "user-added scripts are never touched");
+    }
+
+    #[test]
+    fn discovers_bare_then_sorted_dir_scripts() {
+        let dir = tempfile::tempdir().unwrap();
+        let wt = dir.path();
+        let base = wt.join(".spwn").join("hooks");
+        // A bare file plus a `.d` dir with two ordered scripts and one ignored non-hook.
+        write(&base.join("session-turn.sh"), "#!/bin/sh\necho bare\n", true);
+        write(&base.join("session-turn.d").join("20-b.sh"), "#!/bin/sh\necho b\n", true);
+        write(&base.join("session-turn.d").join("10-a.sh"), "#!/bin/sh\necho a\n", true);
+        write(&base.join("session-turn.d").join("notes.txt"), "not a hook\n", false);
+        let found = discover_scope(None, wt, "session-turn", Scope::Repo);
+        let names: Vec<String> = found
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        // Bare file first, then dir scripts sorted by name; notes.txt excluded.
+        assert_eq!(names, vec!["session-turn.sh", "10-a.sh", "20-b.sh"]);
+    }
+
+    #[test]
+    fn global_runs_before_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        let wt = dir.path().join("wt");
+        let global = dir.path().join("global");
+        std::fs::create_dir_all(&wt).unwrap();
+        // Both scopes define session-ready (which runs in the worktree for both).
+        write(&global_hook_file(&global, "session-ready"), "#!/bin/sh\necho G\n", true);
+        write(&hook_file(&wt, "session-ready"), "#!/bin/sh\necho R\n", true);
+        let mut c = ctx(&wt);
+        c.project_dir = wt.to_string_lossy().into_owned();
+        let runs = run_event_sync(&c, "session-ready", Some(global.as_path()), &mut |_| {}, &mut |_| String::new());
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].scope, Scope::Global);
+        assert_eq!(runs[1].scope, Scope::Repo);
+    }
+
+    #[test]
+    fn reports_sentinel_values_out_of_band() {
+        let dir = tempfile::tempdir().unwrap();
+        let wt = dir.path();
+        write(
+            &hook_file(wt, "session-created"),
+            "#!/bin/sh\necho hello\necho '::spwn:set:: worktree=/tmp/some path/wt'\necho '::spwn:set:: branch=spwn/x'\n",
+            true,
+        );
+        let runs = run_event_sync(&ctx(wt), "session-created", None, &mut |_| {}, &mut |_| String::new());
+        let run = &runs[0];
+        assert!(run.ok);
+        // Sentinel lines are parsed, not echoed into the captured output.
+        assert!(run.output.contains("hello"));
+        assert!(!run.output.contains("::spwn:set::"));
+        assert_eq!(run.reported.get("worktree").map(String::as_str), Some("/tmp/some path/wt"));
+        assert_eq!(run.reported.get("branch").map(String::as_str), Some("spwn/x"));
     }
 
     #[test]
@@ -639,7 +1022,8 @@ mod tests {
         let wt = dir.path();
         // No execute bit — spwn falls back to `sh <file>`.
         write(&hook_file(wt, "session-ready"), "echo hi\n", false);
-        let run = run_event_sync(&ctx(wt), "session-ready", &mut |_| {}, &mut |_| String::new()).expect("hook present");
+        let runs = run_event_sync(&ctx(wt), "session-ready", None, &mut |_| {}, &mut |_| String::new());
+        let run = &runs[0];
         assert!(run.ok, "output: {}", run.output);
         assert!(run.output.contains("hi"));
     }
@@ -654,13 +1038,14 @@ mod tests {
             true,
         );
         let mut lines: Vec<String> = Vec::new();
-        let run = run_event_sync(
+        let runs = run_event_sync(
             &ctx(wt),
             "session-created",
+            None,
             &mut |l| lines.push(l.to_string()),
             &mut |_| String::new(),
-        )
-        .expect("hook present");
+        );
+        let run = &runs[0];
         assert!(run.ok);
         // Every line reached the streamer (order across stdout/stderr is not asserted).
         assert!(lines.iter().any(|l| l == "one"));
@@ -782,7 +1167,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let wt = dir.path();
         write(&hook_file(wt, "session-deleted"), "#!/bin/sh\nexit 3\n", true);
-        let run = run_event_sync(&ctx(wt), "session-deleted", &mut |_| {}, &mut |_| String::new()).unwrap();
+        let runs = run_event_sync(&ctx(wt), "session-deleted", None, &mut |_| {}, &mut |_| String::new());
+        let run = &runs[0];
         assert!(!run.ok);
         assert_eq!(run.exit_code, Some(3));
     }

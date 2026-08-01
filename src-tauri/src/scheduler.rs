@@ -4,7 +4,7 @@
 //! a missed occurrence is caught up exactly once.
 
 use crate::claude::HeadlessEvent;
-use crate::commands::{bind_session, persist, resolved_claude, session_worktree_path};
+use crate::commands::{bind_session, persist, resolved_claude, setup_session_worktree};
 use crate::gitwt;
 use crate::state::AppState;
 use crate::store::{ContextBlock, ScheduledTask, TerminalRec};
@@ -125,33 +125,13 @@ pub fn fire(app: &AppHandle, project_id: &str, task_id: &str) {
     // after the run (the flagged session stays viewable) and removed on delete.
     let mut run_dir = directory.clone();
     if let Some(repo) = gitwt::repo_root(Path::new(&directory)) {
-        if let (Some(base), Some(wt_path)) = (
-            gitwt::current_branch(&repo),
-            session_worktree_path(&state, &repo, &terminal_id),
-        ) {
-            let short = terminal_id.split('-').next().unwrap_or(terminal_id.as_str());
-            let branch = format!("{}{short}", gitwt::SESSION_BRANCH_PREFIX);
-            if gitwt::add_worktree(&repo, &wt_path, &branch, &base).is_ok() {
-                gitwt::seed_heavy_dirs(Path::new(&directory), &wt_path);
-                run_dir = wt_path.to_string_lossy().into_owned();
-                {
-                    let mut store = state.store.lock();
-                    if let Some(t) = store.terminal_mut(&terminal_id) {
-                        t.cwd = run_dir.clone();
-                        t.branch = Some(branch);
-                        t.base_branch = Some(base);
-                    }
-                }
-                persist(&state);
-                // Run the project `session-created` hook for the headless run too. No UI
-                // window here, so hook prompts auto-decline (headless = true).
-                crate::commands::hooks_on_session_created(
-                    &state,
-                    &terminal_id,
-                    &directory,
-                    &wt_path,
-                    true,
-                );
+        if let Some(base) = gitwt::current_branch(&repo) {
+            // Create the worktree via the `session-created` hooks (native fallback
+            // inside). Headless run → no UI window, so hook prompts auto-decline.
+            if let Some(new_cwd) =
+                setup_session_worktree(&state, &terminal_id, &directory, &repo, base, true)
+            {
+                run_dir = new_cwd;
             }
         }
     }
