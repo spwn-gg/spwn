@@ -48,7 +48,7 @@ export default defineConfig({
 					label: 'Reference',
 					items: [
 						{ label: 'How it works & your data', slug: 'reference/architecture' },
-						{ label: 'Project Hooks', slug: 'reference/hooks' },
+						{ label: 'Hooks', slug: 'reference/hooks' },
 						{ label: 'Settings', slug: 'reference/settings' },
 						{ label: 'Glossary', slug: 'reference/glossary' },
 						{ label: 'Troubleshooting', slug: 'reference/troubleshooting' },

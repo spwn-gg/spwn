@@ -57,10 +57,15 @@ time the app was closed runs once the next time spwn is open. See
 ## My hook didn't fire
 
 - Hooks only run for sessions with their **own worktree** (a git repo).
-- A hook must be **committed** at `.spwn/hooks/<event>.sh` — it travels into a session via
-  the git checkout, so an uncommitted hook never runs.
+- A **repo** hook must be **committed** at `.spwn/hooks/<event>.sh` (or `<event>.d/…`) — it
+  travels into a session via the git checkout, so an uncommitted hook never runs. A
+  **global** hook in `~/.spwn/hooks/` doesn't need committing.
+- In an `<event>.d/` folder, a file only runs if it's executable or ends in `.sh` — a
+  file with neither is skipped.
+- Global hooks can be turned off in
+  [Settings → Global hooks](/spwn/reference/settings/#global-hooks); check it's on.
 - Check the **Hooks** tab in the session's Inspector for the last run's output and exit
-  status. See [Project Hooks](/spwn/reference/hooks/).
+  status. See [Hooks](/spwn/reference/hooks/).
 
 ## Where does spwn store my data?
 
