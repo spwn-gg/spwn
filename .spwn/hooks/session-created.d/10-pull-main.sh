@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# spwn 'session-created' hook. Runs synchronously with the worktree as the working directory.
+# spwn 'session-created' hook (repo scope, directory-based: `.spwn/hooks/session-created.d/`).
+# Runs synchronously with the worktree as the working directory. Add more steps as
+# sibling numbered files (20-foo.sh, 30-bar.sh) — they run in filename order.
 # Env: SPWN_EVENT SPWN_TERMINAL_ID SPWN_PROJECT_DIR SPWN_WORKTREE SPWN_BRANCH \
 #      SPWN_BASE_BRANCH SPWN_SESSION_ID  (SPWN_SESSION_ID is unset on session-created)
 set -euo pipefail
