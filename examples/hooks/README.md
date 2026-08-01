@@ -1,28 +1,35 @@
-# spwn project-hooks example
+# spwn hooks example
 
-A minimal illustration of spwn's [project hooks](https://spwn-gg.github.io/spwn/guides/hooks/).
+A minimal illustration of spwn's [hooks](https://spwn-gg.github.io/spwn/reference/hooks/).
 Copy the `.spwn/hooks/` tree into your own repo root and adapt.
 
 ## What it demonstrates
 
-- **One file per event** — `.spwn/hooks/<event>.sh` is the single entry point for that
-  event. It's a plain shell script, so it can orchestrate anything.
-- **Orchestration** — `session-created.sh` calls `setup/install.sh`, showing how the one
-  hook file drives other files/code (swap in `npm install`, `docker compose up`, etc.).
+- **Directory-based hooks** — each event is a `<event>.d/` folder whose scripts run in
+  **filename order**. Number them (`10-`, `20-`, …) to control ordering, and add or remove
+  a step by dropping in / deleting a file — no need to edit the others.
+- **Ordered steps** — `session-created.d/10-info.sh` runs before `20-install.sh` (swap in
+  `npm install`, `docker compose up`, etc.).
 - **Lifecycle events** — `session-created` (worktree ready), `session-ready` (Claude
   session id bound), `session-deleted` (just before the worktree is removed).
 - **Injected environment** — each script echoes the `SPWN_*` variables it receives.
-- **Opt-in** — no `.spwn/hooks/<event>.sh`, no hook for that event.
+- **Opt-in** — no `.spwn/hooks/<event>.sh` or `<event>.d/`, no hook for that event.
+
+A single script per event also works — `.spwn/hooks/<event>.sh` runs before any
+`<event>.d/` scripts. Use whichever fits; a folder is handy once you have more than one
+step.
 
 ## Files
 
 ```
 .spwn/hooks/
-  session-created.sh    # entry point; echoes env, calls setup/install.sh, writes a marker
-  session-ready.sh      # runs once the Claude session id is known
-  session-deleted.sh    # runs before the worktree is removed
-  setup/
-    install.sh          # a helper the created hook orchestrates
+  session-created.d/
+    10-info.sh       # echoes the injected environment
+    20-install.sh    # runs after 10-; put real setup here, writes a marker file
+  session-ready.d/
+    10-notify.sh     # runs once the Claude session id is known
+  session-deleted.d/
+    10-teardown.sh   # runs before the worktree is removed
 ```
 
 ## Try it
@@ -36,6 +43,12 @@ Copy the `.spwn/hooks/` tree into your own repo root and adapt.
    runs before the worktree is cleaned up.
 
 All scripts here are read-only/echo-style and safe to run.
+
+## Global vs repo
+
+These live in a **repo** (`.spwn/hooks/`), so they're committed and apply to that repo.
+To run something for **every** project, put the same files in the shared global folder at
+`~/.spwn/hooks/` instead — see the [Hooks reference](https://spwn-gg.github.io/spwn/reference/hooks/).
 
 ## Cookbook
 
