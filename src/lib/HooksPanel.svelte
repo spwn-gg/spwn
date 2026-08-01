@@ -110,7 +110,8 @@
 		<div class="muted">
 			Hooks run only for sessions with their own worktree. Add a
 			<code>~/.spwn/hooks/&lt;event&gt;.sh</code> (shared) or
-			<code>.spwn/hooks/&lt;event&gt;.sh</code> (this repo) file to use them.
+			<code>.spwn/hooks/&lt;event&gt;.sh</code> (this repo) file — or drop scripts into a
+			<code>&lt;event&gt;.d/</code> folder to run several in order — to use them.
 		</div>
 	{:else}
 		<div class="rows">
@@ -144,8 +145,9 @@
 			{/each}
 		</div>
 		<div class="foot muted">
-			Layered from <code>~/.spwn/hooks/&lt;event&gt;.sh</code> (shared, runs first) then
-			<code>.spwn/hooks/&lt;event&gt;.sh</code> (this repo).
+			Layered from <code>~/.spwn/hooks</code> (shared, runs first) then
+			<code>.spwn/hooks</code> (this repo); within each, a bare <code>&lt;event&gt;.sh</code>
+			then <code>&lt;event&gt;.d/*</code> in filename order.
 		</div>
 	{/if}
 </div>

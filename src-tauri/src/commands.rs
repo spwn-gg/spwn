@@ -1213,7 +1213,9 @@ fn record_hook_run(state: &AppState, terminal_id: &str, run: hooks::HookRun) {
             .or_default()
             .entry(run.event.clone())
             .or_default();
-        runs.retain(|r| r.scope != run.scope);
+        // Keyed by (scope, script): there can be several scripts per scope now
+        // (a bare `<event>.sh` plus `<event>.d/*`), each with its own last run.
+        runs.retain(|r| !(r.scope == run.scope && r.script == run.script));
         runs.push(run);
     }
     if let Some((event, script)) = failed {
@@ -1509,8 +1511,9 @@ fn fire_hooks_scope(
         event,
         scope,
     )
-    .map(|p| vec![(scope, p)])
-    .unwrap_or_default();
+    .into_iter()
+    .map(|p| (scope, p))
+    .collect();
     run_hook_entries(state, ctx, event, entries, headless)
 }
 

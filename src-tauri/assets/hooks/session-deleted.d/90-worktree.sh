@@ -1,12 +1,13 @@
 #!/bin/sh
-# spwn default global hook — session-deleted (GLOBAL scope).
+# spwn default global hook — session-deleted / worktree teardown (GLOBAL scope).
 #
-# Runs in the PROJECT dir, AFTER any repo-scope session-deleted hook (which runs inside
+# spwn owns this file: it may be OVERWRITTEN when spwn updates. To add your own teardown
+# steps, drop a separate script in this `session-deleted.d/` folder (name it to run
+# before this one, e.g. 10-my-teardown.sh). Delete this file to opt out.
+#
+# Runs in the PROJECT dir, AFTER any repo-scope session-deleted hooks (which run inside
 # the worktree). Removes the session's git worktree and deletes its branch. spwn passes
 # SPWN_WORKTREE and SPWN_BRANCH.
-#
-# This is spwn's built-in teardown, exposed as an editable hook. Delete this file to
-# fall back to spwn's native worktree/branch removal.
 
 git -C "$SPWN_PROJECT_DIR" rev-parse --show-toplevel >/dev/null 2>&1 || exit 0
 

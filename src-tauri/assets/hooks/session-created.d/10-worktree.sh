@@ -1,14 +1,15 @@
 #!/bin/sh
-# spwn default global hook — session-created (GLOBAL scope).
+# spwn default global hook — session-created / worktree (GLOBAL scope).
+#
+# spwn owns this file: it may be OVERWRITTEN when spwn updates. Don't edit it to add
+# your own steps — drop a separate script (e.g. 50-my-setup.sh) in this same
+# `session-created.d/` folder instead; they run in filename order after this one.
+# Delete this file to opt out of spwn's worktree creation entirely.
 #
 # Runs in the PROJECT dir, before the session's worktree exists, and creates it +
 # seeds heavy build dirs so an agent can build immediately. Reports the worktree back
 # to spwn via `::spwn:set::` lines. spwn passes the intended path/branch/base in
 # SPWN_WORKTREE / SPWN_BRANCH / SPWN_BASE_BRANCH.
-#
-# This is spwn's built-in worktree behavior, exposed as an editable hook. Delete this
-# file to fall back to spwn's native worktree creation; edit it to customize (e.g.
-# change the seeded dirs, or report a different worktree path).
 
 # Not a git repo → nothing to do; spwn keeps the session in the project dir.
 git rev-parse --show-toplevel >/dev/null 2>&1 || exit 0
