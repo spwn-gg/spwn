@@ -31,9 +31,13 @@ export type SessionStatus =
 	| 'error'
 	| 'idle';
 
+/** Which layer a hook came from: shared `~/.spwn/hooks` (global) or repo `.spwn/hooks`. */
+export type HookScope = 'global' | 'repo';
+
 /** One hook script's most recent run (mirrors hooks::HookRun). */
 export interface HookRun {
 	event: string;
+	scope: HookScope;
 	/** Script basename (e.g. "10-install.sh"). */
 	script: string;
 	exitCode?: number | null;
@@ -44,12 +48,19 @@ export interface HookRun {
 	at: number;
 }
 
-/** The discovered hook + last run for one lifecycle event (mirrors hooks::HookEventInfo). */
+/** One discovered hook script (scope + file) + its last run (mirrors hooks::HookScriptInfo). */
+export interface HookScriptInfo {
+	scope: HookScope;
+	/** Hook file basename (e.g. "session-created.sh"). */
+	script: string;
+	lastRun?: HookRun | null;
+}
+
+/** The discovered hook scripts (0–2, global first) for one lifecycle event
+ * (mirrors hooks::HookEventInfo). */
 export interface HookEventInfo {
 	event: string;
-	/** Hook file basename (e.g. "session-created.sh"), or null if none exists. */
-	script?: string | null;
-	lastRun?: HookRun | null;
+	scripts: HookScriptInfo[];
 }
 
 /** A session's hooks status (mirrors hooks::HooksStatus). */
@@ -148,6 +159,8 @@ export type WorktreeLocation = 'sibling' | 'internal' | 'appData';
 export interface Settings {
 	claudePath?: string | null;
 	worktreeLocation?: WorktreeLocation;
+	/** Whether the shared global hooks in ~/.spwn/hooks run (default true). */
+	globalHooksEnabled?: boolean;
 }
 
 export interface Block {

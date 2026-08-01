@@ -16,7 +16,7 @@
 		claudePermission,
 		claudeAnswer,
 		checkpointProject,
-		commitSessionTurn,
+		hooksRunTurn,
 		onClaudeEvent,
 		onClaudeExit
 	} from './ipc';
@@ -265,18 +265,13 @@
 			case 'result':
 				busy = false;
 				disarmStall();
-				// Snapshot the project's files at this turn (for undo / rewind-restore).
-				if (liveSession && lastAssistantUuid) {
-					checkpointProject(projectId, liveSession, lastAssistantUuid, 'turn').catch((e) =>
-						console.error('checkpoint failed', e)
+				// Fire the `session-turn` hooks: the default global hook commits the turn
+				// onto the session branch (mergeable history) and snapshots a checkpoint
+				// for undo/rewind. No-op for sessions without a worktree branch.
+				if (id && lastAssistantUuid) {
+					hooksRunTurn(id, lastAssistantUuid).catch((e) =>
+						console.error('session-turn hook failed', e)
 					);
-					// Commit onto the session's worktree branch so it carries mergeable
-					// history (no-op if this session has no branch). Keyed by terminal id.
-					if (id) {
-						commitSessionTurn(id, `spwn turn ${lastAssistantUuid.slice(0, 8)}`).catch((e) =>
-							console.error('commit failed', e)
-						);
-					}
 				}
 				// Keep the overlay until the JSONL reload brings the finished turn in
 				// (onReload clears it); fall back to a timer so it can't get stuck.

@@ -1,13 +1,14 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { getVersion } from '@tauri-apps/api/app';
-	import { getSettings, setSettings, detectClaude, pickFile } from './ipc';
+	import { getSettings, setSettings, detectClaude, pickFile, openGlobalHooksDir } from './ipc';
 	import { showSettings } from './stores';
 	import { checkForUpdate, updateStatus } from './updater';
 	import type { WorktreeLocation } from './types';
 
 	let claudePath = $state('');
 	let worktreeLocation = $state<WorktreeLocation>('sibling');
+	let globalHooksEnabled = $state(true);
 	let detected = $state<string | null>(null);
 	let saved = $state(false);
 	let version = $state('');
@@ -16,6 +17,7 @@
 		const s = await getSettings();
 		claudePath = s.claudePath ?? '';
 		worktreeLocation = s.worktreeLocation ?? 'sibling';
+		globalHooksEnabled = s.globalHooksEnabled ?? true;
 		detected = await detectClaude();
 		version = await getVersion();
 	});
@@ -32,10 +34,20 @@
 	async function save() {
 		await setSettings({
 			claudePath: claudePath.trim() || null,
-			worktreeLocation
+			worktreeLocation,
+			globalHooksEnabled
 		});
 		saved = true;
 		setTimeout(() => (saved = false), 1500);
+	}
+
+	let hooksMsg = $state('');
+	async function openHooksFolder() {
+		try {
+			await openGlobalHooksDir();
+		} catch (e) {
+			hooksMsg = String(e);
+		}
 	}
 
 	function close() {
@@ -89,6 +101,30 @@
 				</div>
 				<div class="hint">Applies to new sessions; existing worktrees stay where they are.</div>
 			</div>
+
+			<div class="field">
+				<div class="lbl">Global hooks</div>
+				<label class="toggle">
+					<input type="checkbox" bind:checked={globalHooksEnabled} />
+					<span>Run shared global hooks</span>
+				</label>
+				<div class="hint">
+					Shared scripts in <code>~/.spwn/hooks</code> run for every session in every project
+					(layered before each repo's own <code>.spwn/hooks</code>). spwn ships its built-in
+					worktree create/remove and per-turn commit + checkpoint here as editable defaults.
+					{#if !globalHooksEnabled}
+						Disabled — only per-repo <code>.spwn/hooks</code> run. spwn no longer manages
+						worktrees: new sessions run in the project folder with no isolated worktree or
+						branch, existing session worktrees aren't auto-removed on delete, and the shared
+						per-turn commit + checkpoint won't run.
+					{/if}
+				</div>
+				<div class="row">
+					<button class="browse" onclick={openHooksFolder}>Open hooks folder…</button>
+				</div>
+				{#if hooksMsg}<div class="hint">{hooksMsg}</div>{/if}
+			</div>
+
 			<div class="field">
 				<div class="lbl">Updates</div>
 				<div class="row">
@@ -168,6 +204,21 @@
 	.row {
 		display: flex;
 		gap: 8px;
+	}
+	.toggle {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		font-size: 13px;
+		color: #e6e6e6;
+		cursor: pointer;
+		margin-bottom: 2px;
+	}
+	.toggle input {
+		width: 15px;
+		height: 15px;
+		cursor: pointer;
+		accent-color: var(--accent);
 	}
 	.row input {
 		flex: 1 1 auto;

@@ -31,6 +31,11 @@ export function setSettings(settings: Settings): Promise<void> {
 	return invoke('set_settings', { settings });
 }
 
+/** Reveal the shared global hooks folder (~/.spwn/hooks) in Finder (creates it if needed). */
+export function openGlobalHooksDir(): Promise<void> {
+	return invoke('open_global_hooks_dir');
+}
+
 /** Auto-detected claude path (probe; ignores the configured override). */
 export function detectClaude(): Promise<string | null> {
 	return invoke('find_claude');
@@ -316,6 +321,12 @@ export function hooksStatus(terminalId: string): Promise<HooksStatus> {
 /** Manually re-run one event's hook for a session (resolves when the script finishes). */
 export function hooksRun(terminalId: string, event: string): Promise<void> {
 	return invoke('hooks_run', { terminalId, event });
+}
+
+/** Fire the `session-turn` hooks after a completed Claude turn (default: commit the
+ * turn onto the session branch + snapshot a checkpoint). No-op without a worktree. */
+export function hooksRunTurn(terminalId: string, turnUuid: string): Promise<void> {
+	return invoke('hooks_run_turn', { terminalId, turnUuid });
 }
 
 /** Fires when a session's hooks finish running (created/ready/deleted/manual re-run). */

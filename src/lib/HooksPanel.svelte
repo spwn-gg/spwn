@@ -70,23 +70,36 @@
 		openLog = openLog === event ? null : event;
 	}
 
-	/** Status dot for an event: 'run' while executing, else green/red for the last run. */
+	/** Status dot for an event: 'run' while executing, else worst-of the scripts' last
+	 * runs (red if any failed, green if any succeeded, grey if none ran yet). */
 	function dot(ev: HookEventInfo): '' | 'ok' | 'fail' | 'run' {
 		if (runningEvent === ev.event) return 'run';
-		if (!ev.lastRun) return '';
-		return ev.lastRun.ok ? 'ok' : 'fail';
+		const runs = ev.scripts.map((s) => s.lastRun).filter(Boolean) as { ok: boolean }[];
+		if (runs.length === 0) return '';
+		return runs.every((r) => r.ok) ? 'ok' : 'fail';
+	}
+
+	/** The discovered scripts for an event, labelled by scope (global first). */
+	function scriptsLabel(ev: HookEventInfo): string {
+		if (ev.scripts.length === 0) return '';
+		return ev.scripts.map((s) => `${s.scope}: ${s.script}`).join(', ');
 	}
 
 	function logText(ev: HookEventInfo): string {
-		// While running, show the live-streamed output as it arrives.
+		// While running, show the live-streamed output as it arrives (tagged by event,
+		// not scope, so global + repo output share one live view).
 		if (runningEvent === ev.event) {
 			const lines = liveLines[ev.event] ?? [];
-			return `$ ${ev.script ?? ev.event} (running…)\n${lines.join('\n') || '…'}`;
+			return `$ ${ev.event} (running…)\n${lines.join('\n') || '…'}`;
 		}
-		if (!ev.lastRun) return '(not run yet)';
-		const r = ev.lastRun;
-		const head = `$ ${r.script}${r.ok ? '' : ` (exit ${r.exitCode ?? '?'})`}`;
-		return `${head}\n${r.output || '(no output)'}`;
+		const parts = ev.scripts
+			.filter((s) => s.lastRun)
+			.map((s) => {
+				const r = s.lastRun!;
+				const head = `[${s.scope}] $ ${r.script}${r.ok ? '' : ` (exit ${r.exitCode ?? '?'})`}`;
+				return `${head}\n${r.output || '(no output)'}`;
+			});
+		return parts.length ? parts.join('\n\n') : '(not run yet)';
 	}
 </script>
 
@@ -96,7 +109,8 @@
 	{:else if !status?.available}
 		<div class="muted">
 			Hooks run only for sessions with their own worktree. Add a
-			<code>.spwn/hooks/&lt;event&gt;.sh</code> file in your repo to use them.
+			<code>~/.spwn/hooks/&lt;event&gt;.sh</code> (shared) or
+			<code>.spwn/hooks/&lt;event&gt;.sh</code> (this repo) file to use them.
 		</div>
 	{:else}
 		<div class="rows">
@@ -105,21 +119,21 @@
 					<span class="d {dot(ev)}" title={dot(ev) === 'run' ? 'running…' : dot(ev) || 'not run'}></span>
 					<span class="name">{ev.event}</span>
 					<span class="scripts">
-						{#if ev.script}
-							{ev.script}
+						{#if ev.scripts.length}
+							{scriptsLabel(ev)}
 						{:else}
 							<span class="none">no hook</span>
 						{/if}
 					</span>
 					<button
 						class="mini"
-						disabled={!ev.script && !ev.lastRun}
+						disabled={ev.scripts.length === 0 && dot(ev) === ''}
 						onclick={() => toggleLog(ev.event)}
 						title="Show last output">{openLog === ev.event ? 'Hide' : 'Output'}</button
 					>
 					<button
 						class="mini"
-						disabled={busy || !!runningEvent || !ev.script}
+						disabled={busy || !!runningEvent || ev.scripts.length === 0}
 						onclick={() => run(ev.event)}
 						title="Run this event's hook now">Run</button
 					>
@@ -130,7 +144,8 @@
 			{/each}
 		</div>
 		<div class="foot muted">
-			Discovered as <code>.spwn/hooks/&lt;event&gt;.sh</code> in your repo.
+			Layered from <code>~/.spwn/hooks/&lt;event&gt;.sh</code> (shared, runs first) then
+			<code>.spwn/hooks/&lt;event&gt;.sh</code> (this repo).
 		</div>
 	{/if}
 </div>

@@ -66,9 +66,9 @@
 
 	const branchShort = $derived((term?.branch ?? '').replace(/^cm\//, ''));
 	const lastHook = $derived.by(() => {
-		const runs = hooks?.events?.filter((e) => e.lastRun) ?? [];
+		const runs = (hooks?.events ?? []).flatMap((e) => e.scripts).filter((s) => s.lastRun);
 		if (!runs.length) return null;
-		return runs.every((e) => e.lastRun?.ok) ? 'ok' : 'failed';
+		return runs.every((s) => s.lastRun?.ok) ? 'ok' : 'failed';
 	});
 </script>
 

@@ -1,7 +1,13 @@
-//! Per-session git worktrees: each Claude session works on its own branch in an
-//! isolated worktree (managed under the app data dir), so sessions can run
-//! concurrently/autonomously without clobbering each other's files. Branches live
-//! in the user's real repo, so a session's work can be merged back with normal git.
+//! Git helpers for per-session worktrees: branch/commit/merge operations plus the
+//! worktree-location layout used to pick where a session's worktree goes. Each Claude
+//! session works on its own branch in an isolated worktree so sessions can run
+//! concurrently without clobbering each other's files; branches live in the user's real
+//! repo, so a session's work merges back with normal git.
+//!
+//! Note: creating/removing the worktree itself lives in the shared global hook scripts
+//! (`~/.spwn/hooks/session-created.sh` / `session-deleted.sh`), not here — this module
+//! only computes the target path (see `sibling_worktrees_dir` etc.) and handles the
+//! branch/commit/merge side that the app drives directly.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -10,22 +16,6 @@ use std::process::Command;
 /// Single source of truth — both interactive and scheduled session creation use it.
 /// (Historically this was `cm/`; existing branches keep their stored name.)
 pub const SESSION_BRANCH_PREFIX: &str = "spwn/";
-
-/// Heavy, gitignored dirs COW-cloned into a fresh worktree so an autonomous agent
-/// can build/run immediately instead of paying a cold `npm install` / `cargo build`.
-/// (A worktree only checks out *tracked* files, so these are otherwise absent.)
-/// `.git` is intentionally excluded — the worktree already has its own gitlink.
-const HEAVY_DIRS: &[&str] = &[
-    "node_modules",
-    "target",
-    ".venv",
-    "venv",
-    "dist",
-    "build",
-    ".next",
-    ".svelte-kit",
-    ".turbo",
-];
 
 /// Run `git -C <dir> <args>`, returning trimmed stdout on success or stderr on error.
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
@@ -133,39 +123,6 @@ pub fn ensure_git_excludes(repo: &Path, pattern: &str) {
     let _ = std::fs::write(&exclude, content);
 }
 
-/// Create a new worktree at `path` on a new `branch` forked from `base`.
-pub fn add_worktree(repo: &Path, path: &Path, branch: &str, base: &str) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("mkdir worktrees dir: {e}"))?;
-    }
-    git(
-        repo,
-        &["worktree", "add", "-b", branch, &path.to_string_lossy(), base],
-    )
-    .map(|_| ())
-}
-
-/// COW-clone (APFS clonefile) the heavy gitignored build dirs from `project_dir`
-/// into a freshly created `worktree`, so a session can build/run without a cold
-/// install. Block-level copy-on-write: near-instant, shares disk until written, and
-/// each worktree stays isolated on mutation. Best-effort — a failure just means the
-/// agent reinstalls. Skips dirs absent in the source or already present in the tree.
-pub fn seed_heavy_dirs(project_dir: &Path, worktree: &Path) {
-    for d in HEAVY_DIRS {
-        let src = project_dir.join(d);
-        let dst = worktree.join(d);
-        if !src.is_dir() || dst.exists() {
-            continue;
-        }
-        // `cp -cR`: clonefile on APFS, plain recursive copy elsewhere.
-        let _ = Command::new("/bin/cp")
-            .arg("-cR")
-            .arg(&src)
-            .arg(&dst)
-            .status();
-    }
-}
-
 /// Stage everything and commit on `dir`'s current branch, so the session branch
 /// carries real, mergeable history (and forks inherit committed work). Returns
 /// Ok(true) if a commit was made, Ok(false) if the tree was already clean. Uses a
@@ -193,23 +150,6 @@ pub fn commit_all(dir: &Path, message: &str) -> Result<bool, String> {
     } else {
         Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
     }
-}
-
-/// Remove a worktree (force, so uncommitted changes don't block it). Pair with
-/// [`delete_branch`] to also drop the branch it had checked out.
-pub fn remove_worktree(repo: &Path, path: &Path) -> Result<(), String> {
-    git(repo, &["worktree", "remove", "--force", &path.to_string_lossy()]).map(|_| ())
-}
-
-/// Delete `branch`, **including commits it alone carries** (`-D`, not `-d`), so a
-/// deleted session doesn't leave a `spwn/*` branch behind forever.
-///
-/// Call this only *after* [`remove_worktree`]: git refuses to delete a branch that's
-/// still checked out somewhere, so the order isn't optional. Unmerged commits become
-/// unreachable and are eventually GC'd — callers must warn first (the UI checks
-/// [`count_commits`]/[`is_clean`] via `session_merge_status` before confirming).
-pub fn delete_branch(repo: &Path, branch: &str) -> Result<(), String> {
-    git(repo, &["branch", "-D", branch]).map(|_| ())
 }
 
 /// The worktree path that currently has `branch` checked out, if any.
