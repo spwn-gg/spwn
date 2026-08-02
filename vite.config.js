@@ -1,32 +1,24 @@
 import { defineConfig } from "vite";
 import { sveltekit } from "@sveltejs/kit/vite";
 
+// The Rust web server (run `cargo run -- serve --no-open`, default :4317). In dev the
+// SPA is served by Vite (:1420) with HMR and proxies /api + /ws to the backend; in
+// production the backend embeds and serves the built SPA itself (no proxy).
 // @ts-expect-error process is a nodejs global
-const host = process.env.TAURI_DEV_HOST;
+const backend = process.env.SPWN_BACKEND || "http://127.0.0.1:4317";
 
 // https://vite.dev/config/
-export default defineConfig(async () => ({
+export default defineConfig({
   plugins: [sveltekit()],
-
-  // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
-  //
-  // 1. prevent Vite from obscuring rust errors
   clearScreen: false,
-  // 2. tauri expects a fixed port, fail if that port is not available
   server: {
     port: 1420,
-    strictPort: true,
-    host: host || false,
-    hmr: host
-      ? {
-          protocol: "ws",
-          host,
-          port: 1421,
-        }
-      : undefined,
+    proxy: {
+      "/api": backend,
+      "/ws": { target: backend.replace(/^http/, "ws"), ws: true },
+    },
     watch: {
-      // 3. tell Vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**"],
+      ignored: ["**/backend/**"],
     },
   },
-}));
+});

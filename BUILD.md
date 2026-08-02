@@ -3,11 +3,11 @@
 For **installing** the app, see the [Installation guide](https://spwn-gg.github.io/spwn/getting-started/installation/).
 This document is for **contributors** building spwn from source.
 
-## Native macOS build (on the host)
+## Build (CLI + web server)
 
-A native, double-clickable macOS app must be built **on the host** — a Tauri macOS
-app links the system WKWebView framework and the Apple SDK, which can't be done from
-a Linux container.
+spwn is a single CLI binary that runs an HTTP + WebSocket web server and serves the SPA
+in your browser — there is no desktop shell to bundle or sign. The built SPA is embedded
+into the binary at compile time (via `rust-embed`, reading `./build`).
 
 One-time, install Rust. Xcode Command Line Tools and Node are assumed present:
 
@@ -15,44 +15,58 @@ One-time, install Rust. Xcode Command Line Tools and Node are assumed present:
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 source "$HOME/.cargo/env"
 npm install
-npm run tauri build      # bundles the .app (see tauri.conf.json bundle.targets)
+npm run build:app        # build:all (SPA + sidecar) then cargo build --release
 ```
-
-The build bundles the **rmux** daemon as a sidecar binary so sessions are
-self-contained. The only host dependency at runtime is your own authenticated
-`claude` CLI — the bundled app runs it using your login.
 
 Output:
 
 ```
-src-tauri/target/release/bundle/macos/spwn.app
+backend/target/release/spwn
 ```
 
-Run it with:
+Run it:
 
 ```sh
-open "src-tauri/target/release/bundle/macos/spwn.app"
+spwn                 # = `spwn serve`: binds 127.0.0.1:4317 and opens your browser
+spwn serve --port 4317 --host 127.0.0.1 [--no-open]
 ```
 
-`bundle.targets` is set to `["app"]`; the `.dmg` wrapper is skipped because its
-Finder/AppleScript step needs an interactive GUI session. Builds are **ad-hoc
-signed** (`signingIdentity: "-"`) but not notarized — which is why a downloaded copy
-needs a one-time Gatekeeper approval (see the Installation guide).
+### Dev loop
+
+Two processes bridged by Vite's dev proxy (see `CLAUDE.md`):
+
+```sh
+npm run server       # cargo run -- serve --no-open   (backend on :4317)
+npm run dev          # Vite on :1420 with HMR, proxies /api + /ws → backend
+```
+
+### Distribution (flat layout)
+
+spwn talks to two local helpers: **rmux** (shell terminals) and **node** running the
+Claude Agent SDK **sidecar** (`resources/sidecar.mjs`, produced by `npm run build:sidecar`).
+Discovery prefers paths next to the executable, then env overrides, then `$PATH`:
+
+- `rmux`  → `<exe dir>/rmux`, else `RMUX_SDK_DAEMON_BINARY`, else `rmux` on `$PATH`.
+- `node`  → `<exe dir>/node`, else `CM_NODE`, else `node` on `$PATH` / common dirs / nvm.
+- sidecar → `CM_SIDECAR`, else `<exe dir>/sidecar.mjs` or `<exe dir>/resources/sidecar.mjs`,
+  else the repo source in dev.
+
+So a release tarball is just `spwn`, `rmux`, `node`, and `sidecar.mjs` in one directory;
+a Homebrew-style install (rmux/node as formula deps on `$PATH`) needs no bundling at all.
+Self-update is dropped — reinstall to upgrade.
 
 ## Development (Docker)
 
-Everything for development runs **inside Docker**. The container compiles the Rust
-backend and SvelteKit frontend, runs tests, and can run the windowed GUI on a
-virtual X display exposed to your browser via **noVNC** (a Tauri app built in the
-Linux container is a Linux binary, shown through noVNC rather than as a native macOS
-window).
+Development can run **inside Docker**. The container compiles the Rust backend and
+SvelteKit frontend, runs tests, and can run the web server with its port published to
+your host browser (the container's `claude` is a Linux build, authenticated separately).
 
 ```sh
-make image   # build the dev image (Rust + Node + Tauri deps + noVNC + Linux claude)
+make image   # build the dev image (Rust + Node + Linux claude)
 make login   # ONE-TIME: authenticate the container's claude
-make gui     # run the app; then open http://localhost:6080/vnc.html
+make gui     # run `spwn serve`; then open http://localhost:4317 on the host
 make fe      # npm install + build the SvelteKit frontend (produces ./build)
-make build   # compile the Tauri Rust crate
+make build   # compile the Rust crate
 make test    # frontend build + cargo test
 make sh      # interactive shell in the container
 make clean   # drop the cached volumes
@@ -69,11 +83,11 @@ The container's `claude` authenticates **separately** from your host. Run
 `claude-config` Docker volume; the container's `~/.claude` is isolated from your host
 `~/.claude`.
 
-### `tauri::generate_context!`
+### Embedded frontend
 
-The Rust crate embeds the built frontend at compile time, so every cargo step is
-preceded by a frontend build (`npm run build` → `./build`). The Makefile targets
-already chain this.
+The Rust crate embeds the built frontend at compile time (`rust-embed`, `#[folder =
+"../build"]`), so every release cargo build must be preceded by a frontend build
+(`npm run build` → `./build`). `npm run build:app` chains both.
 
 ## Building the docs
 

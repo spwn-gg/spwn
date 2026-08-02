@@ -1,7 +1,7 @@
 # Dev environment. Two services share one image and the same caches:
 #   * dev — headless builds, tests, the gated pty spike, and one-time claude login
-#   * gui — runs the Tauri window on a virtual X display, served to the browser
-#           via noVNC at http://localhost:6080/vnc.html
+#   * gui — runs `spwn serve` with its port published to the host browser at
+#           http://localhost:4317
 #
 # FULL HOST INTEGRATION: the host home ($HOME) is mounted at the SAME path (rw)
 # and HOME is set to it, so the container's `claude` uses the EXACT same paths as
@@ -21,7 +21,7 @@ x-common: &common
     - .:/work
     - "${HOME}:${HOME}" # real host home at the same path (code + ~/.claude)
     - cargo-registry:/usr/local/cargo/registry
-    - cargo-target:/work/src-tauri/target
+    - cargo-target:/work/backend/target
     - node-modules:/work/node_modules
   environment:
     - CARGO_TERM_COLOR=always
@@ -40,7 +40,7 @@ services:
   gui:
     <<: *common
     ports:
-      - "6080:6080" # noVNC web UI
+      - "4317:4317" # spwn web UI
     stdin_open: true
     tty: true
     command: bash scripts/gui.sh

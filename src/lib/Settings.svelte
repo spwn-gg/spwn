@@ -1,9 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { getVersion } from '@tauri-apps/api/app';
 	import { getSettings, setSettings, detectClaude, pickFile, openGlobalHooksDir } from './ipc';
 	import { showSettings } from './stores';
-	import { checkForUpdate, updateStatus } from './updater';
 	import type { WorktreeLocation } from './types';
 
 	let claudePath = $state('');
@@ -19,12 +17,13 @@
 		worktreeLocation = s.worktreeLocation ?? 'sibling';
 		globalHooksEnabled = s.globalHooksEnabled ?? true;
 		detected = await detectClaude();
-		version = await getVersion();
+		try {
+			const res = await fetch('/api/version');
+			if (res.ok) version = (await res.json()).version ?? '';
+		} catch {
+			/* version is cosmetic */
+		}
 	});
-
-	function checkUpdates() {
-		checkForUpdate({ silent: false });
-	}
 
 	async function browse() {
 		const p = await pickFile();
@@ -126,12 +125,8 @@
 			</div>
 
 			<div class="field">
-				<div class="lbl">Updates</div>
-				<div class="row">
-					<div class="version">spwn {version ? `v${version}` : ''}</div>
-					<button class="browse" onclick={checkUpdates}>Check for updates</button>
-				</div>
-				{#if $updateStatus}<div class="hint">{$updateStatus}</div>{/if}
+				<div class="lbl">Version</div>
+				<div class="version">spwn {version ? `v${version}` : ''}</div>
 			</div>
 		</div>
 

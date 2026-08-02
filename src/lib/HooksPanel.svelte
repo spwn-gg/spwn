@@ -2,7 +2,7 @@
 	import { onMount, onDestroy } from 'svelte';
 	import { hooksStatus, hooksRun, onHooksEvent, onHookOutput, onHookRunning } from './ipc';
 	import type { HooksStatus, HookEventInfo } from './types';
-	import type { UnlistenFn } from '@tauri-apps/api/event';
+	import type { UnlistenFn } from './ipc';
 
 	let { terminalId, onStatus }: { terminalId: string; onStatus?: (m: string) => void } = $props();
 

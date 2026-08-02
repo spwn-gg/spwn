@@ -1,59 +1,44 @@
 ---
 name: run-spwn
-description: Build the native macOS spwn.app locally (release bundle), and launch it. Use when asked to build, rebuild, bundle, package, make a release, produce the .app, or run/launch the desktop app.
+description: Build the release spwn CLI binary (SvelteKit SPA embedded) and optionally launch it (`spwn serve`) as a smoke check. Use when asked to build, rebuild, compile, package, produce the release binary, make a release build, or run/launch the app from a fresh build. For the iterative dev loop (hot-reload, restart backend), use the spwn-dev skill instead.
 ---
 
-# Build the spwn macOS .app
+# Build the release spwn binary
 
-spwn is a **Tauri v2** desktop app (Rust backend + SvelteKit/xterm.js
-frontend). The deliverable is a native `.app` bundle. The driver for this skill is
-**`build-app.sh`** — it builds the frontend, esbuild-bundles the sidecar, compiles
-the Rust crate in release mode, bundles the `.app`, and (with `--open`) launches it
-as a smoke check.
+spwn is a **CLI + web server** (Rust backend, axum HTTP + WebSocket) that serves a
+SvelteKit/xterm.js SPA in the browser. The deliverable is a single binary with the SPA
+embedded (`rust-embed`). The driver for this skill is **`build-app.sh`** — it builds the
+frontend, esbuild-bundles the Claude Agent SDK sidecar, compiles the Rust crate in
+release mode, and (with `--open`) starts the server and opens the browser as a smoke check.
 
-**This must run on the macOS host, NOT in Docker.** A macOS Tauri app links the
-system WKWebView and Apple SDK, which the Linux dev container cannot do. (`make
-build` only does a Linux *debug* compile, and currently can't even bundle — only
-the `-apple-darwin` sidecar binaries are committed, not Linux-arch ones.)
-
-Paths below are relative to the repo root (`<unit>/`).
+Paths below are relative to the repo root.
 
 ## Prerequisites
 
-Host tools (all already present on the dev machine; versions this was built with):
+- **Rust via rustup** — installed at `~/.cargo/bin` (a rustup shim). If missing:
+  `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y`
+- **Node + npm** — for the frontend build and the bundled sidecar.
+- **`claude` CLI** — required at *runtime* (spwn shells out to your authenticated host
+  `claude`); not needed to build.
 
-- **Xcode Command Line Tools** — `xcode-select -p` → `/Library/Developer/CommandLineTools`
-- **Rust via rustup** — `cargo 1.96.0`. Installed at `~/.cargo/bin` (a rustup shim).
-  If missing: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y`
-- **Node + npm** — `node v24.3.0`, `npm 11.4.2`
-
-No `apt-get` — this is a macOS host build, not the container.
-
-## Build (agent path)
-
-Run the driver from the repo root:
+## Build
 
 ```sh
 .claude/skills/run-spwn/build-app.sh
 ```
 
-It handles the two things that trip people up automatically:
-- puts `~/.cargo/bin` on `PATH` (cargo is a rustup shim, absent from a fresh
-  non-login shell — otherwise you get `cargo: command not found`),
-- runs `npm install` only if `node_modules` is missing.
-
-Then it runs `npm run tauri build` (which chains `beforeBuildCommand` =
-`npm run build:all` = SvelteKit build + esbuild sidecar bundle → release
-`cargo build` → bundle), verifies the bundle exists, and prints the freshly-built
-main binary's mtime so you can confirm it's *this* build, not a stale one.
+It puts `~/.cargo/bin` on `PATH` (cargo is a rustup shim, absent from a fresh non-login
+shell), runs `npm install` only if `node_modules` is missing, then runs `npm run build:app`
+(SvelteKit build → esbuild sidecar bundle → release `cargo build`), verifies the binary
+exists, and prints its mtime so you can confirm it's *this* build.
 
 **Output:**
 
 ```
-src-tauri/target/release/bundle/macos/spwn.app
+backend/target/release/spwn
 ```
 
-Cold build is a few minutes (Rust release compile); warm rebuild ~25s.
+Cold build is a few minutes (Rust release compile); warm rebuild is seconds.
 
 ### Build + launch smoke check
 
@@ -61,61 +46,44 @@ Cold build is a few minutes (Rust release compile); warm rebuild ~25s.
 .claude/skills/run-spwn/build-app.sh --open
 ```
 
-Adds: `open` the bundle, wait, and assert the app process is running. On success
-prints `OK: app process is running`. The window opens on the host display; verify
-it visually (the app shows a project tree / context composer — it reads your real
-`~/.claude/projects`).
+Adds: start `spwn serve` (which opens your browser), poll `GET /api/version`, and print
+`OK: server is serving …` on success. It leaves the server running (prints the pid) so you
+can use the app; Ctrl-C or `kill <pid>` to stop. Override the port with `SPWN_PORT`.
 
 ### Equivalent raw commands
 
-What the driver runs, if you need to do it by hand:
-
 ```sh
 export PATH="$HOME/.cargo/bin:$PATH"
-npm install                 # only needed if node_modules is absent
-npm run tauri build
-open "src-tauri/target/release/bundle/macos/spwn.app"
+npm install                 # only if node_modules is absent
+npm run build:app           # SPA + sidecar + release binary
+backend/target/release/spwn # = `spwn serve`: binds 127.0.0.1:4317 and opens the browser
 ```
 
 ## Test
 
 ```sh
-make test     # Docker: SvelteKit build + cargo test (the live claude spike stays gated off)
+cd backend && cargo test         # unit + integration tests
+make test                        # Docker: SvelteKit build + cargo test (the live claude spike stays gated off)
 ```
-
-Note: `make test` / `make build` run in Docker and exercise the **Linux** crate,
-not the macOS bundle. They're a code sanity check, not a `.app` build.
 
 ## Gotchas
 
 - **`cargo: command not found` in a fresh shell.** cargo is a rustup shim at
-  `~/.cargo/bin`, which a non-login shell doesn't add to `PATH`. The driver exports
-  it; if running raw, `export PATH="$HOME/.cargo/bin:$PATH"` first.
-- **Docker can't build the `.app`.** `make build` targets `aarch64-unknown-linux-gnu`
-  and fails at resource bundling with `resource path binaries/rmux-aarch64-unknown-linux-gnu
-  doesn't exist` — only `rmux-aarch64-apple-darwin` / `node-aarch64-apple-darwin` are
-  committed. The native host build uses those `-apple-darwin` binaries and works.
-- **Unsigned bundle → Gatekeeper.** First launch is blocked ("damaged"/"unverified
-  developer"). Right-click → Open, or `xattr -dr com.apple.quarantine "src-tauri/target/release/bundle/macos/spwn.app"`.
-- **No `.dmg`.** `bundle.targets` is `["app"]` only; the dmg wrapper's Finder/AppleScript
-  step needs an interactive GUI session, so it's intentionally skipped.
-- **Stale `.app` after a code change.** Nothing rebuilds the bundle automatically —
-  editing Rust/Svelte and re-running the existing `.app` runs the OLD code. Re-run
-  the driver. Confirm via the printed `spwn` binary mtime (the bundled
-  `node`/`rmux` sidecars keep older dates — that's expected, they're copied in
-  as-is, not recompiled).
-- **`claude` still required at runtime.** The bundled app shells out to your own
-  authenticated host `claude` CLI (path set in the app's Settings); the build does
-  not provide it.
+  `~/.cargo/bin`, which a non-login shell doesn't add to `PATH`. The driver exports it;
+  raw, run `export PATH="$HOME/.cargo/bin:$PATH"` first.
+- **`spwn UI not built` when the server serves `/`.** The SPA is embedded at compile time
+  from `./build`, so `npm run build` must run before the release `cargo build`. The driver
+  (`npm run build:app`) chains them; a bare `cargo build` embeds a stale/empty SPA.
+- **`claude` still required at runtime.** The binary shells out to your own authenticated
+  host `claude` CLI (path configurable in the app's Settings); the build doesn't provide it.
+- **Port already in use.** `spwn serve` fails to bind if `:4317` is taken. Pass a free port
+  (`SPWN_PORT=… build-app.sh --open`, or `spwn serve --port …`).
+- **Distributing the binary.** For a shippable tarball (spwn + rmux + node + sidecar in a
+  flat layout), use `scripts/release.sh`, not this skill.
 
 ## Troubleshooting
 
-- **`failed to run custom build command for spwn` →
-  `resource path binaries/rmux-…-linux-gnu doesn't exist`** — you're building in
-  Docker / for Linux. Build on the host instead (the driver does). The committed
-  sidecars are macOS-only.
-- **`Built application at … target/release/spwn` but no `.app`** — the
-  raw `cargo build` was run instead of `npm run tauri build`; only `tauri build`
-  invokes the bundler. Use the driver.
-- **Build "succeeds" but the app shows old behavior** — you launched a stale bundle.
-  Re-run the driver and check the binary mtime it prints.
+- **Build "succeeds" but the UI is blank / old** — the embedded SPA is stale. Re-run the
+  driver so `npm run build` runs before the release `cargo build`.
+- **Server starts but the chat sidecar never streams** — `node` isn't discoverable. spwn
+  looks next to the binary, then `CM_NODE`, then `$PATH`. Ensure a `node` is reachable.

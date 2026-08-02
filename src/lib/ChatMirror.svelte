@@ -20,7 +20,6 @@
 	import type { Turn, QuestionSpec } from './types';
 	import { marked } from 'marked';
 	import DOMPurify from 'dompurify';
-	import { openUrl } from '@tauri-apps/plugin-opener';
 
 	function renderMarkdown(text: string): string {
 		const html = marked.parse(text, { async: false, gfm: true, breaks: true }) as string;
@@ -47,7 +46,7 @@
 		const href = a?.getAttribute('href');
 		if (href && /^https?:\/\//.test(href)) {
 			e.preventDefault();
-			openUrl(href).catch(() => {});
+			window.open(href, '_blank', 'noopener');
 		}
 	}
 

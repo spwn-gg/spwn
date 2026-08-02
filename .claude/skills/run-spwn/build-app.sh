@@ -1,21 +1,20 @@
 #!/usr/bin/env bash
-# Build the native macOS spwn.app on the host (NOT Docker).
-#
-# A macOS Tauri app links the system WKWebView + Apple SDK, so the bundle can
-# only be produced on macOS. This script is the driver for the run-spwn
-# skill: it puts cargo on PATH, builds the frontend + sidecar + Rust crate, and
-# bundles the .app. Pass --open to launch the result for a smoke check.
+# Build the release spwn CLI binary (with the SPA embedded), and optionally smoke-check
+# that it serves. This is the driver for the run-spwn skill: it puts cargo on PATH,
+# builds the frontend + sidecar + release Rust binary, and (with --open) starts the
+# server, confirms it answers, and opens the browser.
 #
 # Usage:
 #   .claude/skills/run-spwn/build-app.sh           # build only
-#   .claude/skills/run-spwn/build-app.sh --open    # build, then launch
+#   .claude/skills/run-spwn/build-app.sh --open    # build, then serve + open browser
 set -euo pipefail
 
 # Repo root = three levels up from this script (.claude/skills/run-spwn/).
-UNIT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-cd "$UNIT"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+cd "$ROOT"
 
-APP="src-tauri/target/release/bundle/macos/spwn.app"
+BIN="backend/target/release/spwn"
+PORT="${SPWN_PORT:-4317}"
 
 # cargo is installed via rustup but is NOT on a fresh non-login shell's PATH here.
 export PATH="$HOME/.cargo/bin:$PATH"
@@ -24,58 +23,41 @@ if ! command -v cargo >/dev/null 2>&1; then
   exit 1
 fi
 
-# The frontend build (beforeBuildCommand) needs node_modules; tauri does not install.
 if [ ! -d node_modules ]; then
   echo "==> npm install (node_modules missing)"
   npm install
 fi
 
-# createUpdaterArtifacts is on, so the bundler signs the updater tarball — it needs
-# the local signing key in the env (no password). Missing key => build fails with a
-# clear tauri error; generate one with scripts/release.sh's instructions.
-KEY="$HOME/.tauri/spwn.key"
-if [ -f "$KEY" ]; then
-  export TAURI_SIGNING_PRIVATE_KEY="$(cat "$KEY")"
-  export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}"
-else
-  echo "warn: signing key $KEY not found — updater artifacts can't be signed" >&2
-fi
+echo "==> npm run build:app  (SPA build + sidecar bundle + release cargo build)"
+npm run build:app
 
-echo "==> npm run tauri build  (frontend + sidecar + release cargo build + bundle)"
-npm run tauri build
-
-if [ ! -d "$APP" ]; then
-  echo "error: build reported success but $APP is missing" >&2
+if [ ! -x "$BIN" ]; then
+  echo "error: build reported success but $BIN is missing" >&2
   exit 1
 fi
 
-# Backstop: guarantee the bundled `node` sidecar carries JIT entitlements. Tauri
-# signs it with the hardened runtime; without allow-jit, V8 aborts at startup
-# ("Failed to reserve virtual memory for CodeRange") and the chat sidecar never
-# streams — the chat just shows "..." forever. tauri.conf.json points macOS
-# signing at entitlements.plist, but re-sign node directly so this holds even if
-# the bundler doesn't apply app entitlements to an externalBin.
-NODE_BIN="$APP/Contents/MacOS/node"
-ENTS="src-tauri/entitlements.plist"
-if [ -f "$NODE_BIN" ] && [ -f "$ENTS" ]; then
-  echo "==> ensuring bundled node has JIT entitlements"
-  codesign --force --sign - --options runtime --entitlements "$ENTS" "$NODE_BIN"
-fi
-
 echo
-echo "==> built: $UNIT/$APP"
-# Show the freshly-compiled main binary's mtime so you can confirm it's THIS build,
-# not a stale bundle (the node/rmux sidecars keep their older dates — expected).
-stat -f '    %Sm  %N' "$APP/Contents/MacOS/spwn"
+echo "==> built: $ROOT/$BIN"
+# Show the freshly-compiled binary's mtime so you can confirm it's THIS build.
+stat -f '    %Sm  %N' "$BIN"
 
 if [ "${1:-}" = "--open" ]; then
-  echo "==> launching (ad-hoc signed, not notarized; a locally built app runs fine — a"
-  echo "    downloaded copy needs: xattr -dr com.apple.quarantine \"$APP\")"
-  open "$APP"
-  sleep 4
-  if pgrep -f "$APP/Contents/MacOS/spwn" >/dev/null; then
-    echo "    OK: app process is running"
+  echo "==> starting server for a smoke check on http://127.0.0.1:$PORT"
+  "$ROOT/$BIN" serve --port "$PORT" &   # opens the browser itself (no --no-open)
+  SRV=$!
+  ok=0
+  for _ in $(seq 1 50); do
+    if curl -fsS "http://127.0.0.1:$PORT/api/version" >/dev/null 2>&1; then ok=1; break; fi
+    kill -0 "$SRV" 2>/dev/null || break
+    sleep 0.2
+  done
+  if [ "$ok" = 1 ]; then
+    echo "    OK: server is serving ($(curl -fsS "http://127.0.0.1:$PORT/api/version"))"
+    echo "    left running (pid $SRV) — open http://127.0.0.1:$PORT; Ctrl-C or kill $SRV to stop."
+    wait "$SRV"
   else
-    echo "    WARN: app process not found after launch" >&2
+    echo "    WARN: server did not answer" >&2
+    kill "$SRV" 2>/dev/null || true
+    exit 1
   fi
 fi

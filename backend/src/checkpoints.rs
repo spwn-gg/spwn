@@ -63,11 +63,10 @@ pub struct CheckpointMeta {
     pub kind: String,
 }
 
-/// The app data dir spwn uses, resolved WITHOUT a running Tauri app — for the
-/// `spwn checkpoint` sub-CLI, which runs as a short-lived subprocess of a hook. Mirrors
-/// Tauri's `app_data_dir()` for the `com.markbarta.spwn` bundle id (macOS:
-/// `~/Library/Application Support/com.markbarta.spwn`). Keep the identifier in sync with
-/// `tauri.conf.json`.
+/// The app data dir spwn uses — the platform data dir joined with the app id
+/// `com.markbarta.spwn` (macOS: `~/Library/Application Support/com.markbarta.spwn`).
+/// Resolved standalone so the `spwn checkpoint` sub-CLI (a short-lived subprocess of a
+/// hook) and the server both agree on the same location.
 pub fn default_app_data_dir() -> Option<PathBuf> {
     directories::BaseDirs::new().map(|b| b.data_dir().join("com.markbarta.spwn"))
 }
@@ -130,7 +129,7 @@ fn clone_dir(src: &Path, dst: &Path) -> Result<(), String> {
             return Err("failed to snapshot the project directory".into());
         }
     }
-    // Prune heavy/ephemeral dirs at ANY depth (e.g. src-tauri/target, a/node_modules)
+    // Prune heavy/ephemeral dirs at ANY depth (e.g. backend/target, a/node_modules)
     // so a checkpoint's COW delta stays tiny across rebuilds.
     for d in PRUNE_DIRS {
         let _ = Command::new("/usr/bin/find")

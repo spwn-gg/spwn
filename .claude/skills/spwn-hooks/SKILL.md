@@ -9,8 +9,8 @@ spwn runs a user shell script on each session lifecycle event. A session works i
 own git worktree on a `spwn/<id>` branch; if the repo has a hook file for an event, spwn
 runs it. This skill scaffolds, inspects, tests, and removes those hooks.
 
-**Source of truth:** `src-tauri/src/hooks.rs` (discovery + env injection) and
-`src-tauri/src/commands.rs` (fire sites). The docs live at
+**Source of truth:** `backend/src/hooks.rs` (discovery + env injection) and
+`backend/src/commands.rs` (fire sites). The docs live at
 `docs/src/content/docs/guides/hooks.md`; a runnable sample is in `examples/hooks/`.
 
 ## The contract (what spwn actually does)

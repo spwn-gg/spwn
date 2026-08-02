@@ -1,7 +1,7 @@
 # Convenience targets — everything runs inside the Docker container.
 #
-# The Rust crate embeds the built frontend via `tauri::generate_context!`, so any
-# cargo step is preceded by a frontend build (`fe`). Frontend build is cheap.
+# The Rust crate embeds the built frontend (rust-embed reads ./build), so a release
+# build is preceded by a frontend build (`fe`). Frontend build is cheap.
 
 # Use a non-login shell (`bash -c`): the rust image exposes cargo/rustc and the
 # claude install via the image's PATH env, which a login shell (`-l`) would reset.
@@ -23,7 +23,7 @@ sh:
 login:
 	$(COMPOSE) run --rm dev claude
 
-## Run the Tauri GUI on a virtual display; open http://localhost:6080/vnc.html
+## Run the web server in the container; open http://localhost:4317 on the host.
 gui:
 	$(COMPOSE) run --rm --service-ports gui
 
@@ -31,19 +31,19 @@ gui:
 fe:
 	$(RUN) "npm install && npm run build"
 
-## Compile the Tauri Rust crate (frontend first).
+## Compile the Rust crate (frontend first, so the embed picks it up).
 build:
-	$(RUN) "npm install && npm run build && cd src-tauri && cargo build"
+	$(RUN) "npm install && npm run build && cd backend && cargo build"
 
 ## Run the test suite. The live claude spike stays gated/skipped here.
 test:
-	$(RUN) "npm install && npm run build && cd src-tauri && cargo test -- --nocapture"
+	$(RUN) "npm install && npm run build && cd backend && cargo test -- --nocapture"
 
 ## Run ONLY the gated M0 rewind/branch pty spike against a real, authed claude.
 ## Requires a one-time `make login` first (auth persists in the claude-config volume).
 spike:
 	$(COMPOSE) run --rm -e RUN_CLAUDE_PTY_SPIKE=1 dev bash -c \
-		"npm install && npm run build && cd src-tauri && cargo test --test rewind_branch_spike -- --nocapture --test-threads=1"
+		"npm install && npm run build && cd backend && cargo test --test rewind_branch_spike -- --nocapture --test-threads=1"
 
 ## Remove the cached volumes (cargo registry, target, node_modules).
 clean:

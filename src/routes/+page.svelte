@@ -3,7 +3,7 @@
 	import ProjectTree from '$lib/ProjectTree.svelte';
 	import PaneManager from '$lib/PaneManager.svelte';
 	import Settings from '$lib/Settings.svelte';
-	import UpdateBanner from '$lib/UpdateBanner.svelte';
+	import FileBrowser from '$lib/FileBrowser.svelte';
 	import QuestionPicker from '$lib/QuestionPicker.svelte';
 	import ConfirmDialog from '$lib/ConfirmDialog.svelte';
 	import {
@@ -25,7 +25,6 @@
 		hooksPromptAnswer
 	} from '$lib/ipc';
 	import type { SessionStatus, HookPromptEvent, PendingQuestion } from '$lib/types';
-	import { checkForUpdate } from '$lib/updater';
 	import { get } from 'svelte/store';
 
 	const MIN_W = 200;
@@ -91,8 +90,6 @@
 			}
 			setClaudeStatus(e.terminalId, e.status);
 		});
-		// Check GitHub for a newer release; silent if offline / endpoint unset.
-		checkForUpdate({ silent: true });
 	});
 	onDestroy(() => {
 		window.removeEventListener('keydown', onKey);
@@ -155,8 +152,8 @@
 </script>
 
 <div class="app">
-	<UpdateBanner />
-	<div class="titlebar" data-tauri-drag-region>
+	<FileBrowser />
+	<div class="titlebar">
 		<button
 			class="collapse"
 			title={collapsed ? 'Show sidebar (⌘B)' : 'Hide sidebar (⌘B)'}
@@ -235,7 +232,8 @@
 		--radius: 6px;
 		--radius-lg: 8px;
 		--titlebar-h: 30px;
-		--traffic-pad: 78px;
+		/* No macOS traffic lights in the browser — just a normal left padding. */
+		--traffic-pad: 12px;
 	}
 	:global(html, body) {
 		margin: 0;
