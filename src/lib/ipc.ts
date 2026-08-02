@@ -1,9 +1,11 @@
-// Typed wrappers over the Tauri command/event interface.
-// Tauri auto-converts camelCase JS arg keys to the snake_case Rust params.
+// Typed wrappers over the backend HTTP + WebSocket interface.
+//
+// `invoke` posts to `POST /api/invoke/:command` with a JSON body of camelCase args
+// (the backend renames them to the snake_case Rust params). `listen` subscribes to a
+// topic on one shared WebSocket that carries every `{topic, payload}` event — the
+// same shape Tauri delivered, so the wrappers below are unchanged.
 
-import { invoke } from '@tauri-apps/api/core';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { open as openDialog } from '@tauri-apps/plugin-dialog';
+import { writable } from 'svelte/store';
 import type {
 	CheckpointMeta,
 	ClaudeEvent,
@@ -20,6 +22,121 @@ import type {
 	TerminalKind,
 	Turn
 } from './types';
+
+// ---------------------------------------------------------------------------
+// Transport: HTTP invoke + a single multiplexed WebSocket
+// ---------------------------------------------------------------------------
+
+export type UnlistenFn = () => void;
+
+/** Call a backend command. Rejects with the backend's error text on non-2xx. */
+async function invoke<T = void>(command: string, args: Record<string, unknown> = {}): Promise<T> {
+	const res = await fetch(`/api/invoke/${command}`, {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify(args)
+	});
+	if (!res.ok) {
+		throw new Error((await res.text()) || res.statusText);
+	}
+	const text = await res.text();
+	return (text ? JSON.parse(text) : undefined) as T;
+}
+
+type EventHandler = (e: { payload: unknown }) => void;
+
+/** One WebSocket for the whole app; dispatches `{topic, payload}` frames to
+ *  per-topic subscribers and reconnects with backoff. */
+class WsBus {
+	private ws: WebSocket | null = null;
+	private handlers = new Map<string, Set<EventHandler>>();
+	private backoff = 500;
+
+	private connect() {
+		if (typeof window === 'undefined') return;
+		const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+		const ws = new WebSocket(`${proto}://${location.host}/ws`);
+		this.ws = ws;
+		ws.onopen = () => {
+			this.backoff = 500;
+		};
+		ws.onmessage = (ev) => {
+			let msg: { topic: string; payload: unknown };
+			try {
+				msg = JSON.parse(ev.data);
+			} catch {
+				return;
+			}
+			const set = this.handlers.get(msg.topic);
+			if (set) for (const cb of [...set]) cb({ payload: msg.payload });
+		};
+		ws.onclose = () => {
+			this.ws = null;
+			const delay = this.backoff;
+			this.backoff = Math.min(this.backoff * 2, 10000);
+			setTimeout(() => this.connect(), delay);
+		};
+		ws.onerror = () => ws.close();
+	}
+
+	on(topic: string, cb: EventHandler): UnlistenFn {
+		if (!this.ws) this.connect();
+		let set = this.handlers.get(topic);
+		if (!set) {
+			set = new Set();
+			this.handlers.set(topic, set);
+		}
+		set.add(cb);
+		return () => {
+			set!.delete(cb);
+			if (set!.size === 0) this.handlers.delete(topic);
+		};
+	}
+}
+
+const bus = new WsBus();
+
+/** Subscribe to a backend event topic; resolves to an unsubscribe fn. */
+function listen<T>(topic: string, cb: (e: { payload: T }) => void): Promise<UnlistenFn> {
+	return Promise.resolve(bus.on(topic, cb as EventHandler));
+}
+
+// ---------------------------------------------------------------------------
+// Server-side file browser (replaces the native file/folder dialog)
+// ---------------------------------------------------------------------------
+
+export interface FsEntry {
+	name: string;
+	path: string;
+	isDir: boolean;
+}
+export interface FsListing {
+	path: string;
+	parent: string | null;
+	entries: FsEntry[];
+}
+
+/** List a directory on the host machine (for the pick-a-path UI). */
+export async function fsList(path: string | null, includeFiles: boolean): Promise<FsListing> {
+	const q = new URLSearchParams();
+	if (path) q.set('path', path);
+	if (includeFiles) q.set('files', 'true');
+	const res = await fetch(`/api/fs/list?${q.toString()}`);
+	if (!res.ok) throw new Error((await res.text()) || res.statusText);
+	return res.json();
+}
+
+/** An open request for the global `FileBrowser` modal; it resolves the promise. */
+export type FileBrowserRequest = {
+	/** Pick a directory (true) or a file (false). */
+	directory: boolean;
+	resolve: (path: string | null) => void;
+};
+export const fileBrowserRequest = writable<FileBrowserRequest | null>(null);
+
+function pickPath(directory: boolean): Promise<string | null> {
+	return new Promise((resolve) => fileBrowserRequest.set({ directory, resolve }));
+}
 
 // --- Settings ---
 
@@ -41,10 +158,9 @@ export function detectClaude(): Promise<string | null> {
 	return invoke('find_claude');
 }
 
-/** Native file picker; returns the chosen path or null. */
-export async function pickFile(): Promise<string | null> {
-	const result = await openDialog({ directory: false, multiple: false });
-	return typeof result === 'string' ? result : null;
+/** File picker (server-side browser); returns the chosen host path or null. */
+export function pickFile(): Promise<string | null> {
+	return pickPath(false);
 }
 
 // --- Projects ---
@@ -152,10 +268,9 @@ export function clearTerminalAttention(terminalId: string): Promise<void> {
 	return invoke('clear_terminal_attention', { terminalId });
 }
 
-/** Native folder picker; returns the chosen path or null. */
-export async function pickDirectory(): Promise<string | null> {
-	const result = await openDialog({ directory: true, multiple: false });
-	return typeof result === 'string' ? result : null;
+/** Folder picker (server-side browser); returns the chosen host path or null. */
+export function pickDirectory(): Promise<string | null> {
+	return pickPath(true);
 }
 
 // --- Terminals ---

@@ -5,20 +5,20 @@
 //! the rewind/branch automation. Output is emitted on `pty://output/<id>`
 //! (base64-encoded raw bytes); exit on `pty://exit/<id>`.
 
+use crate::server::hub::EventHub;
 use base64::Engine;
 use rmux_sdk::{
     EnsureSession, EnsureSessionPolicy, Pane, PaneOutputChunk, PaneOutputStart, ProcessSpec, Rmux,
     SessionName, TerminalSizeSpec,
 };
 use std::path::Path;
-use tauri::{async_runtime, AppHandle, Emitter};
 
 /// A live rmux-backed session: the pane (input, resize) and the output-forwarding
 /// task (aborted on detach). The session is killed by name when deleted, so we
 /// don't retain the Session handle here.
 pub struct RmuxSession {
     pub pane: Pane,
-    pub output_task: async_runtime::JoinHandle<()>,
+    pub output_task: tokio::task::JoinHandle<()>,
 }
 
 /// Create (or reattach to) an rmux session named `session_name` running `argv` in
@@ -28,7 +28,7 @@ pub struct RmuxSession {
 /// reattached with its process intact; a missing one is created fresh from `argv`.
 pub async fn spawn_rmux_session(
     rmux: &Rmux,
-    app: AppHandle,
+    hub: EventHub,
     id: &str,
     session_name: &str,
     argv: Vec<String>,
@@ -56,20 +56,18 @@ pub async fn spawn_rmux_session(
     let out_event = format!("pty://output/{id}");
     let exit_event = format!("pty://exit/{id}");
     let pane_out = pane.clone();
-    let output_task = async_runtime::spawn(async move {
+    let output_task = tokio::spawn(async move {
         let engine = base64::engine::general_purpose::STANDARD;
         match pane_out.output_stream_starting_at(PaneOutputStart::Now).await {
             Ok(mut stream) => loop {
                 match stream.next().await {
                     Ok(Some(PaneOutputChunk::Bytes { bytes, .. })) => {
-                        if app.emit(&out_event, engine.encode(&bytes)).is_err() {
-                            break;
-                        }
+                        hub.emit(&out_event, engine.encode(&bytes));
                     }
                     Ok(Some(PaneOutputChunk::Lag(notice))) => {
                         // After a lag, replay the recent buffer so the terminal
                         // re-syncs rather than dropping content silently.
-                        let _ = app.emit(&out_event, engine.encode(&notice.recent.bytes));
+                        hub.emit(&out_event, engine.encode(&notice.recent.bytes));
                     }
                     // PaneOutputChunk is non-exhaustive; ignore future variants.
                     Ok(Some(_)) => {}
@@ -77,10 +75,10 @@ pub async fn spawn_rmux_session(
                 }
             },
             Err(e) => {
-                let _ = app.emit(&out_event, engine.encode(format!("\r\n[rmux output error: {e}]").as_bytes()));
+                hub.emit(&out_event, engine.encode(format!("\r\n[rmux output error: {e}]").as_bytes()));
             }
         }
-        let _ = app.emit(&exit_event, ());
+        hub.emit(&exit_event, ());
     });
 
     Ok(RmuxSession { pane, output_task })

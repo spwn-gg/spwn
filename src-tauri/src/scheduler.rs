@@ -10,27 +10,25 @@ use crate::state::AppState;
 use crate::store::{ContextBlock, ScheduledTask, TerminalRec};
 use chrono::{DateTime, Datelike, Duration as ChronoDuration, Local, LocalResult, NaiveTime, TimeZone};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
 
-/// Start the background scheduler: one task that ticks every 30s and fires any
-/// due scheduled task. Uses Tauri's managed runtime (there is no tokio reactor on
-/// the main thread during setup).
-pub fn start_scheduler(app: AppHandle) {
-    tauri::async_runtime::spawn(async move {
+/// Start the background scheduler: one tokio task that ticks every 30s and fires any
+/// due scheduled task. Runs as long as the server process is alive.
+pub fn start_scheduler(state: Arc<AppState>) {
+    tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(30));
         loop {
             interval.tick().await;
-            tick(&app);
+            tick(&state);
         }
     });
 }
 
 /// Check every project's tasks and fire the ones that are due.
-fn tick(app: &AppHandle) {
+fn tick(state: &Arc<AppState>) {
     let now = Local::now();
-    let state = app.state::<AppState>();
 
     // Collect due (project, task, scheduled-instant) without holding the lock across firing.
     let due: Vec<(String, String, i64)> = {
@@ -66,17 +64,15 @@ fn tick(app: &AppHandle) {
                 }
             }
         }
-        fire(app, project_id, task_id);
+        fire(state, project_id, task_id);
     }
-    persist(&state);
+    persist(state);
 }
 
 /// Fire one scheduled task now: create a session in the project, spawn a headless
 /// read-only run seeded with (optionally) the project context + the task prompt.
 /// Safe to call from the scheduler tick or a Run-now command.
-pub fn fire(app: &AppHandle, project_id: &str, task_id: &str) {
-    let state = app.state::<AppState>();
-
+pub fn fire(state: &Arc<AppState>, project_id: &str, task_id: &str) {
     // Guard against a second concurrent run of the same task.
     if !state.running_tasks.lock().insert(task_id.to_string()) {
         return;
@@ -117,7 +113,7 @@ pub fn fire(app: &AppHandle, project_id: &str, task_id: &str) {
         state.running_tasks.lock().remove(task_id);
         return;
     };
-    persist(&state);
+    persist(state);
 
     // A scheduled run gets its own worktree+branch too, so it's isolated from (and
     // concurrency-safe with) any interactive session. Falls back to the project dir
@@ -129,7 +125,7 @@ pub fn fire(app: &AppHandle, project_id: &str, task_id: &str) {
             // Create the worktree via the `session-created` hooks (native fallback
             // inside). Headless run → no UI window, so hook prompts auto-decline.
             if let Some(new_cwd) =
-                setup_session_worktree(&state, &terminal_id, &directory, &repo, base, true)
+                setup_session_worktree(state, &terminal_id, &directory, &repo, base, true)
             {
                 run_dir = new_cwd;
             }
@@ -144,35 +140,34 @@ pub fn fire(app: &AppHandle, project_id: &str, task_id: &str) {
     }
     first_turn.push_str(&task.prompt);
 
-    let Some(claude_bin) = resolved_claude(&state) else {
-        finalize(app, project_id, &terminal_id, task_id, false);
+    let Some(claude_bin) = resolved_claude(state) else {
+        finalize(state, project_id, &terminal_id, task_id, false);
         return;
     };
     let cwd_path = std::fs::canonicalize(&run_dir).unwrap_or_else(|_| PathBuf::from(&run_dir));
 
     // Callback observes the sidecar: bind the session id on init, finalize on end.
-    let app_cb = app.clone();
+    let state_cb = state.clone();
     let project_cb = project_id.to_string();
     let terminal_cb = terminal_id.clone();
     let task_cb = task_id.to_string();
     let agent = crate::claude::spawn_claude_agent_headless(
-        app.clone(),
+        state.clone(),
         &terminal_id,
         &cwd_path,
         &claude_bin,
         move |ev| match ev {
             HeadlessEvent::Init { session_id } => {
-                let state = app_cb.state::<AppState>();
-                bind_session(&state, &terminal_cb, &session_id);
+                bind_session(&state_cb, &terminal_cb, &session_id);
                 // Refresh the tree so the bound session (and its title) show up.
-                let _ = app_cb.emit("projects://changed", Vec::<String>::new());
+                state_cb.hub.emit("projects://changed", Vec::<String>::new());
             }
             HeadlessEvent::Result { ok } => {
-                finalize(&app_cb, &project_cb, &terminal_cb, &task_cb, ok);
+                finalize(&state_cb, &project_cb, &terminal_cb, &task_cb, ok);
             }
             HeadlessEvent::Error { message } => {
                 eprintln!("scheduled run failed: {message}");
-                finalize(&app_cb, &project_cb, &terminal_cb, &task_cb, false);
+                finalize(&state_cb, &project_cb, &terminal_cb, &task_cb, false);
             }
         },
     );
@@ -191,27 +186,26 @@ pub fn fire(app: &AppHandle, project_id: &str, task_id: &str) {
         }
         Err(e) => {
             eprintln!("scheduled run spawn failed: {e}");
-            finalize(app, project_id, &terminal_id, task_id, false);
+            finalize(state, project_id, &terminal_id, task_id, false);
         }
     }
 }
 
 /// Wind down a finished (or failed) scheduled run: flag the session for attention,
 /// clear the running guard, tear down the agent, and notify the UI.
-fn finalize(app: &AppHandle, project_id: &str, terminal_id: &str, task_id: &str, ok: bool) {
-    let state = app.state::<AppState>();
+fn finalize(state: &AppState, project_id: &str, terminal_id: &str, task_id: &str, ok: bool) {
     {
         let mut store = state.store.lock();
         if let Some(t) = store.terminal_mut(terminal_id) {
             t.needs_attention = true;
         }
     }
-    persist(&state);
+    persist(state);
     state.running_tasks.lock().remove(task_id);
     if let Some(mut agent) = state.claude_agents.lock().remove(terminal_id) {
         agent.kill();
     }
-    let _ = app.emit(
+    state.hub.emit(
         "schedule://fired",
         serde_json::json!({ "projectId": project_id, "terminalId": terminal_id, "ok": ok }),
     );

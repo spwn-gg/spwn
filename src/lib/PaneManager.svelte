@@ -37,7 +37,7 @@
 </script>
 
 <div class="panes">
-	<div class="tabbar" data-tauri-drag-region>
+	<div class="tabbar">
 		{#each $openTabs as tab (tab.key)}
 			{@const attn = tabAttn(tab, $activeTabKey)}
 			<div class="tab" class:active={tab.key === $activeTabKey} class:attn={attn === 'blocked' || attn === 'done'} class:err={attn === 'error'}>

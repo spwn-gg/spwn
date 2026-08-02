@@ -1,4 +1,5 @@
-//! Tauri commands: the frontend → backend contract.
+//! Backend commands: the frontend → backend contract, exposed over
+//! `POST /api/invoke/:command` (see `server::routes`).
 //!
 //! spwn owns "projects" (a named working directory grouping terminals).
 //! A terminal is a shell or a `claude` TUI, both running in an rmux pty under
@@ -16,16 +17,15 @@ use crate::transcript::{read_transcript as parse_transcript, Turn};
 use rmux_sdk::{EnsureSession, EnsureSessionPolicy, Rmux, RmuxBuilder, SessionName, TerminalSizeSpec};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
 // Projects
 // ---------------------------------------------------------------------------
 
-#[tauri::command]
-pub fn list_projects(state: State<AppState>) -> Vec<ProjectRec> {
+pub fn list_projects(state: &AppState) -> Vec<ProjectRec> {
     let mut projects = state.store.lock().projects.clone();
     // Show Claude's own session name (ai-title) for claude terminals.
     for project in &mut projects {
@@ -64,9 +64,8 @@ fn cached_session_title(state: &AppState, session_id: &str) -> Option<String> {
     Some(title)
 }
 
-#[tauri::command]
 pub fn create_project(
-    state: State<AppState>,
+    state: &AppState,
     name: String,
     directory: String,
 ) -> Result<ProjectRec, String> {
@@ -84,7 +83,6 @@ pub fn create_project(
 }
 
 /// Open a directory in VS Code (Insiders first, then stable), via LaunchServices.
-#[tauri::command]
 pub fn open_in_vscode(path: String) -> Result<(), String> {
     for app in ["Visual Studio Code - Insiders", "Visual Studio Code"] {
         if let Ok(status) = std::process::Command::new("open")
@@ -101,8 +99,7 @@ pub fn open_in_vscode(path: String) -> Result<(), String> {
     Err("Visual Studio Code not found".to_string())
 }
 
-#[tauri::command]
-pub async fn delete_project(state: State<'_, AppState>, project_id: String) -> Result<(), String> {
+pub async fn delete_project(state: &AppState, project_id: String) -> Result<(), String> {
     let terminal_ids: Vec<String> = {
         let store = state.store.lock();
         store
@@ -121,9 +118,8 @@ pub async fn delete_project(state: State<'_, AppState>, project_id: String) -> R
 // ---------------------------------------------------------------------------
 
 /// Add a block to a project's context space (kind: "note" | "session").
-#[tauri::command]
 pub fn add_context_block(
-    state: State<AppState>,
+    state: &AppState,
     project_id: String,
     kind: String,
     label: String,
@@ -138,9 +134,8 @@ pub fn add_context_block(
 }
 
 /// Add a file's contents as a context block (capped to keep the prompt sane).
-#[tauri::command]
 pub fn add_context_file(
-    state: State<AppState>,
+    state: &AppState,
     project_id: String,
     path: String,
 ) -> Result<(), String> {
@@ -162,9 +157,8 @@ pub fn add_context_file(
     })
 }
 
-#[tauri::command]
 pub fn remove_context_block(
-    state: State<AppState>,
+    state: &AppState,
     project_id: String,
     block_id: String,
 ) -> Result<(), String> {
@@ -179,9 +173,8 @@ pub fn remove_context_block(
 }
 
 /// Replace the text/label of an existing context block (inline edit).
-#[tauri::command]
 pub fn update_context_block(
-    state: State<AppState>,
+    state: &AppState,
     project_id: String,
     block_id: String,
     text: String,
@@ -200,9 +193,8 @@ pub fn update_context_block(
 
 /// Reorder a project's context blocks to match the given id order. Ids not
 /// present are ignored; missing ids keep their relative order at the end.
-#[tauri::command]
 pub fn reorder_context(
-    state: State<AppState>,
+    state: &AppState,
     project_id: String,
     order: Vec<String>,
 ) -> Result<(), String> {
@@ -217,8 +209,7 @@ pub fn reorder_context(
     Ok(())
 }
 
-#[tauri::command]
-pub fn clear_context(state: State<AppState>, project_id: String) -> Result<(), String> {
+pub fn clear_context(state: &AppState, project_id: String) -> Result<(), String> {
     {
         let mut store = state.store.lock();
         if let Some(p) = store.project_mut(&project_id) {
@@ -265,10 +256,8 @@ pub struct OpenTerminalSpec {
     pub permission_mode: Option<String>,
 }
 
-#[tauri::command]
 pub async fn open_terminal(
-    app: AppHandle,
-    state: State<'_, AppState>,
+    state: Arc<AppState>,
     spec: OpenTerminalSpec,
 ) -> Result<String, String> {
     let (terminal_id, kind, cwd, resume_src, fork, is_new, project_dir, fork_base) = {
@@ -386,10 +375,10 @@ pub async fn open_terminal(
         // Claude sessions run via the Agent SDK sidecar (a node process), NOT rmux.
         // The chat UI drives it over stdin/stdout; its `init` event supplies the
         // session id (bound by the frontend via set_terminal_session).
-        let claude_bin = resolved_claude(state.inner())
+        let claude_bin = resolved_claude(&state)
             .ok_or_else(|| "claude binary not found (set its path in Settings)".to_string())?;
         let agent = crate::claude::spawn_claude_agent(
-            app.clone(),
+            state.clone(),
             &terminal_id,
             &cwd_path,
             resume_src.as_deref(),
@@ -409,7 +398,7 @@ pub async fn open_terminal(
     let session_name = rmux_session_name(&terminal_id);
     let session = spawn_rmux_session(
         rmux,
-        app.clone(),
+        state.hub.clone(),
         &terminal_id,
         &session_name,
         argv,
@@ -427,21 +416,19 @@ pub async fn open_terminal(
 /// Detach a terminal tab. A shell's rmux session stays alive for reattach (we just
 /// drop the output task); a Claude sidecar is killed (the conversation persists in
 /// its JSONL and reattaches via `--resume`).
-#[tauri::command]
-pub fn close_terminal(state: State<AppState>, terminal_id: String) -> Result<(), String> {
+pub fn close_terminal(state: &AppState, terminal_id: String) -> Result<(), String> {
     if let Some(session) = state.sessions.lock().remove(&terminal_id) {
         session.output_task.abort();
     }
     if let Some(mut agent) = state.claude_agents.lock().remove(&terminal_id) {
         agent.kill();
-        clear_claude_status(state.inner(), &terminal_id);
+        clear_claude_status(state, &terminal_id);
     }
     Ok(())
 }
 
-#[tauri::command]
 pub async fn delete_terminal(
-    state: State<'_, AppState>,
+    state: &AppState,
     project_id: String,
     terminal_id: String,
 ) -> Result<(), String> {
@@ -495,9 +482,8 @@ pub async fn delete_terminal(
 }
 
 /// Merge a session's branch back into its base branch (manual, user-triggered).
-#[tauri::command]
 pub fn merge_session(
-    state: State<AppState>,
+    state: &AppState,
     project_id: String,
     terminal_id: String,
 ) -> Result<String, String> {
@@ -547,9 +533,8 @@ pub struct MergeStatus {
 
 /// Compute a merge preview for a session: target branch, how far ahead it is, which
 /// files it changes, and whether anything blocks the merge.
-#[tauri::command]
 pub fn session_merge_status(
-    state: State<AppState>,
+    state: &AppState,
     project_id: String,
     terminal_id: String,
 ) -> Result<MergeStatus, String> {
@@ -598,9 +583,8 @@ pub fn session_merge_status(
 /// Commit a session's working changes onto its worktree branch, so the branch
 /// carries real history to merge/fork from. No-op (Ok) if the session has no
 /// worktree branch or nothing changed.
-#[tauri::command]
 pub fn commit_session_turn(
-    state: State<AppState>,
+    state: &AppState,
     terminal_id: String,
     message: String,
 ) -> Result<(), String> {
@@ -648,7 +632,7 @@ pub struct GitBranches {
 }
 
 /// Resolve a project's directory path from the store.
-fn project_dir(state: &State<AppState>, project_id: &str) -> Result<String, String> {
+fn project_dir(state: &AppState, project_id: &str) -> Result<String, String> {
     state
         .store
         .lock()
@@ -659,8 +643,7 @@ fn project_dir(state: &State<AppState>, project_id: &str) -> Result<String, Stri
 
 /// The git status of a project's main checkout (safe to call on any project —
 /// returns `is_repo: false` when the directory isn't a git repo).
-#[tauri::command]
-pub fn git_repo_status(state: State<AppState>, project_id: String) -> Result<RepoStatus, String> {
+pub fn git_repo_status(state: &AppState, project_id: String) -> Result<RepoStatus, String> {
     let dir = project_dir(&state, &project_id)?;
     let dir = Path::new(&dir);
     if gitwt::repo_root(dir).is_none() {
@@ -678,8 +661,7 @@ pub fn git_repo_status(state: State<AppState>, project_id: String) -> Result<Rep
 }
 
 /// List a project's local and remote-tracking branches.
-#[tauri::command]
-pub fn git_branches(state: State<AppState>, project_id: String) -> Result<GitBranches, String> {
+pub fn git_branches(state: &AppState, project_id: String) -> Result<GitBranches, String> {
     let dir = project_dir(&state, &project_id)?;
     let dir = Path::new(&dir);
     if gitwt::repo_root(dir).is_none() {
@@ -693,9 +675,8 @@ pub fn git_branches(state: State<AppState>, project_id: String) -> Result<GitBra
 }
 
 /// Check out an existing branch in a project's main checkout.
-#[tauri::command]
 pub fn git_checkout(
-    state: State<AppState>,
+    state: &AppState,
     project_id: String,
     branch: String,
 ) -> Result<(), String> {
@@ -704,9 +685,8 @@ pub fn git_checkout(
 }
 
 /// Create a new branch off HEAD and switch to it.
-#[tauri::command]
 pub fn git_create_branch(
-    state: State<AppState>,
+    state: &AppState,
     project_id: String,
     name: String,
 ) -> Result<(), String> {
@@ -718,34 +698,31 @@ pub fn git_create_branch(
 /// project dir is resolved (and cloned) up front so the store `Mutex` is never
 /// held across the await.
 async fn run_net<F>(
-    state: State<'_, AppState>,
+    state: &AppState,
     project_id: String,
     op: F,
 ) -> Result<String, String>
 where
     F: FnOnce(&Path) -> Result<String, String> + Send + 'static,
 {
-    let dir = project_dir(&state, &project_id)?;
-    tauri::async_runtime::spawn_blocking(move || op(Path::new(&dir)))
+    let dir = project_dir(state, &project_id)?;
+    tokio::task::spawn_blocking(move || op(Path::new(&dir)))
         .await
         .map_err(|e| format!("git task failed: {e}"))?
 }
 
 /// Fetch all remotes for a project's repo.
-#[tauri::command]
-pub async fn git_fetch(state: State<'_, AppState>, project_id: String) -> Result<String, String> {
+pub async fn git_fetch(state: &AppState, project_id: String) -> Result<String, String> {
     run_net(state, project_id, |d| gitwt::fetch(d)).await
 }
 
 /// Fast-forward-only pull.
-#[tauri::command]
-pub async fn git_pull(state: State<'_, AppState>, project_id: String) -> Result<String, String> {
+pub async fn git_pull(state: &AppState, project_id: String) -> Result<String, String> {
     run_net(state, project_id, |d| gitwt::pull(d)).await
 }
 
 /// Push the current branch (setting upstream if it has none yet).
-#[tauri::command]
-pub async fn git_push(state: State<'_, AppState>, project_id: String) -> Result<String, String> {
+pub async fn git_push(state: &AppState, project_id: String) -> Result<String, String> {
     run_net(state, project_id, |d| {
         let set_upstream = gitwt::upstream_branch(d).is_none();
         gitwt::push(d, set_upstream)
@@ -754,8 +731,7 @@ pub async fn git_push(state: State<'_, AppState>, project_id: String) -> Result<
 }
 
 /// VS Code "Sync": fetch, fast-forward pull, then push. Stops at the first error.
-#[tauri::command]
-pub async fn git_sync(state: State<'_, AppState>, project_id: String) -> Result<String, String> {
+pub async fn git_sync(state: &AppState, project_id: String) -> Result<String, String> {
     run_net(state, project_id, |d| {
         gitwt::fetch(d)?;
         gitwt::pull(d)?;
@@ -793,15 +769,14 @@ pub(crate) fn bind_session(state: &AppState, terminal_id: &str, session_id: &str
 }
 
 /// Persist a discovered claude session id onto a terminal.
-#[tauri::command]
 pub fn set_terminal_session(
-    state: State<AppState>,
+    state: &AppState,
     project_id: String,
     terminal_id: String,
     session_id: String,
 ) -> Result<(), String> {
     let _ = project_id; // terminal ids are globally unique; kept for the FE contract
-    bind_session(state.inner(), &terminal_id, &session_id);
+    bind_session(state, &terminal_id, &session_id);
     Ok(())
 }
 
@@ -809,9 +784,8 @@ pub fn set_terminal_session(
 // Scheduled tasks (per-project, headless read-only runs on a daily/weekly cadence)
 // ---------------------------------------------------------------------------
 
-#[tauri::command]
 pub fn add_scheduled_task(
-    state: State<AppState>,
+    state: &AppState,
     project_id: String,
     name: String,
     prompt: String,
@@ -840,10 +814,9 @@ pub fn add_scheduled_task(
     Ok(task)
 }
 
-#[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn update_scheduled_task(
-    state: State<AppState>,
+    state: &AppState,
     project_id: String,
     task_id: String,
     name: String,
@@ -874,9 +847,8 @@ pub fn update_scheduled_task(
     Ok(())
 }
 
-#[tauri::command]
 pub fn set_scheduled_task_enabled(
-    state: State<AppState>,
+    state: &AppState,
     project_id: String,
     task_id: String,
     enabled: bool,
@@ -893,9 +865,8 @@ pub fn set_scheduled_task_enabled(
     Ok(())
 }
 
-#[tauri::command]
 pub fn remove_scheduled_task(
-    state: State<AppState>,
+    state: &AppState,
     project_id: String,
     task_id: String,
 ) -> Result<(), String> {
@@ -911,19 +882,17 @@ pub fn remove_scheduled_task(
 
 /// Fire a scheduled task immediately (the "Run now" button). Reuses the same
 /// headless path as the scheduler tick.
-#[tauri::command]
 pub fn run_scheduled_task_now(
-    app: AppHandle,
+    state: Arc<AppState>,
     project_id: String,
     task_id: String,
 ) -> Result<(), String> {
-    crate::scheduler::fire(&app, &project_id, &task_id);
+    crate::scheduler::fire(&state, &project_id, &task_id);
     Ok(())
 }
 
 /// Clear the persisted attention flag on a terminal (called when its session is viewed).
-#[tauri::command]
-pub fn clear_terminal_attention(state: State<AppState>, terminal_id: String) -> Result<(), String> {
+pub fn clear_terminal_attention(state: &AppState, terminal_id: String) -> Result<(), String> {
     {
         let mut store = state.store.lock();
         if let Some(t) = store.terminal_mut(&terminal_id) {
@@ -948,16 +917,14 @@ pub fn clear_terminal_attention(state: State<AppState>, terminal_id: String) -> 
 // ---------------------------------------------------------------------------
 
 /// Send a user turn to a Claude session's sidecar.
-#[tauri::command]
-pub fn claude_send(state: State<AppState>, terminal_id: String, text: String) -> Result<(), String> {
+pub fn claude_send(state: &AppState, terminal_id: String, text: String) -> Result<(), String> {
     let payload = serde_json::json!({ "t": "user", "text": text }).to_string();
     send_to_agent(&state, &terminal_id, &payload)
 }
 
 /// Answer a tool-permission request for a Claude session.
-#[tauri::command]
 pub fn claude_permission(
-    state: State<AppState>,
+    state: &AppState,
     terminal_id: String,
     id: String,
     allow: bool,
@@ -970,9 +937,8 @@ pub fn claude_permission(
 }
 
 /// Change the permission mode live (the Shift-Tab affordance): default → acceptEdits → plan.
-#[tauri::command]
 pub fn claude_set_mode(
-    state: State<AppState>,
+    state: &AppState,
     terminal_id: String,
     mode: String,
 ) -> Result<(), String> {
@@ -981,16 +947,14 @@ pub fn claude_set_mode(
 }
 
 /// Interrupt the in-flight turn (Esc).
-#[tauri::command]
-pub fn claude_interrupt(state: State<AppState>, terminal_id: String) -> Result<(), String> {
+pub fn claude_interrupt(state: &AppState, terminal_id: String) -> Result<(), String> {
     let payload = serde_json::json!({ "t": "interrupt" }).to_string();
     send_to_agent(&state, &terminal_id, &payload)
 }
 
 /// Answer an AskUserQuestion picker (id is the tool_use id from the question event).
-#[tauri::command]
 pub fn claude_answer(
-    state: State<AppState>,
+    state: &AppState,
     terminal_id: String,
     id: String,
     text: String,
@@ -1002,10 +966,8 @@ pub fn claude_answer(
 /// Rewind a session to an earlier turn: restart its sidecar resumed at `anchor_uuid`,
 /// truncating the conversation to that point (later turns become an abandoned branch
 /// the transcript no longer renders).
-#[tauri::command]
 pub fn claude_rewind(
-    app: AppHandle,
-    state: State<AppState>,
+    state: Arc<AppState>,
     terminal_id: String,
     anchor_uuid: String,
 ) -> Result<(), String> {
@@ -1020,15 +982,15 @@ pub fn claude_rewind(
             .ok_or_else(|| "this session hasn't started yet".to_string())?;
         (sid, t.cwd.clone())
     };
-    let claude_bin = resolved_claude(state.inner())
+    let claude_bin = resolved_claude(&state)
         .ok_or_else(|| "claude binary not found (set its path in Settings)".to_string())?;
     let cwd_path = std::fs::canonicalize(&cwd).unwrap_or_else(|_| PathBuf::from(&cwd));
     if let Some(mut agent) = state.claude_agents.lock().remove(&terminal_id) {
         agent.kill();
-        clear_claude_status(state.inner(), &terminal_id);
+        clear_claude_status(&state, &terminal_id);
     }
     let agent = crate::claude::spawn_claude_agent(
-        app,
+        state.clone(),
         &terminal_id,
         &cwd_path,
         Some(session_id.as_str()),
@@ -1044,10 +1006,8 @@ pub fn claude_rewind(
 
 /// Rewind AND restore the project files to that turn's checkpoint. Restores in the
 /// window where the sidecar is dead (no race), after saving a pre-restore snapshot.
-#[tauri::command]
 pub fn claude_rewind_restore(
-    app: AppHandle,
-    state: State<AppState>,
+    state: Arc<AppState>,
     terminal_id: String,
     anchor_uuid: String,
     restore: bool,
@@ -1063,13 +1023,13 @@ pub fn claude_rewind_restore(
             .ok_or_else(|| "this session hasn't started yet".to_string())?;
         (sid, t.cwd.clone())
     };
-    let claude_bin = resolved_claude(state.inner())
+    let claude_bin = resolved_claude(&state)
         .ok_or_else(|| "claude binary not found (set its path in Settings)".to_string())?;
     let cwd_path = std::fs::canonicalize(&cwd).unwrap_or_else(|_| PathBuf::from(&cwd));
     // 1. Kill the sidecar so the working tree is idle.
     if let Some(mut agent) = state.claude_agents.lock().remove(&terminal_id) {
         agent.kill();
-        clear_claude_status(state.inner(), &terminal_id);
+        clear_claude_status(&state, &terminal_id);
     }
     // 2. Restore files (safety snapshot first) while the agent is dead.
     if restore {
@@ -1083,7 +1043,7 @@ pub fn claude_rewind_restore(
     }
     // 3. Respawn resumed at the anchor.
     let agent = crate::claude::spawn_claude_agent(
-        app,
+        state.clone(),
         &terminal_id,
         &cwd_path,
         Some(session_id.as_str()),
@@ -1144,9 +1104,7 @@ pub(crate) fn session_worktree_path(
 
 /// Emit an advisory error toast to the UI (non-fatal; the session continues).
 fn emit_store_error(state: &AppState, msg: &str) {
-    if let Some(app) = state.app.lock().as_ref() {
-        let _ = app.emit("store://error", msg.to_string());
-    }
+    state.hub.emit("store://error", msg.to_string());
 }
 
 /// Build a hook context from a session's worktree + owning project dir, reading its
@@ -1225,9 +1183,7 @@ fn record_hook_run(state: &AppState, terminal_id: &str, run: hooks::HookRun) {
 }
 
 fn emit_hooks_event(state: &AppState, terminal_id: &str) {
-    if let Some(app) = state.app.lock().as_ref() {
-        let _ = app.emit(&format!("hooks://event/{terminal_id}"), ());
-    }
+    state.hub.emit(&format!("hooks://event/{terminal_id}"), ());
 }
 
 /// One streamed line of a running hook's output, pushed to the session's panel live.
@@ -1262,15 +1218,13 @@ fn set_hook_running(state: &AppState, terminal_id: &str, event: Option<&str>) {
             }
         }
     }
-    if let Some(app) = state.app.lock().as_ref() {
-        let _ = app.emit(
-            "hooks://running",
-            HookRunning {
-                terminal_id: terminal_id.to_string(),
-                event: event.map(str::to_string),
-            },
-        );
-    }
+    state.hub.emit(
+        "hooks://running",
+        HookRunning {
+            terminal_id: terminal_id.to_string(),
+            event: event.map(str::to_string),
+        },
+    );
 }
 
 #[derive(Clone, Serialize)]
@@ -1284,8 +1238,7 @@ struct ClaudeStatusPayload {
 /// Also persists a coarse attention flag (+reason) on the record for needs-you states,
 /// so a restart (no live sidecar) still surfaces it. Called from the sidecar reader
 /// thread — reaches shared state via the managed `AppState`.
-pub(crate) fn emit_claude_status(app: &AppHandle, terminal_id: &str, status: SessionStatus) {
-    let state = app.state::<AppState>();
+pub(crate) fn emit_claude_status(state: &AppState, terminal_id: &str, status: SessionStatus) {
     {
         let mut map = state.claude_status.lock();
         if status == SessionStatus::Idle {
@@ -1314,10 +1267,10 @@ pub(crate) fn emit_claude_status(app: &AppHandle, terminal_id: &str, status: Ses
             }
         }
         if changed {
-            persist(&state);
+            persist(state);
         }
     }
-    let _ = app.emit(
+    state.hub.emit(
         "claude://status",
         ClaudeStatusPayload {
             terminal_id: terminal_id.to_string(),
@@ -1333,25 +1286,21 @@ fn clear_claude_status(state: &AppState, terminal_id: &str) {
     {
         state.claude_status.lock().remove(terminal_id);
     }
-    if let Some(app) = state.app.lock().as_ref() {
-        let _ = app.emit(
-            "claude://status",
-            ClaudeStatusPayload {
-                terminal_id: terminal_id.to_string(),
-                status: SessionStatus::Idle,
-            },
-        );
-    }
+    state.hub.emit(
+        "claude://status",
+        ClaudeStatusPayload {
+            terminal_id: terminal_id.to_string(),
+            status: SessionStatus::Idle,
+        },
+    );
 }
 
 /// Stream one output line of a running hook to the session's Hooks panel.
 fn emit_hook_output(state: &AppState, terminal_id: &str, event: &str, line: &str) {
-    if let Some(app) = state.app.lock().as_ref() {
-        let _ = app.emit(
-            &format!("hooks://output/{terminal_id}"),
-            HookOutput { event, line },
-        );
-    }
+    state.hub.emit(
+        &format!("hooks://output/{terminal_id}"),
+        HookOutput { event, line },
+    );
 }
 
 /// How long a blocking hook prompt waits for a user answer before auto-declining, so a
@@ -1389,29 +1338,24 @@ fn emit_hook_prompt(
     id: &str,
     request: &hooks::HookPromptRequest,
 ) {
-    if let Some(app) = state.app.lock().as_ref() {
-        let _ = app.emit(
-            "hooks://prompt",
-            HookPromptPayload { terminal_id, id, event, request },
-        );
-    }
+    state.hub.emit(
+        "hooks://prompt",
+        HookPromptPayload { terminal_id, id, event, request },
+    );
 }
 
 /// Tell the UI to dismiss a hook prompt card (it's been answered/timed out).
 fn emit_hook_prompt_close(state: &AppState, terminal_id: &str, id: &str) {
-    if let Some(app) = state.app.lock().as_ref() {
-        let _ = app.emit(
-            "hooks://prompt-close",
-            HookPromptClosePayload { terminal_id, id },
-        );
-    }
+    state.hub.emit(
+        "hooks://prompt-close",
+        HookPromptClosePayload { terminal_id, id },
+    );
 }
 
 /// Resolve a blocking hook prompt with the user's chosen label(s). Called from the UI;
 /// unblocks the synchronous hook runner waiting on the matching receiver.
-#[tauri::command]
 pub async fn hooks_prompt_answer(
-    state: State<'_, AppState>,
+    state: &AppState,
     id: String,
     answer: String,
 ) -> Result<(), String> {
@@ -1588,9 +1532,8 @@ pub(crate) fn setup_session_worktree(
 }
 
 /// Discovered hooks + last-run results for a session's worktree, for the Hooks panel.
-#[tauri::command]
 pub async fn hooks_status(
-    state: State<'_, AppState>,
+    state: &AppState,
     terminal_id: String,
 ) -> Result<hooks::HooksStatus, String> {
     let Some(ctx) = hook_ctx_by_id(&state, &terminal_id) else {
@@ -1613,9 +1556,8 @@ pub async fn hooks_status(
 
 /// Manually re-run one event's hook for a session. Runs synchronously (awaits the
 /// script), so the caller's refresh sees the result immediately.
-#[tauri::command]
 pub async fn hooks_run(
-    state: State<'_, AppState>,
+    state: &AppState,
     terminal_id: String,
     event: String,
 ) -> Result<(), String> {
@@ -1629,9 +1571,8 @@ pub async fn hooks_run(
 /// default global script commits the turn onto the session branch and snapshots a
 /// checkpoint). No-op for sessions without a worktree branch. Called by the frontend
 /// once each turn finishes.
-#[tauri::command]
 pub async fn hooks_run_turn(
-    state: State<'_, AppState>,
+    state: &AppState,
     terminal_id: String,
     turn_uuid: String,
 ) -> Result<(), String> {
@@ -1662,9 +1603,8 @@ fn session_checkpoint_dir(state: &AppState, project_id: &str, session_id: &str) 
 }
 
 /// Snapshot the project directory (kind: "turn" | "baseline" | ...).
-#[tauri::command]
 pub fn checkpoint_project(
-    state: State<AppState>,
+    state: &AppState,
     project_id: String,
     session_id: String,
     turn_uuid: String,
@@ -1679,9 +1619,8 @@ pub fn checkpoint_project(
 /// Restore the project's working files to a checkpoint. Takes a pre-restore safety
 /// snapshot first (returned, so the restore is itself undoable). The caller must
 /// ensure the session isn't mid-turn (the frontend gates on `busy`).
-#[tauri::command]
 pub fn restore_checkpoint(
-    state: State<AppState>,
+    state: &AppState,
     project_id: String,
     session_id: String,
     checkpoint_id: String,
@@ -1700,8 +1639,7 @@ pub fn restore_checkpoint(
     Ok(safety)
 }
 
-#[tauri::command]
-pub fn list_checkpoints(state: State<AppState>, session_id: String) -> Vec<CheckpointMeta> {
+pub fn list_checkpoints(state: &AppState, session_id: String) -> Vec<CheckpointMeta> {
     app_data_dir(&state)
         .map(|ad| checkpoints::list(&ad, &session_id))
         .unwrap_or_default()
@@ -1721,9 +1659,8 @@ fn send_to_agent(state: &AppState, terminal_id: &str, payload: &str) -> Result<(
 // Shell terminal I/O (rmux)
 // ---------------------------------------------------------------------------
 
-#[tauri::command]
 pub async fn write_to_pty(
-    state: State<'_, AppState>,
+    state: &AppState,
     pty_id: String,
     data: String,
 ) -> Result<(), String> {
@@ -1734,9 +1671,8 @@ pub async fn write_to_pty(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
 pub async fn resize_pty(
-    state: State<'_, AppState>,
+    state: &AppState,
     pty_id: String,
     cols: u16,
     rows: u16,
@@ -1754,18 +1690,15 @@ pub async fn resize_pty(
 
 /// Auto-detected `claude` path (probe only; ignores the configured override).
 /// Used by Settings to show "detected: …".
-#[tauri::command]
 pub fn find_claude() -> Option<String> {
     find_claude_bin().map(|p| p.to_string_lossy().into_owned())
 }
 
-#[tauri::command]
-pub fn get_settings(state: State<AppState>) -> Settings {
+pub fn get_settings(state: &AppState) -> Settings {
     state.settings.lock().clone()
 }
 
-#[tauri::command]
-pub fn set_settings(state: State<AppState>, settings: Settings) -> Result<(), String> {
+pub fn set_settings(state: &AppState, settings: Settings) -> Result<(), String> {
     *state.settings.lock() = settings;
     let path = state.settings_path.lock().clone();
     if let Some(path) = path {
@@ -1780,7 +1713,6 @@ pub fn set_settings(state: State<AppState>, settings: Settings) -> Result<(), St
 
 /// Reveal the shared global hooks folder (`~/.spwn/hooks`) in Finder, creating it first
 /// if needed. So users can view/edit the default hook scripts spwn installed.
-#[tauri::command]
 pub fn open_global_hooks_dir() -> Result<(), String> {
     let dir = hooks::global_hooks_dir().ok_or_else(|| "could not resolve ~/.spwn/hooks".to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -1803,7 +1735,6 @@ pub(crate) fn resolved_claude(state: &AppState) -> Option<PathBuf> {
     find_claude_bin()
 }
 
-#[tauri::command]
 pub fn read_transcript(session_id: String) -> Vec<Turn> {
     match crate::projects::locate_session(&session_id) {
         Some(path) => parse_transcript(&path),
@@ -1864,9 +1795,7 @@ pub(crate) fn persist(state: &AppState) {
     };
     if let Err(e) = state.store.lock().save(&path) {
         eprintln!("failed to persist projects.json: {e}");
-        if let Some(app) = state.app.lock().as_ref() {
-            let _ = app.emit("store://error", format!("Couldn't save changes to disk: {e}"));
-        }
+        state.hub.emit("store://error", format!("Couldn't save changes to disk: {e}"));
     }
 }
 

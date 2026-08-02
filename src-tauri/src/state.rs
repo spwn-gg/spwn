@@ -1,9 +1,10 @@
-//! Shared backend state, managed by Tauri and accessed from commands.
+//! Shared backend state, wrapped in an `Arc` and handed to commands + the server.
 
 use crate::claude::{ClaudeAgent, SessionStatus};
 use crate::hooks::HookRun;
 use crate::projects::ProjectsWatcher;
 use crate::pty::RmuxSession;
+use crate::server::hub::EventHub;
 use crate::settings::Settings;
 use crate::store::ProjectStore;
 use rmux_sdk::Rmux;
@@ -12,12 +13,13 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::time::SystemTime;
-use tauri::AppHandle;
 use tokio::sync::OnceCell;
 
 /// Live in-memory state plus the persisted spwn project store.
 #[derive(Default)]
 pub struct AppState {
+    /// Event bus to connected browsers (replaces the Tauri `AppHandle` emit).
+    pub hub: EventHub,
     /// Lazily-connected rmux daemon handle.
     pub rmux: OnceCell<Rmux>,
     /// Live shell terminals (rmux), keyed by terminal id.
@@ -34,8 +36,6 @@ pub struct AppState {
     pub settings: Mutex<Settings>,
     /// Path to settings.json (resolved at startup).
     pub settings_path: Mutex<Option<PathBuf>>,
-    /// App handle (set at startup) so background helpers can emit events.
-    pub app: Mutex<Option<AppHandle>>,
     /// Cache of Claude session titles keyed by session id → (file mtime, title),
     /// so list_projects doesn't re-read every transcript on each refresh.
     pub title_cache: Mutex<HashMap<String, (SystemTime, String)>>,

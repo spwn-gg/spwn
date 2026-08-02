@@ -4,12 +4,12 @@
 //! its stdin and forward its JSON-line events to the frontend as
 //! `claude://event/<terminal_id>` (and `claude://exit/<terminal_id>` on close).
 
+use crate::state::AppState;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter};
 
 /// Live status of a Claude session, derived in the sidecar's stdout reader so it
 /// works for background sessions with no mounted pane. Serialized camelCase to match
@@ -80,7 +80,7 @@ enum ReaderMode {
 /// renders the streamed events forwarded from stdout.
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_claude_agent(
-    app: AppHandle,
+    state: Arc<AppState>,
     terminal_id: &str,
     cwd: &Path,
     resume: Option<&str>,
@@ -90,7 +90,7 @@ pub fn spawn_claude_agent(
     permission_mode: Option<&str>,
 ) -> anyhow::Result<ClaudeAgent> {
     spawn_inner(
-        app,
+        state,
         terminal_id,
         cwd,
         resume,
@@ -108,14 +108,14 @@ pub fn spawn_claude_agent(
 /// additionally invokes `on_event` for init/result/error so the scheduler can bind
 /// the session id, flag completion, and tear the agent down.
 pub fn spawn_claude_agent_headless(
-    app: AppHandle,
+    state: Arc<AppState>,
     terminal_id: &str,
     cwd: &Path,
     claude_path: &Path,
     on_event: impl Fn(HeadlessEvent) + Send + 'static,
 ) -> anyhow::Result<ClaudeAgent> {
     spawn_inner(
-        app,
+        state,
         terminal_id,
         cwd,
         None,
@@ -130,7 +130,7 @@ pub fn spawn_claude_agent_headless(
 
 #[allow(clippy::too_many_arguments)]
 fn spawn_inner(
-    app: AppHandle,
+    state: Arc<AppState>,
     terminal_id: &str,
     cwd: &Path,
     resume: Option<&str>,
@@ -226,12 +226,10 @@ fn spawn_inner(
                     if let Some(st) = parse_status(&l) {
                         if last_status != Some(st) {
                             last_status = Some(st);
-                            crate::commands::emit_claude_status(&app, &status_term_id, st);
+                            crate::commands::emit_claude_status(&state, &status_term_id, st);
                         }
                     }
-                    if app.emit(&event, l).is_err() {
-                        break;
-                    }
+                    state.hub.emit(&event, l);
                 }
                 Ok(_) => {}
                 Err(_) => break,
@@ -249,7 +247,7 @@ fn spawn_inner(
                 format!("The Claude sidecar exited before responding:\n{tail}")
             };
             let payload = serde_json::json!({ "t": "error", "message": message }).to_string();
-            let _ = app.emit(&event, payload);
+            state.hub.emit(&event, payload);
         }
         // An observed run that closed without a result never finished — tell the
         // scheduler so it can finalize (clear "running", flag the session).
@@ -272,13 +270,13 @@ fn spawn_inner(
             match last_status {
                 Some(SessionStatus::Done) | Some(SessionStatus::Error) => {}
                 _ => crate::commands::emit_claude_status(
-                    &app,
+                    &state,
                     &status_term_id,
                     SessionStatus::Error,
                 ),
             }
         }
-        let _ = app.emit(&exit_event, ());
+        state.hub.emit(&exit_event, ());
     });
 
     Ok(ClaudeAgent {
@@ -372,12 +370,12 @@ pub fn sidecar_script() -> Option<PathBuf> {
             return Some(pb);
         }
     }
-    // Bundled: Contents/Resources/resources/sidecar.mjs (next to Contents/MacOS).
-    if let Some(bundled) = exe_dir()
-        .and_then(|d| d.parent().map(|c| c.join("Resources/resources/sidecar.mjs")))
-        .filter(|p| p.exists())
-    {
-        return Some(bundled);
+    // Flat CLI distribution: bundled next to the executable (or in a sibling
+    // `resources/` dir), e.g. a release tarball of spwn + node + rmux + sidecar.mjs.
+    for rel in ["sidecar.mjs", "resources/sidecar.mjs"] {
+        if let Some(bundled) = exe_dir().map(|d| d.join(rel)).filter(|p| p.exists()) {
+            return Some(bundled);
+        }
     }
     // Dev: the unbundled source script in the repo.
     let dev = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../sidecar/index.mjs"));
