@@ -8,7 +8,7 @@
 COMPOSE = docker compose
 RUN     = $(COMPOSE) run --rm dev bash -c
 
-.PHONY: image sh login gui fe build test spike clean
+.PHONY: image sh login gui fe build test spike agent-spike clean
 
 ## Build the dev image.
 image:
@@ -44,6 +44,13 @@ test:
 spike:
 	$(COMPOSE) run --rm -e RUN_CLAUDE_PTY_SPIKE=1 dev bash -c \
 		"npm install && npm run build && cd backend && cargo test --test rewind_branch_spike -- --nocapture --test-threads=1"
+
+## Run ONLY the gated M0 agent-TUI spike: drives a real `claude` TUI through a real
+## rmux pane and dumps annotated frames for every detect pattern the agent TOML needs.
+## Runs on the HOST, not in Docker — it needs the host's rmux daemon and the host's
+## authenticated claude. Makes real model calls.
+agent-spike:
+	cd backend && RUN_CLAUDE_PTY_SPIKE=1 cargo test --test agent_tui_spike -- --nocapture --test-threads=1
 
 ## Remove the cached volumes (cargo registry, target, node_modules).
 clean:
