@@ -1,4 +1,4 @@
-//! The event hub: replaces Tauri's `AppHandle::emit`.
+//! The event hub: the backend's publish side for browser events.
 //!
 //! Background code (the scheduler, the fs watcher, the pty output task, the Claude
 //! sidecar reader threads, hook runners) publishes `{topic, payload}` messages here;

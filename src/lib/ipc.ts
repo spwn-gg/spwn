@@ -2,8 +2,7 @@
 //
 // `invoke` posts to `POST /api/invoke/:command` with a JSON body of camelCase args
 // (the backend renames them to the snake_case Rust params). `listen` subscribes to a
-// topic on one shared WebSocket that carries every `{topic, payload}` event — the
-// same shape Tauri delivered, so the wrappers below are unchanged.
+// topic on one shared WebSocket that carries every `{topic, payload}` event.
 
 import { writable } from 'svelte/store';
 import type {

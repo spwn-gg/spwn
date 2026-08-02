@@ -85,9 +85,9 @@ start_backend() {
   fi
   guard_port "$BACKEND_PORT" "$BE_PID" BACKEND || return 1
   echo "→ building backend (cargo build --bin spwn)…"
-  ( cd src-tauri && cargo build --quiet --bin spwn ) || { echo "cargo build failed"; exit 1; }
+  ( cd backend && cargo build --quiet --bin spwn ) || { echo "cargo build failed"; exit 1; }
   echo "→ starting backend on $BACKEND_URL"
-  nohup "$ROOT/src-tauri/target/debug/spwn" serve --no-open --port "$BACKEND_PORT" \
+  nohup "$ROOT/backend/target/debug/spwn" serve --no-open --port "$BACKEND_PORT" \
     >"$BE_LOG" 2>&1 &
   echo $! >"$BE_PID"; echo "$BACKEND_PORT" >"$BE_PORTF"
   # Wait for the HTTP surface to answer.
@@ -162,7 +162,7 @@ case "${1:-status}" in
   open)      echo "$FRONTEND_URL";;
   check)
     echo "→ npm run check"; npm run check || exit 1
-    echo "→ cargo check"; ( cd src-tauri && cargo check ) || exit 1
+    echo "→ cargo check"; ( cd backend && cargo check ) || exit 1
     ;;
   build)     npm run build:app;;
   *)

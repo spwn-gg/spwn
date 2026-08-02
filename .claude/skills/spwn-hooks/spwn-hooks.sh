@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Manage spwn project hooks — the `.spwn/hooks/<event>.sh` scripts spwn runs on session
-# lifecycle events. Mirrors the discovery + env contract in src-tauri/src/hooks.rs so
+# lifecycle events. Mirrors the discovery + env contract in backend/src/hooks.rs so
 # `test` reproduces exactly how spwn invokes a hook (worktree cwd, SPWN_* env, run
 # directly if executable else via `sh`).
 set -euo pipefail
 
-# Keep in sync with hooks::EVENTS in src-tauri/src/hooks.rs.
+# Keep in sync with hooks::EVENTS in backend/src/hooks.rs.
 EVENTS="session-created session-ready session-deleted"
 
 repo_root() {

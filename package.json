@@ -5,11 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite dev",
-    "server": "cargo run --manifest-path src-tauri/Cargo.toml -- serve --no-open",
+    "server": "cargo run --manifest-path backend/Cargo.toml -- serve --no-open",
     "build": "vite build",
-    "build:sidecar": "npm --prefix sidecar install && esbuild sidecar/index.mjs --bundle --platform=node --format=esm --outfile=src-tauri/resources/sidecar.mjs",
+    "build:sidecar": "npm --prefix sidecar install && esbuild sidecar/index.mjs --bundle --platform=node --format=esm --outfile=backend/resources/sidecar.mjs",
     "build:all": "npm run build && npm run build:sidecar",
-    "build:app": "npm run build:all && cargo build --release --manifest-path src-tauri/Cargo.toml",
+    "build:app": "npm run build:all && cargo build --release --manifest-path backend/Cargo.toml",
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch"

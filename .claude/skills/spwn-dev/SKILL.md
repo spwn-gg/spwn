@@ -39,7 +39,7 @@ and returns instead of blocking. Run it from anywhere; it resolves the repo root
    seconds), launches the server, then Vite. It waits for `GET /api/version` and prints
    the URL. Open **http://localhost:1420**.
 2. **Edit frontend** (`src/**`) — Vite HMR applies it live; no restart.
-3. **Edit backend** (`src-tauri/src/**`) — run **`dev.sh backend`** to rebuild and
+3. **Edit backend** (`backend/src/**`) — run **`dev.sh backend`** to rebuild and
    relaunch just the server. Terminals persist across this (rmux shell sessions survive;
    Claude sidecars are killed and reattach). The browser's WebSocket auto-reconnects.
 4. **`dev.sh status`** / **`dev.sh logs`** when something looks wrong.
@@ -59,4 +59,4 @@ and returns instead of blocking. Run it from anywhere; it resolves the repo root
 - **Backend won't come up?** `dev.sh logs backend`. A common cause is a compile error
   (the build step fails before launch) or the port already in use.
 - **This is the dev loop, not the deliverable.** For a distributable binary use
-  `dev.sh build` (= `npm run build:app` → `src-tauri/target/release/spwn`, SPA embedded).
+  `dev.sh build` (= `npm run build:app` → `backend/target/release/spwn`, SPA embedded).

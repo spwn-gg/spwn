@@ -18,7 +18,7 @@ export default defineConfig({
       "/ws": { target: backend.replace(/^http/, "ws"), ws: true },
     },
     watch: {
-      ignored: ["**/src-tauri/**"],
+      ignored: ["**/backend/**"],
     },
   },
 });

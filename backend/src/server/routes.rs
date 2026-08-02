@@ -1,10 +1,10 @@
 //! The HTTP surface.
 //!
-//! `POST /api/invoke/:command` is a single generic endpoint over the old Tauri
+//! `POST /api/invoke/:command` is a single generic endpoint over the backend
 //! commands: the JSON body is the args object exactly as `ipc.ts` sends it
 //! (camelCase), deserialized into a per-command struct that renames to the
-//! snake_case Rust params — reproducing what Tauri did under the hood. Sync
-//! commands run on a blocking thread; the already-async ones are awaited directly.
+//! snake_case Rust params. Sync commands run on a blocking thread; the
+//! already-async ones are awaited directly.
 
 use crate::commands::{self as cmd, OpenTerminalSpec};
 use crate::settings::Settings;
@@ -338,7 +338,7 @@ fn asset_response(body: Vec<u8>, mime: &str) -> Response {
 }
 
 // ---------------------------------------------------------------------------
-// Per-command argument structs (camelCase keys, mirroring the old Tauri contract).
+// Per-command argument structs (camelCase keys, matching what `ipc.ts` sends).
 // ---------------------------------------------------------------------------
 
 #[derive(Deserialize)]

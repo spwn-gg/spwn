@@ -14,5 +14,5 @@ Dev is two processes bridged by Vite's proxy:
   `/ws` to the backend (override the target with `SPWN_BACKEND`). Open `localhost:1420`.
 - `npm run check` — svelte-check typecheck before committing.
 - `npm run build:app` — build the SPA + sidecar and compile the release binary
-  (`src-tauri/target/release/spwn`, which embeds the SPA). Run it with `spwn` (or `spwn serve`).
+  (`backend/target/release/spwn`, which embeds the SPA). Run it with `spwn` (or `spwn serve`).
 - Restarting the backend kills Claude sidecars but rmux shell sessions persist.

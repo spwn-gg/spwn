@@ -18,7 +18,7 @@ use tokio::sync::OnceCell;
 /// Live in-memory state plus the persisted spwn project store.
 #[derive(Default)]
 pub struct AppState {
-    /// Event bus to connected browsers (replaces the Tauri `AppHandle` emit).
+    /// Event bus to connected browsers (WebSocket fan-out of backend events).
     pub hub: EventHub,
     /// Lazily-connected rmux daemon handle.
     pub rmux: OnceCell<Rmux>,

@@ -21,7 +21,7 @@ npm run build:app        # build:all (SPA + sidecar) then cargo build --release
 Output:
 
 ```
-src-tauri/target/release/spwn
+backend/target/release/spwn
 ```
 
 Run it:
@@ -57,18 +57,16 @@ Self-update is dropped — reinstall to upgrade.
 
 ## Development (Docker)
 
-Everything for development runs **inside Docker**. The container compiles the Rust
-backend and SvelteKit frontend, runs tests, and can run the windowed GUI on a
-virtual X display exposed to your browser via **noVNC** (a Tauri app built in the
-Linux container is a Linux binary, shown through noVNC rather than as a native macOS
-window).
+Development can run **inside Docker**. The container compiles the Rust backend and
+SvelteKit frontend, runs tests, and can run the web server with its port published to
+your host browser (the container's `claude` is a Linux build, authenticated separately).
 
 ```sh
-make image   # build the dev image (Rust + Node + Tauri deps + noVNC + Linux claude)
+make image   # build the dev image (Rust + Node + Linux claude)
 make login   # ONE-TIME: authenticate the container's claude
-make gui     # run the app; then open http://localhost:6080/vnc.html
+make gui     # run `spwn serve`; then open http://localhost:4317 on the host
 make fe      # npm install + build the SvelteKit frontend (produces ./build)
-make build   # compile the Tauri Rust crate
+make build   # compile the Rust crate
 make test    # frontend build + cargo test
 make sh      # interactive shell in the container
 make clean   # drop the cached volumes

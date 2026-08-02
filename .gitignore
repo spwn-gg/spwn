@@ -9,9 +9,9 @@ node_modules
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 
-# Generated/vendored Tauri sidecar artifacts
-/src-tauri/binaries/
-/src-tauri/resources/sidecar.mjs
+# Generated/vendored sidecar binaries + bundled sidecar script
+/backend/binaries/
+/backend/resources/sidecar.mjs
 
 # Release artifacts produced by scripts/release.sh (uploaded to GitHub, not committed)
 /release/

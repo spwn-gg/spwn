@@ -1,9 +1,9 @@
-//! The web server: replaces the Tauri shell.
+//! The web server.
 //!
-//! `serve` boots the same backend the Tauri app did (store/settings load, default
-//! hooks, fs watcher, scheduler) minus the tray/window, then serves an axum app:
-//! a generic `/api/invoke/:command` HTTP surface over the old Tauri commands, one
-//! multiplexed WebSocket at `/ws` fed by the [`EventHub`], and the embedded SPA.
+//! `serve` boots the backend (store/settings load, default hooks, fs watcher,
+//! scheduler), then serves an axum app: a generic `/api/invoke/:command` HTTP
+//! surface over the backend commands, one multiplexed WebSocket at `/ws` fed by
+//! the [`EventHub`], and the embedded SPA.
 
 pub mod fs;
 pub mod hub;
