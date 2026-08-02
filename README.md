@@ -1,93 +1,166 @@
+<div align="center">
+
 # spwn
 
-A desktop GUI for running Claude Code sessions in parallel — each session gets its
-own **conversation branch**, its own **git worktree**, and its own **live preview
-environment**.
+**Run Claude Code in parallel — every session its own conversation, its own git branch, its own live preview.**
 
-Three features, one idea: exploration should be cheap, isolated, and disposable.
+Fork a coding session the moment an idea splits: spwn branches the *AI conversation* **and** the *code* together, so you can explore three approaches at once instead of babysitting one linear chat.
+
+[![Latest release](https://img.shields.io/github/v/release/spwn-gg/spwn?color=success)](https://github.com/spwn-gg/spwn/releases/latest)
+[![Platform: macOS](https://img.shields.io/badge/platform-macOS-black?logo=apple)](#download)
+[![License: Apache-2.0](https://img.shields.io/github/license/spwn-gg/spwn)](LICENSE)
+[![Docs](https://img.shields.io/badge/docs-spwn--gg.github.io-blue)](https://spwn-gg.github.io/spwn/)
+
+![spwn](docs/src/assets/screenshots/app-main.png)
+
+</div>
+
+Three features, one idea: **exploration should be cheap, isolated, and disposable.** Two of
+them are what make spwn different from a terminal full of Claude tabs — **session branching**
+and a **per-session hook system** — so they lead below.
 
 ---
 
-## 1. Branching conversations
+## Download
 
-A single Claude conversation is a straight line. Real planning isn't: you want to
-explore an idea down one path, back out when it stalls, try a different angle, and
-then bring the good parts of several explorations back together. A linear chat forces
-you to either pollute one context with dead ends or lose your work in scattered
-sessions.
+spwn is a native **macOS** app (Apple Silicon or Intel).
 
-spwn turns the conversation into something you can **branch** and **merge**:
+1. Grab **`spwn.app.tar.gz`** from the **[latest release](https://github.com/spwn-gg/spwn/releases/latest)**, unpack it, and drag `spwn.app` into `/Applications`.
+2. First launch: releases are ad-hoc signed but not notarized, so macOS quarantines the
+   download once. Double-click, then **System Settings → Privacy & Security → Open Anyway** —
+   or run `xattr -dr com.apple.quarantine "/Applications/spwn.app"`. The in-app auto-updater
+   never trips this again.
 
-- **Fork** — start a new session from any point using the Agent SDK's fork-session
-  option, grouped under its lineage. The original keeps running, untouched.
-- **Rewind** — resume an earlier point in the conversation, roll back, and set off in
-  a new direction.
-- **Merge** — each project has a **composable context space**: notes, files, and
-  individual turns picked from *any* of your sessions. **Inject** assembles those
-  blocks into a first message and seeds a fresh Claude session with it (`▦` on a
-  project → add blocks → Inject).
+**Requires** an authenticated **`claude` CLI** on your `PATH` — spwn uses your existing Claude
+login, and never re-uploads or proxies anything. Prefer to build it yourself? See **[BUILD.md](BUILD.md)**.
 
-The result: explore many branches cheaply, then merge what worked into a focused
-session — instead of fighting one ever-growing linear chat.
+Full guide: **[Installation](https://spwn-gg.github.io/spwn/getting-started/installation/)** ·
+**[Quick Start](https://spwn-gg.github.io/spwn/getting-started/quick-start/)**
 
-## 2. A git worktree per session
+---
 
-A fresh Claude session in a git repo runs in its **own git worktree on a new
-`spwn/<id>` branch** — forked from the repo's current branch, or from the parent
-session's branch for a fork. Sessions run concurrently without clobbering each
-other's files, and the work merges back with normal git.
+## ⑂ Session branching
 
-spwn **COW-clones heavy gitignored build dirs** (`node_modules`, `target`, `.venv`,
-`dist`, `build`, `.next`, `.svelte-kit`, `.turbo`, …) into each new worktree, so an
-agent can build immediately instead of waiting on a cold install.
+<img src="docs/src/assets/screenshots/fork-rewind.png" align="right" width="380" alt="Fork and Timeline controls on a session" />
 
-Deleting a session removes **both its worktree and its `spwn/<id>` branch**, so they
-don't pile up in your repo. If the branch still holds commits that aren't in its base
-— or uncommitted changes — the confirm dialog names exactly what you'd lose before
-you go through with it. Merge first (`Merge session`) to keep the work.
+A single Claude conversation is a straight line. Real work isn't — you want to chase an idea
+down one path, back out when it stalls, try a different angle, and bring the good parts back
+together. A linear chat forces you to either pollute one context with dead ends or scatter your
+work across sessions you'll never find again.
 
-**Location** is configurable in **Settings → Session worktree location** and applies
-to new sessions only — existing worktrees stay where they were created.
+**Fork** turns that into one gesture. From any point in a session, spwn branches the
+**conversation and the code at the same time** — the child inherits the parent's full history
+(via the Agent SDK's `forkSession`) *and* gets its own git branch in its own worktree, forked
+from the parent's. The original keeps running, untouched.
+
+- **Branch the conversation *and* the code, together.** Not just `git branch` on files — the
+  entire reasoning that got you here comes along. The lineage is drawn as a tree: forks nest
+  under the session they came from.
+- **Instantly buildable branches.** A plain worktree has no `node_modules` or `target`, so you
+  can't build. spwn **copy-on-write clones** heavy gitignored dirs into every worktree, so an
+  agent builds, tests, and runs from the first moment — no cold reinstall, near-zero disk.
+- **True parallelism, zero context-switch cost.** Each session is a separate checkout on its
+  own `spwn/<id>` branch. Kick off several autonomous sessions at once; none of them clobbers
+  another or your main working tree. Switching tabs is a pure focus change — nothing on disk moves.
+- **Mergeable history for free.** Every turn auto-commits on the session branch, so there's
+  never anything to reconstruct at the end. Merge back with one click, or plain `git merge spwn/<id>`.
+- **Rewind, don't just fork.** The **Timeline** rolls a session back to an earlier turn —
+  conversation, files, or both — restored from APFS checkpoints.
+- **Disposable and safe.** Delete a session and spwn removes *both* the worktree and its branch,
+  so they never pile up — and if you'd lose unmerged commits or uncommitted changes, the confirm
+  dialog names exactly what, first.
+
+> Explore many branches cheaply, then merge what worked into a focused session — instead of
+> fighting one ever-growing linear chat.
+
+📖 [Fork & Timeline](https://spwn-gg.github.io/spwn/guides/fork-and-rewind/) ·
+[Branches & merging](https://spwn-gg.github.io/spwn/guides/branches-and-merging/)
+
+## ⚓ The hook system
+
+Because each session lives on its own branch in its own worktree, it's the natural place to wire
+up per-session setup and teardown — start a dev server, seed a database, spin up containers, copy
+secrets, then clean it all up on delete. spwn does this the unix way: **one shell script per
+lifecycle event**, with the session's details injected as environment variables. spwn just runs
+the script — Docker, plain shell, anything. It has no opinion about what it does.
+
+```sh
+# .spwn/hooks/session-created.d/20-setup.sh — runs when a new session's worktree is ready
+npm install --prefer-offline                         # deps land in the COW-cloned node_modules
+cp "$SPWN_PROJECT_DIR/.env" "$SPWN_WORKTREE/.env"     # bring gitignored secrets into the branch
+echo "ready on $SPWN_BRANCH"
+```
+
+- **Four lifecycle events** — `session-created`, `session-ready`, `session-turn`, and
+  `session-deleted` — each handed the session's context: `SPWN_WORKTREE`, `SPWN_BRANCH`,
+  `SPWN_SESSION_ID`, `SPWN_PROJECT_DIR`, and more.
+- **spwn runs on its own hooks.** Worktree create/remove, per-turn commits, and checkpoints
+  aren't hardcoded — they ship as *default* scripts in `~/.spwn/hooks/` that you can read,
+  reorder, extend, or delete. What spwn does to your session is fully in view, and yours to change.
+- **Global + repo, single file or folder.** Put scripts in `~/.spwn/hooks/` (every project) or a
+  committed `.spwn/hooks/` (travels with the checkout, applies to just that repo). Each event is a
+  lone `<event>.sh` or a numbered `<event>.d/` folder whose steps compose — drop in `50-my-setup.sh`
+  without touching spwn's own scripts.
+- **Interactive and reportable.** A hook can pause to ask the user a question (`spwn prompt`, a
+  blocking picker in the UI) and hand structured values back to spwn (`::spwn:set:: key=value`).
+- **A Hooks panel per session.** See every event's discovered scripts with pass/fail dots and
+  captured output, and re-fire any event by hand. A failing hook shows a one-line advisory — it
+  never blocks the session.
+
+📖 [Hooks reference](https://spwn-gg.github.io/spwn/reference/hooks/) · runnable
+[`examples/hooks/`](examples/hooks/) with a 6-recipe cookbook (preview env, seed DB, copy secrets, teardown, …).
+
+---
+
+## More of what spwn does
+
+**Compose across sessions → Inject.** Every project has a composable context space: notes, files,
+and individual turns cherry-picked from *any* of your sessions. **Inject** assembles those blocks
+into a first message and seeds a fresh Claude session with it — a merge layer for *insight*, not
+just code (`▦` on a project → add blocks → Inject).
+
+![The context space with blocks before Inject](docs/src/assets/screenshots/context-composer.png)
+
+**Choose where worktrees live.** Configurable in **Settings → Session worktree location**; applies
+to new sessions only.
 
 | Option | Location | Notes |
 |--------|----------|-------|
-| **Sibling** (default) | `<repo-parent>/.<repo-name>-worktrees/<id>/` | A dot-prefixed folder *beside* the repo. Outside the working tree, so builds, file watchers, and IDE indexers never recurse into it. |
-| **Inside repo** | `<repo>/.spwn/worktrees/<id>/` | Registered in the repo's `.git/info/exclude` (the tracked `.gitignore` is untouched). The `.spwn/` dot-prefix keeps most tooling from scanning it, but tools with explicit include globs (e.g. a `tsc` `include: ["src"]`) may still pick it up. |
+| **Sibling** (default) | `<repo-parent>/.<repo-name>-worktrees/<id>/` | A dot-prefixed folder *beside* the repo, outside the working tree — builds, watchers, and IDE indexers never recurse into it. |
+| **Inside repo** | `<repo>/.spwn/worktrees/<id>/` | Registered in `.git/info/exclude` (the tracked `.gitignore` is untouched). |
 | **App data** | `…/com.markbarta.spwn/worktrees/<id>/` | Under the app data dir, away from your repos entirely. |
 
-## 3. A shell hook per session lifecycle event
+**Projects & terminals.** A **project** is a name + working directory that groups terminals
+(persisted to `app_data_dir/projects.json`; spwn owns them, they're not derived from Claude's
+dirs). A **terminal** is a plain **shell** (default) or a **Claude** session, arranged in tabbed
+panes. A built-in **scheduler** can run read-only tasks on a cron and surface results as
+attention-flagged sessions.
 
-Each session runs on its own branch in its own worktree, so it's a natural place to
-wire up per-session setup and teardown — start a dev server, seed a database, spin up
-containers, then clean it up on delete.
+## How it works
 
-spwn does this with **project hooks**: one script per event, committed as
-**`.spwn/hooks/<event>.sh`** in your repo. When that lifecycle event fires spwn runs the
-script — a single entry point you can use to orchestrate other files/code — with the
-session's details in the environment (`SPWN_WORKTREE`, `SPWN_BRANCH`, `SPWN_SESSION_ID`,
-…). spwn has no opinion about what the script does — Docker, plain shell, anything.
+A **Tauri** app: a **Svelte** UI, a **Rust** backend (git worktrees, checkpoints, hooks,
+scheduler), and a **Node** sidecar that drives the **Claude Agent SDK** and streams events to
+the app. It only **reads/watches** (never writes) `~/.claude/projects/` and `~/.claude.json`.
 
-- **Events** — `session-created` (worktree ready), `session-ready` (Claude session id
-  bound), `session-deleted` (just before the worktree is removed).
-- **Synchronous** — the session waits for the script; background long-running work
-  yourself (e.g. `my-server & disown`).
-- **Opt-in** — no `.spwn/hooks/<event>.sh`, no change.
-
-See the **Project Hooks** guide in the docs, or `examples/hooks/` for a runnable sample.
+**On disk** (`~/Library/Application Support/com.markbarta.spwn/`): `projects.json`,
+`settings.json`, `checkpoints/<session_id>/` (APFS copy-on-write code-undo snapshots), and — for
+the *App data* worktree layout — `worktrees/`.
 
 ---
 
-## How it's organized
+## Roadmap
 
-- **Projects** — a name + working directory that **groups terminals**. spwn owns them
-  (persisted to `app_data_dir/projects.json`); they're not derived from Claude's own
-  dirs.
-- **Terminals** — open a **shell** (default) or a **Claude** session in a project,
-  arranged in tabbed panes.
+Where spwn is headed next:
 
-## What spwn stores on disk
+- **Other agents** — bring the same branch-conversation-and-code model to coding agents beyond Claude Code.
+- **Remote sessions** — run sessions on a remote machine while driving them from the local app.
+- **Export sessions** — take a session's conversation and work out of spwn in a portable format.
+- **Cost tracking per session** — see token spend broken down per session across your branches.
 
-(`~/Library/Application Support/com.markbarta.spwn/`): `projects.json` (the projects +
-terminals store), `settings.json`, `checkpoints/<session_id>/` (APFS copy-on-write
-code-undo snapshots), and — for the *App data* worktree layout — `worktrees/`. It only
-**reads/watches** (never writes) `~/.claude/projects/` and `~/.claude.json`.
+---
+
+## Docs · Build · License
+
+- **Documentation** — <https://spwn-gg.github.io/spwn/>
+- **Build from source / contribute** — [BUILD.md](BUILD.md)
+- **License** — [Apache-2.0](LICENSE)
