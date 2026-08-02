@@ -1,9 +1,9 @@
 ---
 title: spwn
-description: A desktop app for running Claude Code agents in parallel — each on its own git branch and workspace — so you can explore several approaches at once and merge the one that worked.
+description: A desktop app for running Claude Code in parallel. Fork a session and spwn branches the conversation and the code together, and per-session hooks stand up a live environment for each branch.
 template: splash
 hero:
-  tagline: Run Claude Code agents in parallel — each on its own git branch, in its own workspace. Explore several approaches at once, keep the sessions running, and merge the one that worked.
+  tagline: Fork a Claude Code session and spwn branches the conversation and the code together — explore several approaches at once, each on its own git branch with its own live environment, and merge the one that worked.
   image:
     file: ../../assets/screenshots/app-main.png
   actions:
@@ -21,21 +21,45 @@ import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
 ## What is spwn?
 
 Claude Code is a single conversation in a single terminal. Real work isn't linear:
-you want to try an idea one way, try it another, run a few agents at once, and keep
-whichever result is best. Doing that by hand means juggling git worktrees, terminal
+you want to try an idea one way, back out, try it another, run a few agents at once, and
+keep whichever result is best. Doing that by hand means juggling git worktrees, terminal
 tabs, and copy-pasted context — and losing running work every time a window closes.
 
-**spwn is a native macOS app that makes that the default.** Every Claude session runs
-on **its own git branch, in its own isolated copy of your code**, so several can run at
-the same time — even unattended — without clobbering each other or your working tree.
-Sessions keep running after you close the app, and you merge back only what you want to
-keep.
+**spwn is a native macOS app built around two ideas.** When you **fork** a session it
+branches the *conversation and the code together*, so exploration is cheap and every
+branch runs in isolation. And a **per-session hook system** lets each branch stand up its
+own environment — a dev server, a seeded database, containers — and tear it down when the
+session is gone.
+
+## Two ideas make spwn different
+
+<CardGrid>
+	<Card title="⑂ Session branching" icon="random">
+		A single conversation is a straight line; real work isn't. **Fork** any session and
+		spwn branches the **conversation *and* the code** in one gesture — the child inherits
+		the full history *and* gets its own git branch in its own worktree, forked from the
+		parent's. The original keeps running, untouched. Explore many branches cheaply, then
+		merge back only what worked — with a click or plain `git merge`. Or use the
+		**Timeline** to rewind a session to an earlier turn: conversation, files, or both.
+	</Card>
+	<Card title="⚓ The hook system" icon="setting">
+		Each session lives on its own branch in its own worktree, so it's the natural unit
+		for per-session setup and teardown. spwn does this the unix way: **one shell script
+		per lifecycle event** (`session-created`, `session-ready`, `session-turn`,
+		`session-deleted`), with the session's details injected as `SPWN_*` env vars. Start a
+		dev server, seed a DB, copy secrets, clean up on delete. spwn even **runs on its own
+		hooks** — worktree management, per-turn commits, and checkpoints ship as default
+		scripts you can read, extend, or delete.
+	</Card>
+</CardGrid>
+
+## And everything around them
 
 <CardGrid stagger>
 	<Card title="Parallel sessions, no collisions" icon="code-branch">
-		Every Claude session gets its own git branch and its own worktree. Launch several
-		at once on different approaches — one refactor, one experiment, one bug hunt — and
-		none of them touches the others or your project folder.
+		Every session gets its own git branch and worktree. Launch several at once on
+		different approaches — one refactor, one experiment, one bug hunt — and none of them
+		touches the others or your project folder. Switching tabs is a pure focus change.
 	</Card>
 	<Card title="Build from the first second" icon="rocket">
 		Each new workspace is copy-on-write seeded with your heavy folders
@@ -47,10 +71,6 @@ keep.
 		merge its branch back with a click — or with plain `git`. Nothing lands
 		automatically; you decide what and when.
 	</Card>
-	<Card title="Fork & Timeline" icon="random">
-		Fork a promising session to try a different direction without losing the original,
-		or use the Timeline to return to an earlier point — conversation, files, or both.
-	</Card>
 	<Card title="Merge tray" icon="document">
 		Collect notes, files, and the best turns from any session into a per-project
 		tray, then **Inject** them as the first message of a fresh session — so you start
@@ -60,12 +80,11 @@ keep.
 		Have Claude run a read-only task on a schedule — a daily status report, a nightly
 		review — reusing the project's Merge tray. Results wait as ready-to-read sessions.
 	</Card>
+	<Card title="Survives restarts" icon="laptop">
+		Quit spwn, reopen it, and every session is right where you left it, running programs
+		and all — a clean, scrollable conversation on one side and full Claude Code on the other.
+	</Card>
 </CardGrid>
-
-Sessions also **survive restarts** — quit spwn, reopen it, and every session is right
-where you left it, running programs and all. And a Claude session is the real thing: a
-clean, scrollable conversation on one side and full Claude Code — every slash-command
-and tool prompt — on the other.
 
 ## Why not just do this by hand?
 
@@ -74,18 +93,19 @@ build if you did — and then maintained:
 
 | Doing it by hand | With spwn |
 |---|---|
+| `git branch` forks files; your chat context stays behind | **Fork** branches the conversation *and* the code together |
 | `git worktree add` + branch per experiment, cleaned up manually | A branch + worktree per session, created and removed for you |
 | Cold `npm install` / rebuild in every worktree | Heavy build dirs COW-cloned in — build instantly |
+| Per-branch setup scripts you run by memory | **Project hooks** fire on session lifecycle events |
 | Re-paste project background into each new chat | A **Merge tray** you Inject in one click |
 | Lost running work when a terminal closes | Sessions survive quitting the app |
-| Per-branch setup scripts you run by memory | **Project hooks** fire on session lifecycle events |
 | Merge experiments back and hope you cleaned up | One-click **Merge**, with a dialog naming anything you'd lose |
 
 ## Next steps
 
 <CardGrid>
 	<LinkCard title="Introduction" href="/spwn/getting-started/introduction/" description="What spwn is and how it fits into your workflow." />
-	<LinkCard title="Installation" href="/spwn/getting-started/installation/" description="Get spwn running on your Mac." />
+	<LinkCard title="Fork & Timeline" href="/spwn/guides/fork-and-rewind/" description="Branch a conversation and its code, or rewind a session." />
+	<LinkCard title="Hooks" href="/spwn/reference/hooks/" description="Run a script on each session lifecycle event." />
 	<LinkCard title="Quick Start" href="/spwn/getting-started/quick-start/" description="Create a project and run your first parallel sessions." />
-	<LinkCard title="How it works & your data" href="/spwn/reference/architecture/" description="What spwn touches, and where your data lives." />
 </CardGrid>
