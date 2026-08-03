@@ -76,6 +76,17 @@ pub async fn invoke(
                 .map_err(join_err)?,
         ),
 
+        // --- Agents ---
+        "list_agents" => blocking!(state, body, NoArgs, st, _a, ok(cmd::list_agents(&st))),
+        "reload_agents" => {
+            blocking!(state, body, NoArgs, st, _a, ok_result(cmd::reload_agents(&st)))
+        }
+        "open_agents_dir" => ok_result(
+            tokio::task::spawn_blocking(cmd::open_agents_dir)
+                .await
+                .map_err(join_err)?,
+        ),
+
         // --- Projects ---
         "list_projects" => blocking!(state, body, NoArgs, st, _a, ok(cmd::list_projects(&st))),
         "create_project" => blocking!(

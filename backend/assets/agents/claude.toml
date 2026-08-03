@@ -1,0 +1,151 @@
+# Claude Code — spwn agent definition.
+#
+# Every pattern below was measured against claude v2.1.220 by the M0 spike
+# (`make agent-spike`), not guessed. If a future Claude Code release moves the
+# furniture, fixing spwn is an edit to THIS FILE — copy it to
+# ~/.spwn/agents/claude.toml and change it there; your copy wins over the bundled
+# one and survives upgrades.
+
+id     = "claude"
+name   = "Claude Code"
+icon   = "✦"
+schema = 1
+
+[binary]
+env        = "CLAUDE_BIN"
+name       = "claude"
+candidates = [".local/bin/claude", ".claude/local/claude", ".npm-global/bin/claude"]
+
+[env]
+TERM = "xterm-256color"
+# LOAD-BEARING. A `claude` launched from inside another Claude session inherits
+# CLAUDE_CODE_CHILD_SESSION, which turns transcript saving OFF — the TUI shows only
+# a small "⚠ Transcript saving is off" footer, and then no .jsonl is ever written.
+# That silently kills session-id binding, turn detection, the Timeline, and rewind.
+#
+# This is not just a development quirk: rmux panes inherit the long-lived DAEMON's
+# environment, so whatever the daemon was first started with leaks into every agent
+# spwn spawns. Clear it explicitly and force persistence on.
+CLAUDE_CODE_CHILD_SESSION = ""
+CLAUDE_CODE_FORCE_SESSION_PERSISTENCE = "1"
+
+[session]
+# spwn generates the uuid and hands it over, so binding is synchronous and there is
+# no window where a session exists but its transcript can't be found. Confirmed
+# working: the transcript lands at exactly the assigned id.
+idStrategy = "assign"
+
+# Placeholders: {bin} {sessionId} {sourceSessionId} {permissionMode} {prompt} {cwd}
+#
+# [[ ... ]] is an OPTIONAL GROUP: it expands to one or more argv elements, and the
+# whole group vanishes if any placeholder inside it is empty. Keep a flag and its
+# value in the SAME group — splitting them leaves a dangling flag behind when the
+# value is empty, and the agent then exits with a usage error the moment the pane
+# opens. Values are never word-split, so a prompt with spaces stays one argument.
+[argv]
+new      = ["{bin}", "--session-id", "{sessionId}", "[[--permission-mode {permissionMode}]]"]
+resume   = ["{bin}", "--resume", "{sessionId}", "[[--permission-mode {permissionMode}]]"]
+fork     = ["{bin}", "--resume", "{sourceSessionId}", "--fork-session"]
+headless = ["{bin}", "-p", "--session-id", "{sessionId}",
+            "--output-format", "stream-json", "--verbose",
+            "--permission-mode", "plan", "{prompt}"]
+
+[transcript]
+format = "claudeJsonl"
+root   = "{claudeConfigDir}/projects"
+# "search", not "template": the per-project directory name is a slug of the cwd that
+# mangles `/`, `.` and `_` alike. Reimplementing that mapping means breaking silently
+# the day it changes.
+locate = "search"
+file   = "{sessionId}.jsonl"
+
+[keys]
+submit        = ["Enter"]
+interrupt     = ["Escape"]        # confirmed: stops a running turn
+interruptHard = ["C-c", "C-c"]
+modeCycle     = ["BTab"]          # shift-tab
+redraw        = ["C-l"]
+menuUp        = ["Up"]
+menuDown      = ["Down"]
+menuAccept    = ["Enter"]
+menuCancel    = ["Escape"]
+
+[input]
+paste = "bracketed"
+# \u001B is ESC. Bracketed paste makes the TUI treat a multi-line blob as ONE paste
+# rather than N submissions - without it a pasted 20-line prompt sends 20 turns.
+pastePrefix   = "\u001B[200~"
+pasteSuffix   = "\u001B[201~"
+submitDelayMs = 120
+
+[modes]
+cycle = ["default", "acceptEdits", "plan"]
+# Reads the CURRENT mode off the footer, e.g. "⏸ manual mode on · ? for shortcuts"
+# or "⏵⏵ auto mode on (shift+tab to cycle)". Needed because modeCycle is a blind
+# keypress — without reading back, spwn can't know how many presses reach a target.
+line  = "(?i)\\b([a-z ]+?)\\s+mode on\\b"
+
+[modes.launch]
+default           = ""
+acceptEdits       = "acceptEdits"
+plan              = "plan"
+auto              = "auto"
+manual            = "manual"
+bypassPermissions = "bypassPermissions"
+
+[detect]
+idleAfterMs   = 1500
+confirmFrames = 2
+ready         = ["Welcome back", "Claude Code v"]
+
+# Order matters — first match wins, so the blocking states come before "thinking".
+
+# A permission prompt. "Do you want to …?" plus the action footer.
+# `all` pins it: "Esc to cancel" ALONE also appears on the folder-trust screen and
+# the /rewind menu, so matching that by itself would report "blocked" during a
+# perfectly ordinary rewind.
+[[detect.rules]]
+status = "blockedPermission"
+any    = ["Do you want to", "Do you want me to"]
+all    = ["Tab to amend"]
+
+# The folder-trust gate. spwn does NOT auto-answer this (deliberate: it's a security
+# decision the user should make), so it must surface as "needs you" rather than
+# sitting in `thinking` forever.
+[[detect.rules]]
+status = "blockedQuestion"
+any    = ["Quick safety check", "Is this a project you created"]
+
+# A turn is running. TWO independent signals, on purpose:
+#  - the footer swaps "? for shortcuts" → "esc to interrupt" while a turn is in flight
+#  - a spinner row renders as "<glyph> <Gerund>…" — the gerund is RANDOMIZED
+#    ("✽ Ruminating…", "✢ Gitifying…", "· Bootstrapping… (1s · ↓ 22 tokens)"), so the
+#    stable part is structural: a single non-alphanumeric glyph, then a word ending
+#    in an ellipsis.
+# Either one alone would be a single point of failure across TUI versions.
+#
+# NOTE: no `rows` window here. Measured live, the bottom 12 rows were entirely blank
+# 600ms and 1500ms into a turn — the spinner is not pinned to the bottom of the pane.
+[[detect.rules]]
+status = "thinking"
+any    = ["esc to interrupt"]
+regex  = "(?m)^\\s*[^\\w\\s]\\s+\\S*…"
+
+[[detect.rules]]
+status = "error"
+any    = ["API Error", "Execution error", "Credit balance is too low"]
+
+[rewind]
+strategy = "tuiCommand"
+
+[rewind.tui]
+command = "/rewind"
+header  = "Rewind"
+marker  = "❯"
+# The list runs oldest → newest with "(current)" LAST, and the selection starts
+# there. So reaching an earlier checkpoint means pressing UP. (Pressing Down does
+# nothing at all, which reads convincingly like "arrow keys aren't supported".)
+stepBack   = "up"
+maxSteps   = 60
+currentRow = "(current)"
+restoreConversation = "Restore conversation"

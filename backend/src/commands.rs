@@ -1698,7 +1698,10 @@ pub fn get_settings(state: &AppState) -> Settings {
     state.settings.lock().clone()
 }
 
-pub fn set_settings(state: &AppState, settings: Settings) -> Result<(), String> {
+pub fn set_settings(state: &AppState, mut settings: Settings) -> Result<(), String> {
+    // Normalize on the way in, not just on load — the client may still send the
+    // legacy `claudePath` shape.
+    settings.migrate();
     *state.settings.lock() = settings;
     let path = state.settings_path.lock().clone();
     if let Some(path) = path {
@@ -1724,8 +1727,11 @@ pub fn open_global_hooks_dir() -> Result<(), String> {
 }
 
 /// The `claude` binary to use: the configured override (if it exists), else auto-detect.
+///
+/// Reads `agent_paths["claude"]`, which `Settings::migrate` populates from the legacy
+/// `claude_path` on load — so an existing settings.json keeps working unchanged.
 pub(crate) fn resolved_claude(state: &AppState) -> Option<PathBuf> {
-    let configured = state.settings.lock().claude_path.clone();
+    let configured = state.settings.lock().agent_paths.get("claude").cloned();
     if let Some(p) = configured.filter(|s| !s.trim().is_empty()) {
         let pb = PathBuf::from(p);
         if pb.exists() {
@@ -1733,6 +1739,40 @@ pub(crate) fn resolved_claude(state: &AppState) -> Option<PathBuf> {
         }
     }
     find_claude_bin()
+}
+
+// ---------------------------------------------------------------------------
+// Agent registry
+// ---------------------------------------------------------------------------
+
+/// Every agent definition spwn knows about, with its resolved binary and
+/// capabilities, for the session picker and the Settings panel.
+pub fn list_agents(state: &AppState) -> Vec<crate::agents::AgentSummary> {
+    let overrides = state.settings.lock().agent_paths.clone();
+    state.agents.lock().summaries(&overrides)
+}
+
+/// Re-read agent definitions from disk. Editing a TOML to track an upstream TUI
+/// change should not require restarting the server (and killing nothing — panes
+/// are unaffected, since a definition is only consulted when a session starts or
+/// a key is sent).
+pub fn reload_agents(state: &AppState) -> Result<Vec<String>, String> {
+    let reg = crate::agents::AgentRegistry::load(None);
+    let errors = reg.errors().to_vec();
+    *state.agents.lock() = reg;
+    Ok(errors)
+}
+
+/// Reveal `~/.spwn/agents` so the user can edit definitions.
+pub fn open_agents_dir() -> Result<(), String> {
+    let dir = crate::agents::global_agents_dir()
+        .ok_or_else(|| "could not resolve ~/.spwn/agents".to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::process::Command::new("open")
+        .arg(&dir)
+        .status()
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 pub fn read_transcript(session_id: String) -> Vec<Turn> {

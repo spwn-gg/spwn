@@ -6,6 +6,7 @@
 
 import { writable } from 'svelte/store';
 import type {
+	AgentSummary,
 	CheckpointMeta,
 	ClaudeEvent,
 	GitBranches,
@@ -155,6 +156,28 @@ export function openGlobalHooksDir(): Promise<void> {
 /** Auto-detected claude path (probe; ignores the configured override). */
 export function detectClaude(): Promise<string | null> {
 	return invoke('find_claude');
+}
+
+/**
+ * Every agent definition spwn knows about, with its resolved binary and
+ * capabilities. Installed agents sort first, experimental ones last.
+ */
+export function listAgents(): Promise<AgentSummary[]> {
+	return invoke('list_agents');
+}
+
+/**
+ * Re-read agent definitions from disk; resolves to the list of parse errors
+ * (empty when all loaded cleanly). Running panes are unaffected — a definition is
+ * only consulted when a session starts or a key is sent.
+ */
+export function reloadAgents(): Promise<string[]> {
+	return invoke('reload_agents');
+}
+
+/** Reveal ~/.spwn/agents in Finder (creates it if needed). */
+export function openAgentsDir(): Promise<void> {
+	return invoke('open_agents_dir');
 }
 
 /** File picker (server-side browser); returns the chosen host path or null. */

@@ -11,7 +11,7 @@ pub mod routes;
 pub mod ws;
 
 use crate::state::AppState;
-use crate::{checkpoints, hooks, projects, scheduler, settings, store};
+use crate::{agents, checkpoints, hooks, projects, scheduler, settings, store};
 use axum::routing::{get, post};
 use axum::Router;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -68,6 +68,16 @@ pub async fn serve(opts: ServeOpts) -> anyhow::Result<()> {
 
     // Install spwn's built-in per-session behaviors as default global hooks.
     hooks::install_default_global_hooks();
+
+    // Install the bundled agent definitions, then load the registry (built-ins are
+    // compiled in, so spwn still has a working `claude` even if the install failed
+    // or the user emptied ~/.spwn/agents).
+    agents::install_default_agents();
+    let registry = agents::AgentRegistry::load(None);
+    for e in registry.errors() {
+        eprintln!("warning: agent definition: {e}");
+    }
+    *state.agents.lock() = registry;
 
     // Watch ~/.claude/projects so the transcript panel refreshes live.
     let root = projects::projects_root();

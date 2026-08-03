@@ -157,10 +157,44 @@ export interface ProjectRec {
 export type WorktreeLocation = 'sibling' | 'internal' | 'appData';
 
 export interface Settings {
+	/** @deprecated Migrated into `agentPaths.claude` on load; kept so an old settings.json still parses. */
 	claudePath?: string | null;
+	/** Per-agent binary overrides, keyed by agent id. Absent/empty ⇒ auto-detect. */
+	agentPaths?: Record<string, string>;
+	/** Agent id for new sessions when none is picked. Null ⇒ first installed agent. */
+	defaultAgent?: string | null;
 	worktreeLocation?: WorktreeLocation;
 	/** Whether the shared global hooks in ~/.spwn/hooks run (default true). */
 	globalHooksEnabled?: boolean;
+}
+
+/** Where an agent definition came from; later scopes override earlier ones by id. */
+export type AgentScope = 'builtIn' | 'global' | 'repo';
+
+/**
+ * What an agent can actually do, derived from its definition. The UI hides
+ * affordances rather than offering ones that will fail — an agent with no
+ * transcript adapter genuinely cannot be rewound.
+ */
+export interface AgentCapabilities {
+	transcript: boolean;
+	rewind: boolean;
+	headless: boolean;
+	/** Has real status rules, vs. generic activity detection only. */
+	status: boolean;
+}
+
+/** One agent definition, as the picker and Settings need it. */
+export interface AgentSummary {
+	id: string;
+	name: string;
+	icon?: string | null;
+	/** Ships with spwn but has never been driven against the real binary. */
+	untested: boolean;
+	scope: AgentScope;
+	/** Resolved executable, or null when it isn't installed. */
+	binary?: string | null;
+	capabilities: AgentCapabilities;
 }
 
 export interface Block {

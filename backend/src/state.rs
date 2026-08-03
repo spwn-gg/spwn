@@ -56,6 +56,10 @@ pub struct AppState {
     /// The synchronous hook runner blocks on the receiver; `hooks_prompt_answer` sends
     /// the chosen label(s) to unblock it.
     pub hook_prompts: Mutex<HashMap<String, std::sync::mpsc::Sender<String>>>,
+    /// Agent definitions spwn can drive (built-in + `~/.spwn/agents` + per-repo).
+    /// Loaded at startup and reloadable at runtime, so editing a TOML to fix a
+    /// changed TUI doesn't need a restart.
+    pub agents: Mutex<crate::agents::AgentRegistry>,
     /// Live Claude session status: terminal id → status. Derived in the sidecar reader
     /// so background sessions (no pane) still drive the sidebar. Ephemeral (empty on
     /// launch; restart falls back to persisted `needs_attention`/`attention_reason`).

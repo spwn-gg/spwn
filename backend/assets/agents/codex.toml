@@ -1,0 +1,69 @@
+# Codex CLI (OpenAI) — spwn agent definition.
+#
+# UNTESTED. Nobody has driven this against the real binary; the flags below come
+# from Codex's documented CLI, not from a live spike like claude.toml's did. spwn
+# marks it "experimental" in the UI and disables the affordances it cannot honestly
+# support (transcript view, rewind, fork-at-a-point).
+#
+# Making this first-class is a matter of: install `codex`, extend the M0 spike to
+# drive it, then fill in [detect.rules], [transcript] and [rewind] from what the
+# frames actually show. Until someone does that, the honest configuration is the
+# one below — no invented patterns.
+
+id       = "codex"
+name     = "Codex CLI"
+icon     = "◇"
+schema   = 1
+untested = true
+
+[binary]
+env        = "CODEX_BIN"
+name       = "codex"
+candidates = [".local/bin/codex", ".npm-global/bin/codex"]
+
+[env]
+TERM = "xterm-256color"
+
+[session]
+# Codex assigns its own conversation id; spwn cannot hand one in the way
+# `claude --session-id` allows. Until the transcript adapter exists there is
+# nothing to discover, so identity is simply unmanaged.
+idStrategy = "none"
+
+[argv]
+new      = ["{bin}"]
+resume   = ["{bin}", "resume", "{sessionId}"]
+headless = ["{bin}", "exec", "{prompt}"]
+
+[transcript]
+# Codex writes JSONL rollouts under ~/.codex/sessions, but the schema differs from
+# Claude's (no parentUuid chain), so `claudeJsonl` would mis-parse it rather than
+# fail loudly. "none" until a real adapter is written.
+format = "none"
+
+[keys]
+submit        = ["Enter"]
+interrupt     = ["Escape"]
+interruptHard = ["C-c", "C-c"]
+modeCycle     = []
+redraw        = ["C-l"]
+menuUp        = ["Up"]
+menuDown      = ["Down"]
+menuAccept    = ["Enter"]
+menuCancel    = ["Escape"]
+
+[input]
+paste         = "bracketed"
+pastePrefix   = "\u001B[200~"
+pasteSuffix   = "\u001B[201~"
+submitDelayMs = 120
+
+[detect]
+# No rules: status falls back to generic activity detection (bytes ⇒ thinking,
+# silence ⇒ done). That works with zero configuration for any binary, but it can
+# never report "blocked, waiting for you" — which is the status that matters most.
+idleAfterMs   = 1500
+confirmFrames = 2
+
+[rewind]
+strategy = "none"

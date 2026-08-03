@@ -1,3 +1,10 @@
+// The registry lands as data only: it loads, validates and exposes definitions, but
+// nothing *drives* an agent from it yet — `open_terminal` starts consuming it in the
+// next milestone. Until then parts of the surface (argv rendering, lookup by id) are
+// exercised solely by their unit tests, which is deliberate: the schema is settled
+// against real measurements first, then wired up.
+#[allow(dead_code, unused_imports)]
+mod agents;
 mod checkpoints;
 mod claude;
 mod commands;
