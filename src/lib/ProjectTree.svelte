@@ -102,6 +102,15 @@
 		openMenuId = null;
 		addTerminal(p, 'claude', e);
 	}
+	/**
+	 * Start a session on the rmux/TUI transport instead of the Agent-SDK sidecar.
+	 * Offered alongside the existing entry point rather than replacing it, so the
+	 * new path can be lived with before it becomes the default.
+	 */
+	function menuAgent(p: ProjectRec, e: Event) {
+		openMenuId = null;
+		addTerminal(p, 'agent', e);
+	}
 	async function menuVscode(p: ProjectRec, e: Event) {
 		e.stopPropagation();
 		openMenuId = null;
@@ -130,9 +139,10 @@
 		await refreshProjects();
 	}
 
-	function addTerminal(p: ProjectRec, kind: 'shell' | 'claude', e: Event) {
+	function addTerminal(p: ProjectRec, kind: 'shell' | 'claude' | 'agent', e: Event) {
 		e.stopPropagation();
-		openTab({ projectId: p.id, kind, title: kind === 'claude' ? 'session' : 'shell', projectName: p.name });
+		const title = kind === 'shell' ? 'shell' : 'session';
+		openTab({ projectId: p.id, kind, title, projectName: p.name });
 	}
 
 	async function openSessionCode(t: TerminalRec, e: Event) {
@@ -417,6 +427,9 @@
 			tabindex="-1"
 			style="left: {menuPos.x}px; top: {menuPos.y}px">
 			<button onclick={(e) => menuClaude(p, e)}>New session</button>
+			<button onclick={(e) => menuAgent(p, e)} title="Run the agent's own TUI in a persistent pane">
+				New session (terminal)
+			</button>
 			<button onclick={(e) => menuShell(p, e)}>New shell</button>
 			<button onclick={(e) => menuVscode(p, e)}>Open in VS Code</button>
 			<div class="sep"></div>

@@ -96,6 +96,7 @@ pub fn fire(state: &Arc<AppState>, project_id: &str, task_id: &str) {
                 id: terminal_id.clone(),
                 title: format!("◷ {}", task.name),
                 kind: "claude".to_string(),
+                agent: None,
                 cwd: directory.clone(),
                 session_id: None,
                 group_id: None,

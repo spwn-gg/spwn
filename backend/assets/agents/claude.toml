@@ -76,7 +76,7 @@ paste = "bracketed"
 # rather than N submissions - without it a pasted 20-line prompt sends 20 turns.
 pastePrefix   = "\u001B[200~"
 pasteSuffix   = "\u001B[201~"
-submitDelayMs = 120
+submitDelayMs = 250
 
 [modes]
 cycle = ["default", "acceptEdits", "plan"]

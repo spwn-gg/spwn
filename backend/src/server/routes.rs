@@ -232,6 +232,24 @@ pub async fn invoke(
             ok(cmd::list_checkpoints(&st, a.session_id))
         ),
 
+        // --- Agent TUI control (rmux panes) ---
+        "agent_send" => {
+            let a: AgentSendArgs = parse(&body)?;
+            ok_result(cmd::agent_send(&state, a.terminal_id, a.text, a.submit).await)
+        }
+        "agent_key" => {
+            let a: AgentKeyArgs = parse(&body)?;
+            ok_result(cmd::agent_key(&state, a.terminal_id, a.key).await)
+        }
+        "agent_interrupt" => {
+            let a: TerminalIdArgs = parse(&body)?;
+            ok_result(cmd::agent_interrupt(&state, a.terminal_id).await)
+        }
+        "agent_set_mode" => {
+            let a: AgentSetModeArgs = parse(&body)?;
+            ok_result(cmd::agent_set_mode(&state, a.terminal_id, a.mode).await)
+        }
+
         // --- Shell pty I/O ---
         "write_to_pty" => {
             let a: WriteToPtyArgs = parse(&body)?;
@@ -559,6 +577,31 @@ struct RestoreCheckpointArgs {
 #[serde(rename_all = "camelCase")]
 struct SessionIdArgs {
     session_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentSendArgs {
+    terminal_id: String,
+    text: String,
+    /// Press the submit key after pasting. False = paste for review, which is what
+    /// "→ parent" and context injection rely on.
+    #[serde(default)]
+    submit: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentKeyArgs {
+    terminal_id: String,
+    key: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentSetModeArgs {
+    terminal_id: String,
+    mode: String,
 }
 
 #[derive(Deserialize)]

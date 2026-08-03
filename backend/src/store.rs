@@ -11,8 +11,17 @@ use std::path::{Path, PathBuf};
 pub struct TerminalRec {
     pub id: String,
     pub title: String,
-    /// "shell" | "claude"
+    /// `"shell"` | `"agent"` | `"claude"`.
+    ///
+    /// `"claude"` is the legacy Agent-SDK-sidecar session; `"agent"` is a coding
+    /// agent driven as a TUI in an rmux pane. Both exist while the two paths run
+    /// side by side — existing sessions keep their sidecar until the UI flips over,
+    /// so this milestone can't strand anyone mid-conversation.
     pub kind: String,
+    /// Which agent definition drives this session (`TerminalRec.kind == "agent"`).
+    /// `None` for shells and for legacy sidecar sessions.
+    #[serde(default)]
+    pub agent: Option<String>,
     pub cwd: String,
     /// Claude session id once discovered (enables the transcript/rewind panel).
     #[serde(default)]
@@ -150,10 +159,79 @@ impl ProjectStore {
     }
 }
 
+// Consumed by the status/turn watchers and the UI flip in later milestones; the
+// classification lives here so there's one definition of "is this an agent".
+#[allow(dead_code)]
+impl TerminalRec {
+    /// Does this session run a coding agent (either transport)?
+    pub fn is_agent(&self) -> bool {
+        self.kind == "agent" || self.kind == "claude"
+    }
+
+    /// Is this a legacy Agent-SDK-sidecar session rather than an rmux TUI?
+    pub fn is_sidecar(&self) -> bool {
+        self.kind == "claude"
+    }
+}
+
 /// The rmux session name for a terminal — stable across restarts so we can
 /// reattach to the same daemon-side session.
 pub fn rmux_session_name(terminal_id: &str) -> String {
     format!("cm-{}", terminal_id.replace('-', ""))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rec(kind: &str, agent: Option<&str>) -> TerminalRec {
+        TerminalRec {
+            id: "t1".into(),
+            title: "t".into(),
+            kind: kind.into(),
+            agent: agent.map(str::to_string),
+            cwd: "/tmp".into(),
+            session_id: None,
+            group_id: None,
+            parent_id: None,
+            branch: None,
+            base_branch: None,
+            needs_attention: false,
+            attention_reason: None,
+        }
+    }
+
+    #[test]
+    fn classifies_the_three_kinds() {
+        assert!(!rec("shell", None).is_agent());
+        assert!(rec("agent", Some("claude")).is_agent());
+        assert!(!rec("agent", Some("claude")).is_sidecar());
+        // Legacy records are agents, but on the sidecar transport.
+        assert!(rec("claude", None).is_agent());
+        assert!(rec("claude", None).is_sidecar());
+    }
+
+    #[test]
+    fn an_old_store_without_the_agent_field_still_loads() {
+        // Sessions predating multi-agent support must survive an upgrade — losing
+        // them would mean losing running conversations and their worktrees.
+        let json = r#"{"projects":[{"id":"p","name":"P","directory":"/tmp",
+            "terminals":[{"id":"t","title":"claude","kind":"claude","cwd":"/tmp"}]}]}"#;
+        let store: ProjectStore = serde_json::from_str(json).unwrap();
+        let t = &store.projects[0].terminals[0];
+        assert_eq!(t.kind, "claude");
+        assert_eq!(t.agent, None);
+        assert!(t.is_sidecar());
+    }
+
+    #[test]
+    fn session_name_is_stable_and_dash_free() {
+        // rmux session names can't contain dashes; the mapping has to stay stable
+        // or a restart would fail to reattach to still-running panes.
+        let n = rmux_session_name("0bffa637-c355-43ff-9c59-7d24d78b12b0");
+        assert_eq!(n, "cm-0bffa637c35543ff9c597d24d78b12b0");
+        assert_eq!(n, rmux_session_name("0bffa637-c355-43ff-9c59-7d24d78b12b0"));
+    }
 }
 
 /// Resolve the on-disk path for the project store under the app data dir.

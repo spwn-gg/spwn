@@ -8,32 +8,38 @@
 		writeToPty,
 		resizePty,
 		closeTerminal,
-		setTerminalSession,
 		onPtyOutput,
-		onPtyExit,
-		onPtySessionId
+		onPtyExit
 	} from './ipc';
-	import { setTabTerminalId, setTabSession, refreshProjects } from './stores';
+	import { setTabTerminalId, refreshProjects } from './stores';
 	import type { TerminalKind } from './types';
 
 	let {
 		tabKey,
 		projectId,
 		kind = 'shell',
+		agent = undefined,
 		terminalId = undefined,
 		claudeResume = undefined,
 		claudeFork = undefined,
 		parentTerminalId = undefined,
-		initialPrompt = undefined
+		initialPrompt = undefined,
+		permissionMode = undefined,
+		onOpened = undefined
 	}: {
 		tabKey: string;
 		projectId: string;
 		kind?: TerminalKind;
+		/** Which agent definition to run, when kind === 'agent'. */
+		agent?: string;
 		terminalId?: string;
 		claudeResume?: string;
 		claudeFork?: string;
 		parentTerminalId?: string;
 		initialPrompt?: string;
+		permissionMode?: string;
+		/** Called with the backend terminal id once the pane is live. */
+		onOpened?: (id: string) => void;
 	} = $props();
 
 	let container: HTMLDivElement;
@@ -60,33 +66,28 @@
 				projectId,
 				terminalId,
 				kind,
+				agent,
 				cols: term.cols,
 				rows: term.rows,
 				claudeResume,
 				claudeFork,
 				parentTerminalId,
-				initialPrompt
+				initialPrompt,
+				permissionMode
 			});
 		} catch (e) {
 			term.writeln(`\r\n\x1b[31m[open error] ${e}\x1b[0m`);
 			return;
 		}
 		setTabTerminalId(tabKey, id);
+		onOpened?.(id);
 		refreshProjects();
 
+		// The backend primes this stream with a capture of the pane's current
+		// screen, so a reattached TUI paints immediately instead of staying blank
+		// until the process next writes.
 		unlisten.push(await onPtyOutput(id, (bytes) => term?.write(bytes)));
 		unlisten.push(await onPtyExit(id, () => term?.writeln('\r\n\x1b[90m[session ended]\x1b[0m')));
-
-		// New/forked Claude sessions reveal their id once written to disk; bind it
-		// so the chat mirror can read the transcript.
-		if (kind === 'claude') {
-			unlisten.push(
-				await onPtySessionId(id, (sid) => {
-					setTabSession(tabKey, sid);
-					if (id) setTerminalSession(projectId, id, sid).then(refreshProjects);
-				})
-			);
-		}
 
 		term.onData((d) => {
 			if (id) writeToPty(id, d);

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import Terminal from './Terminal.svelte';
 	import ClaudePane from './ClaudePane.svelte';
+	import AgentPane from './AgentPane.svelte';
 	import ContextComposer from './ContextComposer.svelte';
 	import ScheduledTasks from './ScheduledTasks.svelte';
 	import { openTabs, activeTabKey, closeTab, hookRunning, claudeStatus } from './stores';
@@ -9,7 +10,7 @@
 
 	/** The icon glyph for a tab, kept 1:1 with the sidebar via labels.ts. */
 	function tabIcon(kind: OpenTab['kind']): string {
-		return kind === 'claude'
+		return kind === 'claude' || kind === 'agent'
 			? GLYPHS.session
 			: kind === 'context'
 				? GLYPHS.mergeTray
@@ -71,6 +72,16 @@
 					<ContextComposer projectId={tab.projectId} />
 				{:else if tab.kind === 'schedule'}
 					<ScheduledTasks projectId={tab.projectId} />
+				{:else if tab.kind === 'agent'}
+					<AgentPane
+						tabKey={tab.key}
+						projectId={tab.projectId}
+						agent={tab.agent}
+						terminalId={tab.terminalId}
+						claudeResume={tab.claudeResume}
+						claudeFork={tab.claudeFork}
+						parentTerminalId={tab.parentTerminalId}
+						initialPrompt={tab.initialPrompt} />
 				{:else if tab.kind === 'claude'}
 					<ClaudePane
 						tabKey={tab.key}

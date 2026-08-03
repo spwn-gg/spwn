@@ -9,7 +9,7 @@ use crate::checkpoints::{self, CheckpointMeta};
 use crate::claude::SessionStatus;
 use crate::gitwt;
 use crate::hooks;
-use crate::pty::{default_shell, find_claude_bin, spawn_rmux_session};
+use crate::pty::{default_shell, find_claude_bin, spawn_pane};
 use crate::settings::{Settings, WorktreeLocation};
 use crate::state::AppState;
 use crate::store::{rmux_session_name, ContextBlock, ProjectRec, ScheduledTask, TerminalRec};
@@ -241,18 +241,22 @@ fn push_block(state: &AppState, project_id: &str, block: ContextBlock) -> Result
 pub struct OpenTerminalSpec {
     pub project_id: String,
     pub terminal_id: Option<String>,
-    /// "shell" | "claude" (for new terminals).
+    /// `"shell"` | `"agent"` | `"claude"` (legacy sidecar), for new terminals.
     pub kind: String,
+    /// Which agent definition to run when `kind == "agent"`. Defaults to the
+    /// configured default agent, then the first installed one.
+    #[serde(default)]
+    pub agent: Option<String>,
     pub cols: u16,
     pub rows: u16,
-    /// Resume this claude session id.
+    /// Resume this session id.
     pub claude_resume: Option<String>,
-    /// Fork this claude session id into a new one.
+    /// Fork this session id into a new one.
     pub claude_fork: Option<String>,
     /// The terminal a fork/branch originated from (to inherit its group).
     pub parent_terminal_id: Option<String>,
-    /// Initial permission/execution mode for a new Claude session (seeds the
-    /// sidecar at construction so the first turn runs under the chosen mode).
+    /// Initial permission/execution mode, applied at launch so the first turn can't
+    /// run under the wrong one (a race a post-spawn change would lose).
     pub permission_mode: Option<String>,
 }
 
@@ -260,7 +264,7 @@ pub async fn open_terminal(
     state: Arc<AppState>,
     spec: OpenTerminalSpec,
 ) -> Result<String, String> {
-    let (terminal_id, kind, cwd, resume_src, fork, is_new, project_dir, fork_base) = {
+    let (terminal_id, kind, agent_id, cwd, resume_src, fork, is_new, project_dir, fork_base) = {
         let mut store = state.store.lock();
         let project = store
             .project(&spec.project_id)
@@ -285,6 +289,24 @@ pub async fn open_terminal(
             .as_ref()
             .map(|t| t.kind.clone())
             .unwrap_or_else(|| spec.kind.clone());
+        // Reattaching keeps whatever agent the session was created with; a new one
+        // takes the caller's choice, else the configured default, else the first
+        // installed agent. Resolved here so the record and the launch agree.
+        let agent_id = if kind == "agent" {
+            existing.as_ref().and_then(|t| t.agent.clone()).or_else(|| {
+                let overrides = state.settings.lock().agent_paths.clone();
+                let preferred = spec
+                    .agent
+                    .clone()
+                    .or_else(|| state.settings.lock().default_agent.clone());
+                state
+                    .agents
+                    .lock()
+                    .default_id(preferred.as_deref(), &overrides)
+            })
+        } else {
+            None
+        };
         // Reattaching uses the stored cwd (a Claude session's own worktree, if it
         // has one); a fresh session starts from the project dir until its worktree
         // is created below.
@@ -297,7 +319,7 @@ pub async fn open_terminal(
         // Claude resume/fork resolution. Fork resumes its source then branches; a
         // plain resume continues a saved session; otherwise it's a fresh session
         // whose id arrives later via the sidecar's `init` event.
-        let (resume_src, fork) = if kind == "claude" {
+        let (resume_src, fork) = if kind == "claude" || kind == "agent" {
             if let Some(fork_id) = spec.claude_fork.clone() {
                 (Some(fork_id), true)
             } else if let Some(r) = spec.claude_resume.clone().or(saved_session.clone()) {
@@ -320,11 +342,17 @@ pub async fn open_terminal(
             });
             // The direct parent in the branch tree (the terminal we forked from).
             let parent_id = spec.parent_terminal_id.clone();
+            let title = match kind.as_str() {
+                "claude" => "claude".to_string(),
+                "agent" => agent_id.clone().unwrap_or_else(|| "agent".to_string()),
+                _ => "shell".to_string(),
+            };
             if let Some(p) = store.project_mut(&spec.project_id) {
                 p.terminals.push(TerminalRec {
                     id: terminal_id.clone(),
-                    title: if kind == "claude" { "claude" } else { "shell" }.to_string(),
+                    title,
                     kind: kind.clone(),
+                    agent: agent_id.clone(),
                     cwd: cwd.clone(),
                     session_id: None,
                     group_id,
@@ -340,6 +368,7 @@ pub async fn open_terminal(
         (
             terminal_id,
             kind,
+            agent_id,
             cwd,
             resume_src,
             fork,
@@ -355,7 +384,7 @@ pub async fn open_terminal(
     // gitignored build dirs are COW-cloned in so the agent can build immediately.
     // Falls back to the project dir if it's not a git repo or the worktree fails.
     let mut cwd = cwd;
-    if is_new && kind == "claude" {
+    if is_new && (kind == "claude" || kind == "agent") {
         if let Some(repo) = gitwt::repo_root(Path::new(&project_dir)) {
             if let Some(base) = fork_base.or_else(|| gitwt::current_branch(&repo)) {
                 // Create the worktree via the `session-created` hooks (native fallback
@@ -392,23 +421,107 @@ pub async fn open_terminal(
         return Ok(terminal_id);
     }
 
-    // Shell: a real login shell in a persistent rmux pty.
-    let argv = vec![default_shell(), "-l".to_string()];
+    // Everything else runs in an rmux pane: a login shell, or an agent's real TUI.
+    let (argv, env, runtime) = if kind == "agent" {
+        let agent_id = agent_id
+            .clone()
+            .ok_or_else(|| "no agent available (none installed?)".to_string())?;
+        let overrides = state.settings.lock().agent_paths.clone();
+        let def = state
+            .agents
+            .lock()
+            .get(&agent_id)
+            .cloned()
+            .ok_or_else(|| format!("unknown agent '{agent_id}'"))?;
+        let bin = crate::agents::resolve_binary(&def, &overrides).ok_or_else(|| {
+            format!("{} binary not found (set its path in Settings)", def.name)
+        })?;
+
+        // Assign the session id up front when the agent supports it. This is what
+        // makes binding synchronous: the transcript path is known before the process
+        // starts, so there is no window where a session exists but can't be found.
+        let session_id = match def.session.id_strategy {
+            crate::agents::def::IdStrategy::Assign => Some(
+                resume_src
+                    .clone()
+                    .filter(|_| !fork)
+                    .unwrap_or_else(|| Uuid::new_v4().to_string()),
+            ),
+            _ => resume_src.clone(),
+        };
+
+        let template = if fork {
+            def.argv.fork.as_ref().unwrap_or(&def.argv.new)
+        } else if resume_src.is_some() {
+            &def.argv.resume
+        } else {
+            &def.argv.new
+        };
+
+        let permission_mode = spec
+            .permission_mode
+            .as_deref()
+            .and_then(|m| def.modes.launch.get(m).cloned())
+            .unwrap_or_default();
+        let ctx: std::collections::BTreeMap<&str, String> = [
+            ("bin", bin.to_string_lossy().into_owned()),
+            ("sessionId", session_id.clone().unwrap_or_default()),
+            ("sourceSessionId", resume_src.clone().unwrap_or_default()),
+            ("permissionMode", permission_mode),
+            ("cwd", cwd_path.to_string_lossy().into_owned()),
+        ]
+        .into_iter()
+        .collect();
+
+        let argv = crate::agents::def::render_argv(template, &ctx);
+        let env: Vec<String> = def.env.iter().map(|(k, v)| format!("{k}={v}")).collect();
+
+        // Bind immediately for an assigned id — the record is what the transcript,
+        // checkpoints and Timeline all key off.
+        if let Some(sid) = session_id.clone() {
+            if !fork {
+                bind_session(&state, &terminal_id, &sid);
+            }
+        }
+
+        (
+            argv,
+            env,
+            Some(crate::pty::AgentRuntime {
+                agent_id,
+                session_id,
+                mode: parking_lot::Mutex::new(spec.permission_mode.clone()),
+            }),
+        )
+    } else {
+        (vec![default_shell(), "-l".to_string()], Vec::new(), None)
+    };
+
     let rmux = connect(&state).await?;
     let session_name = rmux_session_name(&terminal_id);
-    let session = spawn_rmux_session(
+    let session = spawn_pane(
         rmux,
         state.hub.clone(),
-        &terminal_id,
-        &session_name,
-        argv,
-        &cwd_path,
-        spec.cols,
-        spec.rows,
+        crate::pty::SpawnSpec {
+            id: &terminal_id,
+            session_name: &session_name,
+            argv,
+            cwd: &cwd_path,
+            cols: spec.cols,
+            rows: spec.rows,
+            env,
+            agent: runtime,
+        },
     )
     .await
     .map_err(|e| e.to_string())?;
-    state.sessions.lock().insert(terminal_id.clone(), session);
+
+    // Opening the same terminal twice (two browser tabs, or a reload racing the
+    // unmount) would otherwise leak the previous forwarding task, which keeps
+    // emitting to the same topic — the client then sees every byte twice.
+    if let Some(prev) = state.sessions.lock().insert(terminal_id.clone(), session) {
+        prev.output_task.abort();
+    }
 
     Ok(terminal_id)
 }
@@ -1653,6 +1766,170 @@ fn send_to_agent(state: &AppState, terminal_id: &str, payload: &str) -> Result<(
         .ok_or_else(|| "no such claude session".to_string())?
         .send_json(payload)
         .map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Agent TUI control (rmux panes)
+// ---------------------------------------------------------------------------
+
+/// The pane handle and agent definition for a terminal, or an error naming which
+/// half is missing.
+fn agent_pane(
+    state: &AppState,
+    terminal_id: &str,
+) -> Result<(rmux_sdk::Pane, crate::agents::AgentDef), String> {
+    let (pane, agent_id) = {
+        let sessions = state.sessions.lock();
+        let s = sessions
+            .get(terminal_id)
+            .ok_or_else(|| "no such terminal".to_string())?;
+        let id = s
+            .agent_id()
+            .ok_or_else(|| "not an agent session".to_string())?
+            .to_string();
+        (s.pane.clone(), id)
+    };
+    let def = state
+        .agents
+        .lock()
+        .get(&agent_id)
+        .cloned()
+        .ok_or_else(|| format!("unknown agent '{agent_id}'"))?;
+    Ok((pane, def))
+}
+
+/// Send a prompt to an agent's composer.
+///
+/// `submit` false pastes without pressing Enter — that is the "→ parent" and
+/// context-injection contract: the text lands in the composer for the human to read
+/// and edit, and is never sent on their behalf.
+///
+/// The paste is bracketed so a multi-line blob arrives as ONE paste; sent literally,
+/// a 20-line prompt would be 20 separate submissions.
+pub async fn agent_send(
+    state: &AppState,
+    terminal_id: String,
+    text: String,
+    submit: bool,
+) -> Result<(), String> {
+    let (pane, def) = agent_pane(state, &terminal_id)?;
+    let input = &def.input;
+    match input.paste {
+        crate::agents::def::PasteMode::Bracketed => {
+            pane.send_text(format!("{}{}{}", input.paste_prefix, text, input.paste_suffix))
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        crate::agents::def::PasteMode::Literal => {
+            pane.send_text(&text).await.map_err(|e| e.to_string())?;
+        }
+        crate::agents::def::PasteMode::Chunked => {
+            for chunk in text.as_bytes().chunks(input.chunk_bytes.max(1)) {
+                pane.send_text(String::from_utf8_lossy(chunk).into_owned())
+                    .await
+                    .map_err(|e| e.to_string())?;
+                tokio::time::sleep(std::time::Duration::from_millis(input.chunk_delay_ms)).await;
+            }
+        }
+    }
+    if submit {
+        // Let the paste land before Enter, or Enter arrives while the TUI is still
+        // absorbing the bracketed paste and is swallowed — leaving the prompt
+        // sitting in the composer, unsent, with no error anywhere. Observed live at
+        // the original 120ms.
+        tokio::time::sleep(std::time::Duration::from_millis(input.submit_delay_ms)).await;
+
+        // Verify rather than trust. A successful submit always changes the screen
+        // (the composer clears, or the message queues); if nothing moved, the key
+        // didn't register and we press once more.
+        //
+        // Comparing whole-screen text is deliberately agent-agnostic — it needs no
+        // knowledge of where this particular TUI draws its composer, so it keeps
+        // working for an agent whose definition someone else wrote.
+        let before = pane.snapshot().await.ok().map(|s| s.visible_text());
+        send_keys(&pane, &def.keys.submit).await?;
+        if let Some(before) = before {
+            tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+            let after = pane.snapshot().await.ok().map(|s| s.visible_text());
+            if after.as_deref() == Some(before.as_str()) {
+                send_keys(&pane, &def.keys.submit).await?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Send raw key tokens (tmux names like `Enter`, `Escape`, `C-c`, `BTab`).
+pub async fn agent_key(state: &AppState, terminal_id: String, key: String) -> Result<(), String> {
+    let (pane, _) = agent_pane(state, &terminal_id)?;
+    pane.send_key(key).await.map_err(|e| e.to_string())
+}
+
+/// Interrupt a running turn.
+pub async fn agent_interrupt(state: &AppState, terminal_id: String) -> Result<(), String> {
+    let (pane, def) = agent_pane(state, &terminal_id)?;
+    send_keys(&pane, &def.keys.interrupt).await
+}
+
+/// Cycle the agent's permission mode until the screen reports the target.
+///
+/// The mode key is a blind cycle — there is no "set mode to X" input — so this
+/// presses and reads back, bounded by the number of modes. Reading back matters:
+/// the starting mode comes from the user's own config and is not knowable in
+/// advance, so a fixed number of presses would land somewhere arbitrary.
+pub async fn agent_set_mode(
+    state: &AppState,
+    terminal_id: String,
+    mode: String,
+) -> Result<(), String> {
+    let (pane, def) = agent_pane(state, &terminal_id)?;
+    if def.keys.mode_cycle.is_empty() {
+        return Err("this agent has no mode cycle".to_string());
+    }
+    let re = def
+        .modes
+        .line
+        .as_deref()
+        .and_then(|p| regex::Regex::new(p).ok());
+
+    let read_mode = |pane: rmux_sdk::Pane, re: Option<regex::Regex>| async move {
+        let snap = pane.snapshot().await.ok()?;
+        let text = snap.visible_text();
+        let re = re?;
+        let caps = re.captures(&text)?;
+        Some(caps.get(1)?.as_str().trim().to_string())
+    };
+
+    let target = mode.to_lowercase();
+    // +1 attempt so a full cycle can return to where it started before giving up.
+    let limit = def.modes.cycle.len().max(1) + 1;
+    for _ in 0..limit {
+        if let Some(cur) = read_mode(pane.clone(), re.clone()).await {
+            if cur.to_lowercase().replace(' ', "") == target.replace(' ', "") {
+                if let Some(s) = state.sessions.lock().get(&terminal_id) {
+                    if let Some(a) = &s.agent {
+                        *a.mode.lock() = Some(mode.clone());
+                    }
+                }
+                return Ok(());
+            }
+        } else {
+            // Can't read the mode: press once and stop rather than cycling blindly
+            // through every mode, which could land on bypassPermissions.
+            send_keys(&pane, &def.keys.mode_cycle).await?;
+            return Ok(());
+        }
+        send_keys(&pane, &def.keys.mode_cycle).await?;
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+    }
+    Err(format!("could not reach '{mode}' mode"))
+}
+
+async fn send_keys(pane: &rmux_sdk::Pane, keys: &[String]) -> Result<(), String> {
+    for k in keys {
+        pane.send_key(k.clone()).await.map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

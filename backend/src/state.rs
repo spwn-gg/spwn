@@ -3,7 +3,7 @@
 use crate::claude::{ClaudeAgent, SessionStatus};
 use crate::hooks::HookRun;
 use crate::projects::ProjectsWatcher;
-use crate::pty::RmuxSession;
+use crate::pty::PaneSession;
 use crate::server::hub::EventHub;
 use crate::settings::Settings;
 use crate::store::ProjectStore;
@@ -22,8 +22,10 @@ pub struct AppState {
     pub hub: EventHub,
     /// Lazily-connected rmux daemon handle.
     pub rmux: OnceCell<Rmux>,
-    /// Live shell terminals (rmux), keyed by terminal id.
-    pub sessions: Mutex<HashMap<String, RmuxSession>>,
+    /// Live rmux panes, keyed by terminal id — shells AND agent TUIs. One map, so
+    /// write/resize/close/kill have a single code path regardless of what's running
+    /// inside.
+    pub sessions: Mutex<HashMap<String, PaneSession>>,
     /// Live Claude chat sessions (Agent SDK sidecars), keyed by terminal id.
     pub claude_agents: Mutex<HashMap<String, ClaudeAgent>>,
     /// Watches ~/.claude/projects for live transcript refresh.

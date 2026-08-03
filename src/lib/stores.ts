@@ -32,6 +32,8 @@ export interface OpenTab {
 	projectId: string;
 	projectName?: string;
 	kind: PaneKind;
+	/** Which agent definition to run, when kind === 'agent'. */
+	agent?: string;
 	title: string;
 	terminalId?: string;
 	cwd?: string;

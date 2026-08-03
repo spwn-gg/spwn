@@ -301,6 +301,8 @@ export interface OpenTerminalArgs {
 	projectId: string;
 	terminalId?: string;
 	kind: TerminalKind;
+	/** Which agent definition to run, when kind === 'agent'. */
+	agent?: string;
 	cols: number;
 	rows: number;
 	claudeResume?: string;
@@ -432,6 +434,34 @@ export function claudeInterrupt(terminalId: string): Promise<void> {
 /** Answer an AskUserQuestion picker (id = the question event's id). */
 export function claudeAnswer(terminalId: string, id: string, text: string): Promise<void> {
 	return invoke('claude_answer', { terminalId, id, text });
+}
+
+// --- Agent TUI control (rmux panes) ---
+
+/**
+ * Put text into an agent's composer.
+ *
+ * `submit` defaults to FALSE on purpose: pasting without sending is the contract
+ * for "→ parent" and context injection — the human reads and edits before a turn
+ * is spent. Pass true only when the user explicitly asked to send.
+ */
+export function agentSend(terminalId: string, text: string, submit = false): Promise<void> {
+	return invoke('agent_send', { terminalId, text, submit });
+}
+
+/** Send a raw key token (tmux names: `Enter`, `Escape`, `C-c`, `BTab`, `Up`…). */
+export function agentKey(terminalId: string, key: string): Promise<void> {
+	return invoke('agent_key', { terminalId, key });
+}
+
+/** Interrupt the running turn. */
+export function agentInterrupt(terminalId: string): Promise<void> {
+	return invoke('agent_interrupt', { terminalId });
+}
+
+/** Cycle the agent's permission mode until the screen reports `mode`. */
+export function agentSetMode(terminalId: string, mode: string): Promise<void> {
+	return invoke('agent_set_mode', { terminalId, mode });
 }
 
 /** Rewind a session to an earlier turn (anchorUuid = the turn's uuid). */

@@ -4,4 +4,4 @@ mod launcher;
 mod manager;
 
 pub use launcher::{default_shell, find_claude_bin, find_rmux_bin};
-pub use manager::{spawn_rmux_session, RmuxSession};
+pub use manager::{spawn_pane, AgentRuntime, PaneSession, SpawnSpec};

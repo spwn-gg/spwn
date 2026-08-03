@@ -1,6 +1,12 @@
 // Mirrors the Rust serde types (camelCase) returned by the backend.
 
-export type TerminalKind = 'shell' | 'claude';
+/**
+ * `shell` — a login shell in an rmux pane.
+ * `agent` — a coding agent driven as its real TUI in an rmux pane.
+ * `claude` — LEGACY: a Claude session on the Agent-SDK sidecar. Kept while both
+ *   transports run side by side so existing sessions aren't stranded.
+ */
+export type TerminalKind = 'shell' | 'agent' | 'claude';
 
 export interface TerminalRec {
 	id: string;
