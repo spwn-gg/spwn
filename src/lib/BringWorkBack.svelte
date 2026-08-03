@@ -97,7 +97,7 @@
 		if (!target || !lastResponse) return;
 		openTab({
 			projectId,
-			kind: 'claude',
+			kind: 'agent',
 			terminalId: target.id,
 			sessionId: target.sessionId ?? undefined,
 			title: target.title,

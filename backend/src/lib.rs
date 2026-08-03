@@ -6,7 +6,6 @@
 #[allow(dead_code, unused_imports)]
 mod agents;
 mod checkpoints;
-mod claude;
 mod commands;
 mod gitwt;
 mod hooks;

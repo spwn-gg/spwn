@@ -6,10 +6,9 @@
 //! stable, persistent ids so they reattach across restarts.
 
 use crate::checkpoints::{self, CheckpointMeta};
-use crate::claude::SessionStatus;
 use crate::gitwt;
 use crate::hooks;
-use crate::pty::{default_shell, find_claude_bin, spawn_pane};
+use crate::pty::{default_shell, spawn_pane};
 use crate::settings::{Settings, WorktreeLocation};
 use crate::state::AppState;
 use crate::store::{rmux_session_name, ContextBlock, ProjectRec, ScheduledTask, TerminalRec};
@@ -400,27 +399,6 @@ pub async fn open_terminal(
 
     let cwd_path = std::fs::canonicalize(&cwd).unwrap_or_else(|_| PathBuf::from(&cwd));
 
-    if kind == "claude" {
-        // Claude sessions run via the Agent SDK sidecar (a node process), NOT rmux.
-        // The chat UI drives it over stdin/stdout; its `init` event supplies the
-        // session id (bound by the frontend via set_terminal_session).
-        let claude_bin = resolved_claude(&state)
-            .ok_or_else(|| "claude binary not found (set its path in Settings)".to_string())?;
-        let agent = crate::claude::spawn_claude_agent(
-            state.clone(),
-            &terminal_id,
-            &cwd_path,
-            resume_src.as_deref(),
-            None, // resume_at: per-turn rewind is a v2 feature
-            fork,
-            &claude_bin,
-            spec.permission_mode.as_deref(),
-        )
-        .map_err(|e| e.to_string())?;
-        state.claude_agents.lock().insert(terminal_id.clone(), agent);
-        return Ok(terminal_id);
-    }
-
     // Everything else runs in an rmux pane: a login shell, or an agent's real TUI.
     let (argv, env, runtime) = if kind == "agent" {
         let agent_id = agent_id
@@ -559,10 +537,6 @@ pub async fn open_terminal(
 pub fn close_terminal(state: &AppState, terminal_id: String) -> Result<(), String> {
     if let Some(session) = state.sessions.lock().remove(&terminal_id) {
         session.output_task.abort();
-    }
-    if let Some(mut agent) = state.claude_agents.lock().remove(&terminal_id) {
-        agent.kill();
-        clear_claude_status(state, &terminal_id);
     }
     // An rmux pane survives detach, but its watcher does not (it exits once the
     // pane leaves `sessions`), so drop the live status with it.
@@ -1043,160 +1017,15 @@ pub fn clear_terminal_attention(state: &AppState, terminal_id: String) -> Result
             t.attention_reason = None;
         }
     }
-    // Drop any live "needs you" status too, so the sidebar clears immediately even
-    // though the (still-alive) sidecar won't re-emit until its next event.
+    // Drop any live "needs you" status too, so the sidebar clears immediately
+    // rather than waiting for the pane's next observable change.
     {
-        let mut map = state.claude_status.lock();
-        if !matches!(map.get(&terminal_id), Some(SessionStatus::Thinking)) {
+        let mut map = state.agent_status.lock();
+        if !matches!(map.get(&terminal_id), Some(crate::agents::SessionStatus::Thinking)) {
             map.remove(&terminal_id);
         }
     }
     persist(&state);
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Claude chat I/O (Agent SDK sidecar)
-// ---------------------------------------------------------------------------
-
-/// Send a user turn to a Claude session's sidecar.
-pub fn claude_send(state: &AppState, terminal_id: String, text: String) -> Result<(), String> {
-    let payload = serde_json::json!({ "t": "user", "text": text }).to_string();
-    send_to_agent(&state, &terminal_id, &payload)
-}
-
-/// Answer a tool-permission request for a Claude session.
-pub fn claude_permission(
-    state: &AppState,
-    terminal_id: String,
-    id: String,
-    allow: bool,
-    message: Option<String>,
-) -> Result<(), String> {
-    let payload =
-        serde_json::json!({ "t": "permission", "id": id, "allow": allow, "message": message })
-            .to_string();
-    send_to_agent(&state, &terminal_id, &payload)
-}
-
-/// Change the permission mode live (the Shift-Tab affordance): default → acceptEdits → plan.
-pub fn claude_set_mode(
-    state: &AppState,
-    terminal_id: String,
-    mode: String,
-) -> Result<(), String> {
-    let payload = serde_json::json!({ "t": "set_mode", "mode": mode }).to_string();
-    send_to_agent(&state, &terminal_id, &payload)
-}
-
-/// Interrupt the in-flight turn (Esc).
-pub fn claude_interrupt(state: &AppState, terminal_id: String) -> Result<(), String> {
-    let payload = serde_json::json!({ "t": "interrupt" }).to_string();
-    send_to_agent(&state, &terminal_id, &payload)
-}
-
-/// Answer an AskUserQuestion picker (id is the tool_use id from the question event).
-pub fn claude_answer(
-    state: &AppState,
-    terminal_id: String,
-    id: String,
-    text: String,
-) -> Result<(), String> {
-    let payload = serde_json::json!({ "t": "answer", "id": id, "text": text }).to_string();
-    send_to_agent(&state, &terminal_id, &payload)
-}
-
-/// Rewind a session to an earlier turn: restart its sidecar resumed at `anchor_uuid`,
-/// truncating the conversation to that point (later turns become an abandoned branch
-/// the transcript no longer renders).
-pub fn claude_rewind(
-    state: Arc<AppState>,
-    terminal_id: String,
-    anchor_uuid: String,
-) -> Result<(), String> {
-    let (session_id, cwd) = {
-        let store = state.store.lock();
-        let t = store
-            .terminal(&terminal_id)
-            .ok_or_else(|| "no such session".to_string())?;
-        let sid = t
-            .session_id
-            .clone()
-            .ok_or_else(|| "this session hasn't started yet".to_string())?;
-        (sid, t.cwd.clone())
-    };
-    let claude_bin = resolved_claude(&state)
-        .ok_or_else(|| "claude binary not found (set its path in Settings)".to_string())?;
-    let cwd_path = std::fs::canonicalize(&cwd).unwrap_or_else(|_| PathBuf::from(&cwd));
-    if let Some(mut agent) = state.claude_agents.lock().remove(&terminal_id) {
-        agent.kill();
-        clear_claude_status(&state, &terminal_id);
-    }
-    let agent = crate::claude::spawn_claude_agent(
-        state.clone(),
-        &terminal_id,
-        &cwd_path,
-        Some(session_id.as_str()),
-        Some(anchor_uuid.as_str()),
-        false,
-        &claude_bin,
-        None,
-    )
-    .map_err(|e| e.to_string())?;
-    state.claude_agents.lock().insert(terminal_id, agent);
-    Ok(())
-}
-
-/// Rewind AND restore the project files to that turn's checkpoint. Restores in the
-/// window where the sidecar is dead (no race), after saving a pre-restore snapshot.
-pub fn claude_rewind_restore(
-    state: Arc<AppState>,
-    terminal_id: String,
-    anchor_uuid: String,
-    restore: bool,
-) -> Result<(), String> {
-    let (session_id, cwd) = {
-        let store = state.store.lock();
-        let t = store
-            .terminal(&terminal_id)
-            .ok_or_else(|| "no such session".to_string())?;
-        let sid = t
-            .session_id
-            .clone()
-            .ok_or_else(|| "this session hasn't started yet".to_string())?;
-        (sid, t.cwd.clone())
-    };
-    let claude_bin = resolved_claude(&state)
-        .ok_or_else(|| "claude binary not found (set its path in Settings)".to_string())?;
-    let cwd_path = std::fs::canonicalize(&cwd).unwrap_or_else(|_| PathBuf::from(&cwd));
-    // 1. Kill the sidecar so the working tree is idle.
-    if let Some(mut agent) = state.claude_agents.lock().remove(&terminal_id) {
-        agent.kill();
-        clear_claude_status(&state, &terminal_id);
-    }
-    // 2. Restore files (safety snapshot first) while the agent is dead.
-    if restore {
-        if let Some(app_data) = app_data_dir(&state) {
-            let pd = Path::new(&cwd);
-            if let Some(cp) = checkpoints::find_for_turn(&app_data, &session_id, &anchor_uuid) {
-                let _ = checkpoints::capture(&app_data, pd, &session_id, "pre-restore", "pre-restore");
-                checkpoints::restore(&app_data, &session_id, &cp.id, pd)?;
-            }
-        }
-    }
-    // 3. Respawn resumed at the anchor.
-    let agent = crate::claude::spawn_claude_agent(
-        state.clone(),
-        &terminal_id,
-        &cwd_path,
-        Some(session_id.as_str()),
-        Some(anchor_uuid.as_str()),
-        false,
-        &claude_bin,
-        None,
-    )
-    .map_err(|e| e.to_string())?;
-    state.claude_agents.lock().insert(terminal_id, agent);
     Ok(())
 }
 
@@ -1370,64 +1199,11 @@ fn set_hook_running(state: &AppState, terminal_id: &str, event: Option<&str>) {
     );
 }
 
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ClaudeStatusPayload {
-    terminal_id: String,
-    status: SessionStatus,
-}
-
-/// Record a session's live status and broadcast it so the sidebar/tab bar track it.
-/// Also persists a coarse attention flag (+reason) on the record for needs-you states,
-/// so a restart (no live sidecar) still surfaces it. Called from the sidecar reader
-/// thread — reaches shared state via the managed `AppState`.
-pub(crate) fn emit_claude_status(state: &AppState, terminal_id: &str, status: SessionStatus) {
-    {
-        let mut map = state.claude_status.lock();
-        if status == SessionStatus::Idle {
-            map.remove(terminal_id);
-        } else {
-            map.insert(terminal_id.to_string(), status);
-        }
-    }
-    // Persist coarse attention for restart survival + render granularity.
-    let reason = match status {
-        SessionStatus::BlockedPermission | SessionStatus::BlockedQuestion => Some("blocked"),
-        SessionStatus::Done => Some("done"),
-        SessionStatus::Error => Some("error"),
-        _ => None,
-    };
-    if let Some(reason) = reason {
-        let mut changed = false;
-        {
-            let mut store = state.store.lock();
-            if let Some(t) = store.terminal_mut(terminal_id) {
-                if !t.needs_attention || t.attention_reason.as_deref() != Some(reason) {
-                    t.needs_attention = true;
-                    t.attention_reason = Some(reason.to_string());
-                    changed = true;
-                }
-            }
-        }
-        if changed {
-            persist(state);
-        }
-    }
-    state.hub.emit(
-        "claude://status",
-        ClaudeStatusPayload {
-            terminal_id: terminal_id.to_string(),
-            status,
-        },
-    );
-}
-
 /// Publish an agent-session status derived from its pane.
 ///
-/// Deliberately mirrors `emit_claude_status`'s behavior — live map, persisted
-/// `needs_attention` for restart survival, broadcast — so the sidebar dots, tab
-/// dots, and `clear_terminal_attention` all work identically regardless of which
-/// transport a session runs on.
+/// Live map, persisted `needs_attention` for restart survival, and a broadcast —
+/// so a session with no mounted tab still drives the sidebar, and the flag survives
+/// a restart where no pane has been observed yet.
 pub(crate) fn emit_agent_status(
     state: &Arc<AppState>,
     terminal_id: &str,
@@ -1507,21 +1283,6 @@ pub(crate) fn fire_turn_hooks(state: &AppState, terminal_id: &str, turn_uuid: &s
     fire_hooks(state, &ctx, "session-turn", false);
 }
 
-/// Clear a session's live status entry and broadcast `idle` — used when a sidecar is
-/// intentionally torn down (close/delete/rewind) so the reader thread's exit doesn't
-/// own the transition.
-fn clear_claude_status(state: &AppState, terminal_id: &str) {
-    {
-        state.claude_status.lock().remove(terminal_id);
-    }
-    state.hub.emit(
-        "claude://status",
-        ClaudeStatusPayload {
-            terminal_id: terminal_id.to_string(),
-            status: SessionStatus::Idle,
-        },
-    );
-}
 
 /// Stream one output line of a running hook to the session's Hooks panel.
 fn emit_hook_output(state: &AppState, terminal_id: &str, event: &str, line: &str) {
@@ -1873,16 +1634,6 @@ pub fn list_checkpoints(state: &AppState, session_id: String) -> Vec<CheckpointM
         .unwrap_or_default()
 }
 
-/// Write one JSON-line command to a Claude sidecar's stdin.
-fn send_to_agent(state: &AppState, terminal_id: &str, payload: &str) -> Result<(), String> {
-    let mut agents = state.claude_agents.lock();
-    agents
-        .get_mut(terminal_id)
-        .ok_or_else(|| "no such claude session".to_string())?
-        .send_json(payload)
-        .map_err(|e| e.to_string())
-}
-
 // ---------------------------------------------------------------------------
 // Agent rewind (drives the agent's own rewind UI)
 // ---------------------------------------------------------------------------
@@ -2209,12 +1960,6 @@ pub async fn resize_pty(
 // Claude transcript (prior history on reattach)
 // ---------------------------------------------------------------------------
 
-/// Auto-detected `claude` path (probe only; ignores the configured override).
-/// Used by Settings to show "detected: …".
-pub fn find_claude() -> Option<String> {
-    find_claude_bin().map(|p| p.to_string_lossy().into_owned())
-}
-
 pub fn get_settings(state: &AppState) -> Settings {
     state.settings.lock().clone()
 }
@@ -2245,21 +1990,6 @@ pub fn open_global_hooks_dir() -> Result<(), String> {
         .status()
         .map_err(|e| e.to_string())?;
     Ok(())
-}
-
-/// The `claude` binary to use: the configured override (if it exists), else auto-detect.
-///
-/// Reads `agent_paths["claude"]`, which `Settings::migrate` populates from the legacy
-/// `claude_path` on load — so an existing settings.json keeps working unchanged.
-pub(crate) fn resolved_claude(state: &AppState) -> Option<PathBuf> {
-    let configured = state.settings.lock().agent_paths.get("claude").cloned();
-    if let Some(p) = configured.filter(|s| !s.trim().is_empty()) {
-        let pb = PathBuf::from(p);
-        if pb.exists() {
-            return Some(pb);
-        }
-    }
-    find_claude_bin()
 }
 
 // ---------------------------------------------------------------------------
@@ -2307,7 +2037,7 @@ pub fn read_transcript(session_id: String) -> Vec<Turn> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-async fn connect(state: &AppState) -> Result<&Rmux, String> {
+pub(crate) async fn connect(state: &AppState) -> Result<&Rmux, String> {
     state
         .rmux
         .get_or_try_init(|| async {
@@ -2320,17 +2050,14 @@ async fn connect(state: &AppState) -> Result<&Rmux, String> {
         .map_err(|e| e.to_string())
 }
 
-/// Permanently kill the given terminals (rmux sessions and/or Claude sidecars) by id.
+/// Permanently kill the given terminals (their rmux panes) by id.
 async fn kill_terminals(state: &AppState, terminal_ids: &[String]) {
     let mut rmux_ids = Vec::new();
     for tid in terminal_ids {
         if let Some(session) = state.sessions.lock().remove(tid) {
             session.output_task.abort();
         }
-        if let Some(mut agent) = state.claude_agents.lock().remove(tid) {
-            agent.kill();
-            clear_claude_status(state, tid);
-        }
+        clear_agent_status(state, tid);
         rmux_ids.push(tid.clone());
     }
     if !rmux_ids.is_empty() {

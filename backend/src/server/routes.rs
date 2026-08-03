@@ -65,7 +65,6 @@ pub async fn invoke(
 ) -> ApiResult {
     match command.as_str() {
         // --- Settings / misc ---
-        "find_claude" => ok(cmd::find_claude()),
         "get_settings" => blocking!(state, body, NoArgs, st, _a, ok(cmd::get_settings(&st))),
         "set_settings" => {
             blocking!(state, body, SetSettingsArgs, st, a, ok_result(cmd::set_settings(&st, a.settings)))
@@ -186,36 +185,6 @@ pub async fn invoke(
         "set_terminal_session" => blocking!(
             state, body, SetTerminalSessionArgs, st, a,
             ok_result(cmd::set_terminal_session(&st, a.project_id, a.terminal_id, a.session_id))
-        ),
-
-        // --- Claude chat I/O ---
-        "claude_send" => blocking!(
-            state, body, ClaudeSendArgs, st, a,
-            ok_result(cmd::claude_send(&st, a.terminal_id, a.text))
-        ),
-        "claude_permission" => blocking!(
-            state, body, ClaudePermissionArgs, st, a,
-            ok_result(cmd::claude_permission(&st, a.terminal_id, a.id, a.allow, a.message))
-        ),
-        "claude_set_mode" => blocking!(
-            state, body, ClaudeSetModeArgs, st, a,
-            ok_result(cmd::claude_set_mode(&st, a.terminal_id, a.mode))
-        ),
-        "claude_interrupt" => blocking!(
-            state, body, TerminalIdArgs, st, a,
-            ok_result(cmd::claude_interrupt(&st, a.terminal_id))
-        ),
-        "claude_answer" => blocking!(
-            state, body, ClaudeAnswerArgs, st, a,
-            ok_result(cmd::claude_answer(&st, a.terminal_id, a.id, a.text))
-        ),
-        "claude_rewind" => blocking!(
-            state, body, ClaudeRewindArgs, st, a,
-            ok_result(cmd::claude_rewind(st, a.terminal_id, a.anchor_uuid))
-        ),
-        "claude_rewind_restore" => blocking!(
-            state, body, ClaudeRewindRestoreArgs, st, a,
-            ok_result(cmd::claude_rewind_restore(st, a.terminal_id, a.anchor_uuid, a.restore))
         ),
 
         // --- Checkpoints ---
@@ -520,52 +489,6 @@ struct SetTerminalSessionArgs {
     project_id: String,
     terminal_id: String,
     session_id: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ClaudeSendArgs {
-    terminal_id: String,
-    text: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ClaudePermissionArgs {
-    terminal_id: String,
-    id: String,
-    allow: bool,
-    message: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ClaudeSetModeArgs {
-    terminal_id: String,
-    mode: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ClaudeAnswerArgs {
-    terminal_id: String,
-    id: String,
-    text: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ClaudeRewindArgs {
-    terminal_id: String,
-    anchor_uuid: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ClaudeRewindRestoreArgs {
-    terminal_id: String,
-    anchor_uuid: String,
-    restore: bool,
 }
 
 #[derive(Deserialize)]

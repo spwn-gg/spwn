@@ -119,7 +119,7 @@
 		if (!blocks.length) return;
 		openTab({
 			projectId,
-			kind: 'claude',
+			kind: 'agent',
 			title: 'session',
 			projectName: project?.name,
 			initialPrompt: assemble(blocks)

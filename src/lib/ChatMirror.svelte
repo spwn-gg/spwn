@@ -4,8 +4,6 @@
 		readTranscript,
 		onProjectsChanged,
 		addContextBlock,
-		claudeRewind,
-		claudeRewindRestore,
 		agentRewind,
 		listCheckpoints
 	} from './ipc';
@@ -62,7 +60,7 @@
 		pendingUserText = null,
 		onReload = () => {},
 		onRewound = () => {},
-		kind = 'claude',
+		kind = 'agent',
 		embedded = false
 	}: {
 		projectId: string;
@@ -169,28 +167,24 @@
 		}
 		rewindBaseline = turns.length ? turns[turns.length - 1].uuid : null;
 		rewindAnchor = uuid;
-		// A TUI session is rewound by driving the agent's own rewind UI, which can
-		// legitimately refuse (the point may no longer be in its list). Surface that
-		// instead of leaving the optimistic truncation in place claiming success.
-		const p =
-			kind === 'agent'
-				? agentRewind(terminalId, uuid, restore)
-				: restore
-					? claudeRewindRestore(terminalId, uuid, true)
-					: claudeRewind(terminalId, uuid);
-		p.then(() => {
-			setStatus(
-				restore
-					? 'Rewound + restored files to this point. A safety snapshot was saved.'
-					: 'Rewound here — your next message continues from this point; later turns drop.'
-			);
-			onRewound();
-		}).catch((e) => {
-			// Put the view back: nothing was changed, so showing a truncated
-			// conversation would be a lie.
-			rewindAnchor = null;
-			setStatus(String(e).replace(/^Error:\s*/, ''));
-		});
+		// Rewinding drives the agent's own rewind UI, which can legitimately refuse
+		// (the point may no longer be in its list). Surface that instead of leaving
+		// the optimistic truncation in place claiming success.
+		agentRewind(terminalId, uuid, restore)
+			.then(() => {
+				setStatus(
+					restore
+						? 'Rewound + restored files to this point. A safety snapshot was saved.'
+						: 'Rewound here — your next message continues from this point; later turns drop.'
+				);
+				onRewound();
+			})
+			.catch((e: unknown) => {
+				// Put the view back: nothing was changed, so showing a truncated
+				// conversation would be a lie.
+				rewindAnchor = null;
+				setStatus(String(e).replace(/^Error:\s*/, ''));
+			});
 	}
 
 	$effect(() => {

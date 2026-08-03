@@ -121,9 +121,9 @@ fn router(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-/// Wait for Ctrl-C / SIGTERM, then tear down Claude sidecars (the old
-/// `RunEvent::Exit` behavior) so no orphaned node processes remain. rmux shell
-/// sessions are intentionally left alive (they persist across restarts).
+/// Wait for Ctrl-C / SIGTERM, then exit. rmux panes are intentionally left alive —
+/// shells and agent sessions both persist in the daemon and reattach with their
+/// processes intact on the next start.
 async fn shutdown_signal(state: Arc<AppState>) {
     let ctrl_c = async {
         let _ = tokio::signal::ctrl_c().await;
@@ -146,8 +146,5 @@ async fn shutdown_signal(state: Arc<AppState>) {
     }
 
     state.quitting.store(true, Ordering::SeqCst);
-    for (_, mut agent) in state.claude_agents.lock().drain() {
-        agent.kill();
-    }
     eprintln!("\nshutting down.");
 }

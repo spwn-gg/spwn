@@ -8,7 +8,6 @@ import { writable } from 'svelte/store';
 import type {
 	AgentSummary,
 	CheckpointMeta,
-	ClaudeEvent,
 	GitBranches,
 	HookPromptCloseEvent,
 	HookPromptEvent,
@@ -151,11 +150,6 @@ export function setSettings(settings: Settings): Promise<void> {
 /** Reveal the shared global hooks folder (~/.spwn/hooks) in Finder (creates it if needed). */
 export function openGlobalHooksDir(): Promise<void> {
 	return invoke('open_global_hooks_dir');
-}
-
-/** Auto-detected claude path (probe; ignores the configured override). */
-export function detectClaude(): Promise<string | null> {
-	return invoke('find_claude');
 }
 
 /**
@@ -309,9 +303,9 @@ export interface OpenTerminalArgs {
 	claudeFork?: string;
 	/** Terminal a fork/branch came from (to inherit its group). */
 	parentTerminalId?: string;
-	/** Seed a new Claude session: pasted into the input box (not auto-submitted). */
+	/** Seed a new session: pasted into the composer (not auto-submitted). */
 	initialPrompt?: string;
-	/** Initial permission/execution mode for a new Claude session. */
+	/** Initial permission/execution mode for a new session. */
 	permissionMode?: string;
 }
 
@@ -387,7 +381,7 @@ export function gitSync(projectId: string): Promise<string> {
 	return invoke('git_sync', { projectId });
 }
 
-/** Persist a discovered claude session id onto a terminal record. */
+/** Persist a discovered agent session id onto a terminal record. */
 export function setTerminalSession(
 	projectId: string,
 	terminalId: string,
@@ -402,38 +396,6 @@ export function writeToPty(terminalId: string, data: string): Promise<void> {
 
 export function resizePty(terminalId: string, cols: number, rows: number): Promise<void> {
 	return invoke('resize_pty', { ptyId: terminalId, cols, rows });
-}
-
-// --- Claude chat (Agent SDK sidecar) ---
-
-/** Send a user turn to a Claude session's sidecar. */
-export function claudeSend(terminalId: string, text: string): Promise<void> {
-	return invoke('claude_send', { terminalId, text });
-}
-
-/** Answer a tool-permission request. */
-export function claudePermission(
-	terminalId: string,
-	id: string,
-	allow: boolean,
-	message?: string
-): Promise<void> {
-	return invoke('claude_permission', { terminalId, id, allow, message });
-}
-
-/** Change the permission mode live (Shift-Tab): default | acceptEdits | plan | bypassPermissions. */
-export function claudeSetMode(terminalId: string, mode: string): Promise<void> {
-	return invoke('claude_set_mode', { terminalId, mode });
-}
-
-/** Interrupt the in-flight turn (Esc). */
-export function claudeInterrupt(terminalId: string): Promise<void> {
-	return invoke('claude_interrupt', { terminalId });
-}
-
-/** Answer an AskUserQuestion picker (id = the question event's id). */
-export function claudeAnswer(terminalId: string, id: string, text: string): Promise<void> {
-	return invoke('claude_answer', { terminalId, id, text });
 }
 
 // --- Agent TUI control (rmux panes) ---
@@ -491,20 +453,6 @@ export function agentSetMode(terminalId: string, mode: string): Promise<void> {
 	return invoke('agent_set_mode', { terminalId, mode });
 }
 
-/** Rewind a session to an earlier turn (anchorUuid = the turn's uuid). */
-export function claudeRewind(terminalId: string, anchorUuid: string): Promise<void> {
-	return invoke('claude_rewind', { terminalId, anchorUuid });
-}
-
-/** Rewind AND restore the project files to that turn's checkpoint. */
-export function claudeRewindRestore(
-	terminalId: string,
-	anchorUuid: string,
-	restore: boolean
-): Promise<void> {
-	return invoke('claude_rewind_restore', { terminalId, anchorUuid, restore });
-}
-
 // --- Project hooks (discovered shell scripts run on session lifecycle events) ---
 
 /** Discovered hooks + last-run results for a session's worktree. */
@@ -517,7 +465,7 @@ export function hooksRun(terminalId: string, event: string): Promise<void> {
 	return invoke('hooks_run', { terminalId, event });
 }
 
-/** Fire the `session-turn` hooks after a completed Claude turn (default: commit the
+/** Fire the `session-turn` hooks after a completed turn (default: commit the
  * turn onto the session branch + snapshot a checkpoint). No-op without a worktree. */
 export function hooksRunTurn(terminalId: string, turnUuid: string): Promise<void> {
 	return invoke('hooks_run_turn', { terminalId, turnUuid });
@@ -540,27 +488,19 @@ export function onHookRunning(cb: (e: HookRunningEvent) => void): Promise<Unlist
 	return listen<HookRunningEvent>('hooks://running', (e) => cb(e.payload));
 }
 
+
 /** A session's live status changed (thinking / blocked / done / error / idle). */
-export interface ClaudeStatusEvent {
+export interface AgentStatusEvent {
 	terminalId: string;
 	status: SessionStatus;
 }
 
-/** Fires (globally) whenever any Claude session's live status changes — drives the
- * sidebar/tab-bar spinner and attention dots without opening the session. */
-export function onClaudeStatus(cb: (e: ClaudeStatusEvent) => void): Promise<UnlistenFn> {
-	return listen<ClaudeStatusEvent>('claude://status', (e) => cb(e.payload));
-}
-
 /**
- * Live status for a TUI agent session, derived from its pane.
- *
- * Same payload shape as `claude://status`, so both transports feed one store and
- * every sidebar dot / tab spinner works identically regardless of which one a
- * session runs on.
+ * Fires globally whenever any session's live status changes — drives the sidebar
+ * and tab-bar spinners and attention dots without the session being open.
  */
-export function onAgentStatus(cb: (e: ClaudeStatusEvent) => void): Promise<UnlistenFn> {
-	return listen<ClaudeStatusEvent>('agent://status', (e) => cb(e.payload));
+export function onAgentStatus(cb: (e: AgentStatusEvent) => void): Promise<UnlistenFn> {
+	return listen<AgentStatusEvent>('agent://status', (e) => cb(e.payload));
 }
 
 /** A finished turn: the `session-turn` hooks (commit + checkpoint) have just run. */
@@ -630,9 +570,9 @@ export function listCheckpoints(sessionId: string): Promise<CheckpointMeta[]> {
 	return invoke('list_checkpoints', { sessionId });
 }
 
-// --- Claude transcript ---
+// --- Conversation transcript ---
 
-/** Prior conversation turns for a saved claude session (history on reattach). */
+/** Prior conversation turns for a saved session. */
 export function readTranscript(sessionId: string): Promise<Turn[]> {
 	return invoke('read_transcript', { sessionId });
 }
@@ -647,26 +587,6 @@ export function onPtyExit(terminalId: string, cb: () => void): Promise<UnlistenF
 	return listen(`pty://exit/${terminalId}`, () => cb());
 }
 
-/** Fires once a new/forked Claude pty session's id is discovered on disk. */
-export function onPtySessionId(terminalId: string, cb: (sessionId: string) => void): Promise<UnlistenFn> {
-	return listen<string>(`pty://session-id/${terminalId}`, (e) => cb(e.payload));
-}
-
-/** Streamed events from a Claude session's sidecar (init/delta/thinking/tool_use/…). */
-export function onClaudeEvent(terminalId: string, cb: (ev: ClaudeEvent) => void): Promise<UnlistenFn> {
-	return listen<string>(`claude://event/${terminalId}`, (e) => {
-		try {
-			cb(JSON.parse(e.payload) as ClaudeEvent);
-		} catch {
-			/* ignore a malformed line */
-		}
-	});
-}
-
-/** Fires when a Claude session's sidecar process exits. */
-export function onClaudeExit(terminalId: string, cb: () => void): Promise<UnlistenFn> {
-	return listen(`claude://exit/${terminalId}`, () => cb());
-}
 
 /** Fires (debounced) whenever ~/.claude/projects changes; the payload is the list
  *  of changed session ids (empty when the affected sessions can't be determined). */

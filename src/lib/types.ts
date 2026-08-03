@@ -3,10 +3,8 @@
 /**
  * `shell` — a login shell in an rmux pane.
  * `agent` — a coding agent driven as its real TUI in an rmux pane.
- * `claude` — LEGACY: a Claude session on the Agent-SDK sidecar. Kept while both
- *   transports run side by side so existing sessions aren't stranded.
  */
-export type TerminalKind = 'shell' | 'agent' | 'claude';
+export type TerminalKind = 'shell' | 'agent';
 
 export interface TerminalRec {
 	id: string;
@@ -29,7 +27,7 @@ export interface TerminalRec {
 	attentionReason?: string | null;
 }
 
-/** Live status of a Claude session (mirrors Rust `SessionStatus`). Drives the
+/** Live status of a session (mirrors Rust `SessionStatus`). Drives the
  * sidebar/tab-bar spinner and attention dots. */
 export type SessionStatus =
 	| 'thinking'
@@ -165,8 +163,6 @@ export interface ProjectRec {
 export type WorktreeLocation = 'sibling' | 'internal' | 'appData';
 
 export interface Settings {
-	/** @deprecated Migrated into `agentPaths.claude` on load; kept so an old settings.json still parses. */
-	claudePath?: string | null;
 	/** Per-agent binary overrides, keyed by agent id. Absent/empty ⇒ auto-detect. */
 	agentPaths?: Record<string, string>;
 	/** Agent id for new sessions when none is picked. Null ⇒ first installed agent. */
@@ -246,23 +242,3 @@ export interface CheckpointMeta {
 	kind: 'turn' | 'baseline' | 'pre-restore' | 'pre-switch';
 }
 
-/** Streamed events from the Claude sidecar (mirrors its stdout JSON-line protocol). */
-export type ClaudeEvent =
-	| { t: 'init'; sessionId: string }
-	| { t: 'delta'; text: string }
-	| { t: 'thinking'; text: string }
-	| { t: 'tool_use'; id: string; name: string; input: unknown }
-	| { t: 'tool_result'; id: string; text: string; isError?: boolean }
-	| { t: 'permission'; id: string; tool: string; input: unknown; title?: string }
-	| { t: 'question'; id: string; questions: QuestionSpec[] }
-	| { t: 'assistant_uuid'; uuid: string }
-	| { t: 'result'; subtype: string; sessionId: string }
-	| { t: 'error'; message: string };
-
-/** A pending tool-permission request awaiting the user's allow/deny. */
-export interface PermissionReq {
-	id: string;
-	tool: string;
-	input: unknown;
-	title?: string;
-}

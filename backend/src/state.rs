@@ -1,6 +1,5 @@
 //! Shared backend state, wrapped in an `Arc` and handed to commands + the server.
 
-use crate::claude::{ClaudeAgent, SessionStatus};
 use crate::hooks::HookRun;
 use crate::projects::ProjectsWatcher;
 use crate::pty::PaneSession;
@@ -26,8 +25,6 @@ pub struct AppState {
     /// write/resize/close/kill have a single code path regardless of what's running
     /// inside.
     pub sessions: Mutex<HashMap<String, PaneSession>>,
-    /// Live Claude chat sessions (Agent SDK sidecars), keyed by terminal id.
-    pub claude_agents: Mutex<HashMap<String, ClaudeAgent>>,
     /// Watches ~/.claude/projects for live transcript refresh.
     pub watcher: Mutex<Option<ProjectsWatcher>>,
     /// CM-owned projects/terminals (persisted to disk).
@@ -67,8 +64,4 @@ pub struct AppState {
     pub agent_status: Mutex<HashMap<String, crate::agents::SessionStatus>>,
     /// Which turn each session last fired `session-turn` hooks for.
     pub turns: Mutex<crate::agents::turns::TurnTracker>,
-    /// Live Claude session status: terminal id → status. Derived in the sidecar reader
-    /// so background sessions (no pane) still drive the sidebar. Ephemeral (empty on
-    /// launch; restart falls back to persisted `needs_attention`/`attention_reason`).
-    pub claude_status: Mutex<HashMap<String, SessionStatus>>,
 }

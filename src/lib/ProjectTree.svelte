@@ -21,8 +21,8 @@
 		openTabs,
 		activeTab,
 		hookRunning,
-		claudeStatus,
-		setClaudeStatus,
+		agentStatus,
+		setAgentStatus,
 		confirmDialog,
 		type ConfirmRow
 	} from './stores';
@@ -120,18 +120,10 @@
 		openMenuId = null;
 		addTerminal(p, 'shell', e);
 	}
-	/**
-	 * The primary entry point. Sessions now run the agent's own TUI in a persistent
-	 * rmux pane; the Agent-SDK sidecar remains available from the ⋯ menu for
-	 * existing conversations until it is retired.
-	 */
+	/** Start a session with the default agent. */
 	function menuClaude(p: ProjectRec, e: Event) {
 		openMenuId = null;
 		addTerminal(p, 'agent', e);
-	}
-	function menuSidecar(p: ProjectRec, e: Event) {
-		openMenuId = null;
-		addTerminal(p, 'claude', e);
 	}
 	/**
 	 * Start a session on the rmux/TUI transport instead of the Agent-SDK sidecar.
@@ -167,7 +159,7 @@
 		await refreshProjects();
 	}
 
-	function addTerminal(p: ProjectRec, kind: 'shell' | 'claude' | 'agent', e: Event) {
+	function addTerminal(p: ProjectRec, kind: 'shell' | 'agent', e: Event) {
 		e.stopPropagation();
 		const title = kind === 'shell' ? 'shell' : 'session';
 		openTab({ projectId: p.id, kind, title, projectName: p.name });
@@ -198,10 +190,10 @@
 	}
 
 	function openExisting(p: ProjectRec, t: TerminalRec) {
-		// Viewing a session clears its attention. Drop the live "needs you" status now so
-		// the dot clears immediately (the still-alive sidecar won't re-emit until its next
-		// event); keep a live "thinking" spinner. Also clear the persisted flag.
-		if ($claudeStatus.get(t.id) !== 'thinking') setClaudeStatus(t.id, 'idle');
+		// Viewing a session clears its attention. Drop the live "needs you" status now
+		// so the dot clears immediately rather than waiting for the pane's next
+		// observable change; keep a live "thinking" spinner. Also clear the persisted flag.
+		if ($agentStatus.get(t.id) !== 'thinking') setAgentStatus(t.id, 'idle');
 		if (t.needsAttention) {
 			clearTerminalAttention(t.id).then(() => refreshProjects());
 		}
@@ -310,7 +302,7 @@
 		if (!t.sessionId) return;
 		openTab({
 			projectId: p.id,
-			kind: 'claude',
+			kind: 'agent',
 			title: 'fork',
 			projectName: p.name,
 			claudeFork: t.sessionId,
@@ -325,19 +317,19 @@
 	const isActiveTerm = (t: TerminalRec) => $activeTab?.terminalId === t.id;
 
 	/** The status token to render on a session row: a live spinner while it works, or an
-	 * attention state when it needs you. Prefers the live `claude://status` feed; falls
-	 * back to the persisted flag (+reason) when no sidecar is attached (e.g. after
+	 * attention state when it needs you. Prefers the live `agent://status` feed; falls
+	 * back to the persisted flag (+reason) when no pane has been observed yet (e.g. after
 	 * restart). Attention states are hidden for the session you're already viewing. */
 	type RowStatus = 'thinking' | 'blocked' | 'done' | 'error' | null;
 	function statusFor(t: TerminalRec): RowStatus {
-		const live = $claudeStatus.get(t.id);
+		const live = $agentStatus.get(t.id);
 		let s: RowStatus = null;
 		if (live === 'thinking') s = 'thinking';
 		else if (live === 'blockedPermission' || live === 'blockedQuestion') s = 'blocked';
 		else if (live === 'done') s = 'done';
 		else if (live === 'error') s = 'error';
 		else if (t.needsAttention) {
-			// No live sidecar → fall back to the persisted reason.
+			// Nothing observed live → fall back to the persisted reason.
 			s = t.attentionReason === 'blocked' ? 'blocked' : t.attentionReason === 'error' ? 'error' : 'done';
 		}
 		// You're looking at it — don't nag with an attention dot (a spinner still shows).
@@ -374,15 +366,6 @@
 			<span class="t-icon" class:branch={depth > 0}>{depth > 0 ? '↳' : '✦'}</span>
 			<span class="t-title" class:attn={status === 'blocked' || status === 'done'} class:err={status === 'error'}>{t.title}</span>
 			{#if $hookRunning.has(t.id)}<span class="hook-spin" title="Running {$hookRunning.get(t.id)} hook…"></span>{/if}
-			{#if t.kind === 'claude'}
-				<!--
-					Both transports render the same ✦ and the same title, which makes it easy
-					to open the legacy one by accident and wonder why it behaves differently
-					(it has no terminal, and needs the Node sidecar). Say which is which
-					until the sidecar is retired.
-				-->
-				<span class="legacy" title="Legacy Agent-SDK chat — no terminal; this transport is being retired">chat</span>
-			{/if}
 			{#if t.branch}<span class="wt-chip" title="git branch (this session's worktree): {t.branch}">⎇ {t.branch.replace(/^cm\//, '')}</span>{/if}
 			{#if status === 'thinking'}<span class="think-spin" title="Working…"></span>
 			{:else if status === 'blocked'}<span class="attn-dot blocked" title="Waiting for you"></span>
@@ -476,9 +459,6 @@
 			{:else}
 				<button onclick={(e) => menuClaude(p, e)}>New session</button>
 			{/if}
-			<button onclick={(e) => menuSidecar(p, e)} title="Legacy Agent-SDK chat (being retired)">
-				New session (legacy chat)
-			</button>
 			<button onclick={(e) => menuShell(p, e)}>New shell</button>
 			<button onclick={(e) => menuVscode(p, e)}>Open in VS Code</button>
 			<div class="sep"></div>
@@ -838,14 +818,6 @@
 	}
 	.t-icon.ctx {
 		color: #b8a9d8;
-	}
-	.legacy {
-		font-size: 9px;
-		padding: 0 4px;
-		border-radius: 3px;
-		border: 1px solid #5c4a2a;
-		color: #d8a657;
-		flex: 0 0 auto;
 	}
 	.t-title {
 		flex: 1 1 auto;

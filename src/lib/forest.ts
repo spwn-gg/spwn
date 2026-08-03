@@ -7,13 +7,14 @@ import type { ProjectRec, TerminalRec } from './types';
 /**
  * Does this terminal hold a conversation (as opposed to a plain shell)?
  *
- * Covers BOTH transports: `agent` (the agent's TUI in an rmux pane) and the legacy
- * `claude` sidecar. Filtering on `kind === 'claude'` alone leaves TUI sessions out
- * of the sidebar entirely — they'd still exist, still hold a worktree and a branch,
- * but be unreachable once their tab is closed.
+ * A session holds a conversation and owns a worktree; a shell is just a terminal.
+ * Getting this wrong once left agent sessions out of the sidebar entirely — they
+ * still existed and still held a branch, but became unreachable when their tab
+ * closed — and made the delete confirm treat one as a shell, skipping the
+ * at-risk warning.
  */
 export function isSessionTerminal(t: TerminalRec): boolean {
-	return t.kind === 'claude' || t.kind === 'agent';
+	return t.kind === 'agent';
 }
 
 export interface SessionNode {

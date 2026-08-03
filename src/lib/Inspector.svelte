@@ -6,7 +6,7 @@
 	//   • Hooks    — the session's .spwn lifecycle hooks + last runs.
 	import { onMount, onDestroy } from 'svelte';
 	import { sessionMergeStatus, hooksStatus, onProjectsChanged, openInVscode } from './ipc';
-	import { projects, toggleInspector, alwaysAllowTools, sessionAllowTools, revokeTool } from './stores';
+	import { projects, toggleInspector } from './stores';
 	import MergePanel from './MergePanel.svelte';
 	import BringWorkBack from './BringWorkBack.svelte';
 	import CheckpointList from './CheckpointList.svelte';
@@ -20,7 +20,7 @@
 		terminalId,
 		sessionId,
 		busy = false,
-		kind = 'claude'
+		kind = 'agent'
 	}: {
 		projectId: string;
 		terminalId: string | undefined;
@@ -77,14 +77,6 @@
 	const hasHooks = $derived(!!hooks?.available);
 	const canMerge = $derived(!!term?.branch && !!merge && merge.ahead > 0 && !merge.blocker);
 
-	// Tools the user has auto-allowed (session grants first, then global "always").
-	const grants = $derived.by(() => {
-		const always = [...$alwaysAllowTools].map((tool) => ({ tool, scope: 'always' as const }));
-		const sess = [...($sessionAllowTools.get(terminalId ?? '') ?? [])]
-			.filter((t) => !$alwaysAllowTools.has(t))
-			.map((tool) => ({ tool, scope: 'session' as const }));
-		return [...sess, ...always];
-	});
 </script>
 
 <aside class="inspector">
@@ -150,20 +142,6 @@
 			{:else}
 				<div class="empty">This session has no git worktree (the project isn't a git repo), so there's nothing to merge and no branch state to show.</div>
 			{/if}
-			<div class="grants">
-				<div class="k">Auto-allowed tools</div>
-				{#if grants.length}
-					{#each grants as g (g.tool)}
-						<div class="grant">
-							<span class="mono gtool">{g.tool}</span>
-							<span class="gscope">{g.scope}</span>
-							<button class="revoke" title="Ask again next time" onclick={() => terminalId && revokeTool(terminalId, g.tool)}>revoke</button>
-						</div>
-					{/each}
-				{:else}
-					<div class="empty-inline">None — you're asked before each tool runs. Choose “This session” or “Always” on a prompt to auto-allow.</div>
-				{/if}
-			</div>
 		{:else if section === 'transcript'}
 			<!--
 				With the agent's own TUI as the main surface, the rendered conversation
@@ -379,49 +357,5 @@
 		padding: 6px 12px;
 		font-size: 11px;
 		color: #c89a4a;
-	}
-	.grants {
-		padding: 10px 12px;
-	}
-	.grant {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		padding: 5px 0;
-		font-size: 12px;
-	}
-	.gtool {
-		flex: 1 1 auto;
-		min-width: 0;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		color: #9bbf8a;
-	}
-	.gscope {
-		flex: 0 0 auto;
-		font-size: 10px;
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
-		color: var(--text-muted);
-	}
-	.revoke {
-		flex: 0 0 auto;
-		background: none;
-		border: 1px solid var(--border-strong);
-		color: var(--text-dim);
-		border-radius: 4px;
-		padding: 2px 8px;
-		font-size: 11px;
-		cursor: pointer;
-	}
-	.revoke:hover {
-		color: var(--danger);
-		border-color: #5a3a3a;
-	}
-	.empty-inline {
-		font-size: 11px;
-		color: var(--text-muted);
-		line-height: 1.5;
-		margin-top: 4px;
 	}
 </style>

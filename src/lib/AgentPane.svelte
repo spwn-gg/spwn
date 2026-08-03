@@ -2,9 +2,9 @@
 	/**
 	 * One agent session: the agent's real TUI, live, in an rmux pane.
 	 *
-	 * Deliberately thin compared to the sidecar-era ClaudePane. There is no event
-	 * stream to reassemble, no optimistic overlay, and no permission/question queue —
-	 * the TUI renders all of that itself, and keystrokes go straight to it.
+	 * There is no event stream to reassemble, no optimistic overlay, and no
+	 * permission/question queue — the TUI renders all of that itself, and keystrokes
+	 * go straight to it.
 	 *
 	 * What the terminal cannot do is talk about "a turn": it has no notion of one, so
 	 * ↺ Return here, → parent, ＋ ctx and ⑂ Fork have nowhere to live in the pane.

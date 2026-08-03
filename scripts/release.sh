@@ -3,7 +3,7 @@
 #
 # Builds the release binary (with the SPA embedded) and packages a flat tarball
 # containing everything spwn needs at runtime — the `spwn` binary plus its `rmux`,
-# `node`, and `sidecar.mjs` helpers laid out the way the binary discovers them
+# helpers laid out the way the binary discovers them
 # (next to the executable). With the `gh` CLI present it also creates the GitHub
 # release and uploads the tarball.
 #
@@ -46,27 +46,21 @@ echo "==> releasing $TAG ($PLATFORM) to github.com/$SLUG"
 
 # --- build -----------------------------------------------------------------
 [ -d node_modules ] || npm install
-echo "==> npm run build:app (SPA + sidecar + release binary)"
+echo "==> npm run build:app (SPA + release binary)"
 npm run build:app
 
 BIN="backend/target/release/spwn"
-SIDECAR="backend/resources/sidecar.mjs"
 [ -x "$BIN" ] || { echo "error: $BIN not found — did the build fail?" >&2; exit 1; }
-[ -f "$SIDECAR" ] || { echo "error: $SIDECAR not found — run npm run build:sidecar" >&2; exit 1; }
 
 # Runtime helpers: prefer committed bundled binaries, else fall back to PATH.
 RMUX="$(ls backend/binaries/rmux 2>/dev/null || command -v rmux || true)"
-NODE="$(ls backend/binaries/node 2>/dev/null || command -v node || true)"
 [ -n "$RMUX" ] || { echo "error: rmux not found (bundle it in backend/binaries/ or install on PATH)" >&2; exit 1; }
-[ -n "$NODE" ] || { echo "error: node not found on PATH" >&2; exit 1; }
 
 # --- stage the flat layout the binary discovers (next to the executable) ---
 rm -rf "$OUT"; mkdir -p "$OUT/$NAME/resources"
 cp "$BIN"     "$OUT/$NAME/spwn"
 cp "$RMUX"    "$OUT/$NAME/rmux"
-cp "$NODE"    "$OUT/$NAME/node"
-cp "$SIDECAR" "$OUT/$NAME/resources/sidecar.mjs"
-chmod +x "$OUT/$NAME/spwn" "$OUT/$NAME/rmux" "$OUT/$NAME/node"
+chmod +x "$OUT/$NAME/spwn" "$OUT/$NAME/rmux"
 
 TARBALL="$OUT/${NAME}.tar.gz"
 ( cd "$OUT" && tar czf "${NAME}.tar.gz" "$NAME" )
