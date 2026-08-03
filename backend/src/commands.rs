@@ -1884,6 +1884,100 @@ fn send_to_agent(state: &AppState, terminal_id: &str, payload: &str) -> Result<(
 }
 
 // ---------------------------------------------------------------------------
+// Agent rewind (drives the agent's own rewind UI)
+// ---------------------------------------------------------------------------
+
+/// Which menu row to select in order to KEEP everything up to `anchor_uuid`.
+///
+/// The menu's own wording is "restore to the point **before** you sent this
+/// message", so a row labelled with prompt P discards P and everything after it.
+/// To keep the anchor turn, the row to select is therefore the one labelled with the
+/// **next** user prompt — not the anchor's own.
+///
+/// Getting this backwards is not a cosmetic error: it silently throws away one more
+/// turn than the user asked for, and paired with a file restore it reverts the
+/// working tree further than they expected. The row text is also the only join key
+/// between spwn's uuid anchors and the agent's UI, since the menu lists messages
+/// rather than ids.
+fn rewind_target_text(session_id: &str, anchor_uuid: &str) -> Result<String, String> {
+    let path = crate::projects::locate_session(session_id)
+        .ok_or_else(|| "could not find this session's transcript".to_string())?;
+    let turns = crate::transcript::read_transcript(&path);
+    let idx = turns
+        .iter()
+        .position(|t| t.uuid == anchor_uuid)
+        .ok_or_else(|| "could not find that turn in the transcript".to_string())?;
+    let text = |t: &crate::transcript::Turn| {
+        t.blocks
+            .iter()
+            .find(|b| b.kind == "text")
+            .and_then(|b| b.text.clone())
+    };
+    turns[idx + 1..]
+        .iter()
+        .find(|t| t.role == "user")
+        .and_then(text)
+        .ok_or_else(|| {
+            "this is already the latest turn — there is nothing after it to undo".to_string()
+        })
+}
+
+/// Return a session's conversation to an earlier turn, optionally restoring files.
+///
+/// The conversation rewind is performed by the agent itself; spwn only drives the
+/// menu, and refuses if it cannot positively identify the requested turn. Files are
+/// spwn's own checkpoints, restored only AFTER the conversation rewind succeeded —
+/// so a failed or mis-targeted rewind can never leave the working tree reverted to a
+/// point the conversation didn't reach.
+pub async fn agent_rewind(
+    state: Arc<AppState>,
+    terminal_id: String,
+    anchor_uuid: String,
+    restore_files: bool,
+) -> Result<(), String> {
+    let (pane, def) = agent_pane(&state, &terminal_id)?;
+    if def.rewind.strategy == crate::agents::def::RewindStrategy::None {
+        return Err(format!("{} does not support rewinding", def.name));
+    }
+    let (session_id, cwd) = {
+        let store = state.store.lock();
+        let t = store
+            .terminal(&terminal_id)
+            .ok_or_else(|| "no such session".to_string())?;
+        let sid = t
+            .session_id
+            .clone()
+            .ok_or_else(|| "this session hasn't started yet".to_string())?;
+        (sid, t.cwd.clone())
+    };
+
+    let anchor_text = rewind_target_text(&session_id, &anchor_uuid)?;
+
+    // Drive the agent's menu. Errors here mean nothing was changed.
+    crate::agents::rewind::drive(&pane, &def, &anchor_text, restore_files).await?;
+
+    // Only now touch the working tree. `/rewind` branches the transcript in place
+    // and keeps the same session id, so checkpoints stay correctly keyed and there
+    // is no re-binding to do.
+    if restore_files && def.rewind.tui.as_ref().is_some_and(|t| t.restore_both.is_none()) {
+        if let Some(app_data) = app_data_dir(&state) {
+            let pd = Path::new(&cwd);
+            if let Some(cp) = checkpoints::find_for_turn(&app_data, &session_id, &anchor_uuid) {
+                // Safety snapshot before overwriting anything.
+                let _ =
+                    checkpoints::capture(&app_data, pd, &session_id, "pre-restore", "pre-restore");
+                checkpoints::restore(&app_data, &session_id, &cp.id, pd)?;
+            }
+        }
+    }
+
+    // The conversation now rests on the anchor turn. Re-seed the turn tracker so the
+    // restored turn isn't mistaken for a newly-finished one and re-committed.
+    state.turns.lock().prime(&terminal_id, &anchor_uuid);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Agent TUI control (rmux panes)
 // ---------------------------------------------------------------------------
 
@@ -1929,6 +2023,23 @@ pub async fn agent_send(
 ) -> Result<(), String> {
     let (pane, def) = agent_pane(state, &terminal_id)?;
     let input = &def.input;
+
+    // "Send this text" has to send exactly this text, so empty the composer first.
+    //
+    // The composer is not reliably empty: an agent pre-fills it after a rewind (with
+    // the message you rewound past), and a user may have typed something. Appending
+    // produced a real corruption — a follow-up prompt arrived as
+    // "…word: charlieReply with exactly one word: delta" and was sent to the model.
+    //
+    // Only for `submit`: a paste-for-review deliberately leaves the human in
+    // control of the composer, and clearing there could discard what they typed.
+    if submit {
+        for k in &def.keys.clear {
+            pane.send_key(k.clone()).await.map_err(|e| e.to_string())?;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    }
+
     match input.paste {
         crate::agents::def::PasteMode::Bracketed => {
             pane.send_text(format!("{}{}{}", input.paste_prefix, text, input.paste_suffix))

@@ -7,6 +7,7 @@
 
 pub mod def;
 pub mod defaults;
+pub mod rewind;
 pub mod status;
 pub mod turns;
 

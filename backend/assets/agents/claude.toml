@@ -62,6 +62,10 @@ file   = "{sessionId}.jsonl"
 [keys]
 submit        = ["Enter"]
 interrupt     = ["Escape"]        # confirmed: stops a running turn
+# Clear the composer. NOT Esc-Esc: on an empty composer that is Claude Code's
+# "edit previous message" shortcut, which drops the TUI into history-editing mode.
+# C-u clears when there is text and is a no-op when there is not.
+clear         = ["C-u"]
 interruptHard = ["C-c", "C-c"]
 modeCycle     = ["BTab"]          # shift-tab
 redraw        = ["C-l"]

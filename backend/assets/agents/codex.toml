@@ -44,6 +44,7 @@ format = "none"
 [keys]
 submit        = ["Enter"]
 interrupt     = ["Escape"]
+clear         = ["C-u"]
 interruptHard = ["C-c", "C-c"]
 modeCycle     = []
 redraw        = ["C-l"]

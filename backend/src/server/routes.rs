@@ -232,6 +232,15 @@ pub async fn invoke(
             ok(cmd::list_checkpoints(&st, a.session_id))
         ),
 
+        // --- Agent rewind ---
+        "agent_rewind" => {
+            let a: AgentRewindArgs = parse(&body)?;
+            ok_result(
+                cmd::agent_rewind(state.clone(), a.terminal_id, a.anchor_uuid, a.restore_files)
+                    .await,
+            )
+        }
+
         // --- Agent TUI control (rmux panes) ---
         "agent_send" => {
             let a: AgentSendArgs = parse(&body)?;
@@ -581,6 +590,15 @@ struct RestoreCheckpointArgs {
 #[serde(rename_all = "camelCase")]
 struct SessionIdArgs {
     session_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentRewindArgs {
+    terminal_id: String,
+    anchor_uuid: String,
+    #[serde(default)]
+    restore_files: bool,
 }
 
 #[derive(Deserialize)]

@@ -465,6 +465,22 @@ export function agentKey(terminalId: string, key: string): Promise<void> {
 	return invoke('agent_key', { terminalId, key });
 }
 
+/**
+ * Return an agent session's conversation to an earlier turn, optionally restoring
+ * the working tree from that turn's checkpoint.
+ *
+ * Rejects — changing nothing — if spwn cannot positively identify the turn in the
+ * agent's own rewind list. Given the choice between rewinding somewhere near where
+ * you asked and refusing, it refuses.
+ */
+export function agentRewind(
+	terminalId: string,
+	anchorUuid: string,
+	restoreFiles = false
+): Promise<void> {
+	return invoke('agent_rewind', { terminalId, anchorUuid, restoreFiles });
+}
+
 /** Interrupt the running turn. */
 export function agentInterrupt(terminalId: string): Promise<void> {
 	return invoke('agent_interrupt', { terminalId });

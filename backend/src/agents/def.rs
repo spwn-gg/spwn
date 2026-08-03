@@ -211,6 +211,19 @@ pub struct KeySpec {
     pub submit: Vec<String>,
     /// Graceful interrupt. CONFIRMED for claude: `Escape` stops a running turn.
     pub interrupt: Vec<String>,
+    /// Empty the composer.
+    ///
+    /// Separate from `interrupt`, because one Escape does NOT clear Claude Code's
+    /// input — it prompts "Esc again to clear". Typing into a non-empty composer
+    /// APPENDS, which is how a `/rewind` silently became the message
+    /// "…charlie/rewind" and a follow-up prompt arrived mangled.
+    ///
+    /// Default `C-u` (readline kill-line), NOT a double Escape: measured live,
+    /// Esc-Esc on an EMPTY composer is Claude Code's "edit previous message"
+    /// shortcut, so using it as a clear silently drops the TUI into history-editing
+    /// mode and every later keystroke goes somewhere unintended. `C-u` clears when
+    /// there is text and is a harmless no-op when there isn't.
+    pub clear: Vec<String>,
     /// Escalation when `interrupt` doesn't take.
     pub interrupt_hard: Vec<String>,
     /// Cycle permission modes (claude: shift-tab).
@@ -229,6 +242,7 @@ impl Default for KeySpec {
         Self {
             submit: vec!["Enter".into()],
             interrupt: vec!["Escape".into()],
+            clear: vec!["C-u".into()],
             interrupt_hard: vec!["C-c".into(), "C-c".into()],
             mode_cycle: vec!["BTab".into()],
             redraw: vec!["C-l".into()],
