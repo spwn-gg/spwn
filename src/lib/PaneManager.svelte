@@ -78,6 +78,7 @@
 						projectId={tab.projectId}
 						agent={tab.agent}
 						terminalId={tab.terminalId}
+						sessionId={tab.sessionId}
 						claudeResume={tab.claudeResume}
 						claudeFork={tab.claudeFork}
 						parentTerminalId={tab.parentTerminalId}

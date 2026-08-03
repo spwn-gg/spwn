@@ -11,22 +11,26 @@
 	import BringWorkBack from './BringWorkBack.svelte';
 	import CheckpointList from './CheckpointList.svelte';
 	import HooksPanel from './HooksPanel.svelte';
+	import ChatMirror from './ChatMirror.svelte';
 	import { ACTIONS } from './labels';
-	import type { MergeStatus, HooksStatus } from './types';
+	import type { MergeStatus, HooksStatus, TerminalKind } from './types';
 
 	let {
 		projectId,
 		terminalId,
 		sessionId,
-		busy = false
+		busy = false,
+		kind = 'claude'
 	}: {
 		projectId: string;
 		terminalId: string | undefined;
 		sessionId: string | undefined;
 		busy?: boolean;
+		/** Which transport owns this session (routes rewind). */
+		kind?: TerminalKind;
 	} = $props();
 
-	type Section = 'overview' | 'timeline' | 'hooks';
+	type Section = 'overview' | 'transcript' | 'timeline' | 'hooks';
 	let section = $state<Section>('overview');
 	let showMerge = $state(false);
 	let showBringBack = $state(false);
@@ -87,6 +91,13 @@
 	<div class="head">
 		<div class="tabs">
 			<button class:on={section === 'overview'} onclick={() => (section = 'overview')}>Overview</button>
+			<button
+				class:on={section === 'transcript'}
+				onclick={() => (section = 'transcript')}
+				disabled={!sessionId}
+				title={sessionId ? 'The conversation, with per-turn actions' : 'No conversation yet'}>
+				Transcript
+			</button>
 			<button class:on={section === 'timeline'} onclick={() => (section = 'timeline')}>Timeline</button>
 			<button class:on={section === 'hooks'} onclick={() => (section = 'hooks')} disabled={!hasHooks}>Hooks</button>
 		</div>
@@ -152,6 +163,16 @@
 				{:else}
 					<div class="empty-inline">None — you're asked before each tool runs. Choose “This session” or “Always” on a prompt to auto-allow.</div>
 				{/if}
+			</div>
+		{:else if section === 'transcript'}
+			<!--
+				With the agent's own TUI as the main surface, the rendered conversation
+				lives here rather than in the pane. It is what makes per-turn actions
+				possible at all — the terminal has no notion of "this turn", so ↺ Return
+				here, → parent, ＋ ctx and ⑂ Fork have nowhere else to hang.
+			-->
+			<div class="transcript">
+				<ChatMirror {projectId} {terminalId} {sessionId} {kind} embedded />
 			</div>
 		{:else if section === 'timeline'}
 			<div class="explain">
@@ -347,6 +368,12 @@
 		font-size: 12px;
 		color: var(--text-muted);
 		line-height: 1.5;
+	}
+	.transcript {
+		display: flex;
+		flex-direction: column;
+		min-height: 0;
+		height: 100%;
 	}
 	.status {
 		padding: 6px 12px;

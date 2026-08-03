@@ -4,10 +4,13 @@
 
 	let {
 		terminalId = undefined,
-		def = undefined
+		def = undefined,
+		onTranscript = undefined
 	}: {
 		terminalId?: string;
 		def?: AgentSummary;
+		/** Open the Inspector, where the conversation and per-turn actions live. */
+		onTranscript?: () => void;
 	} = $props();
 
 	/**
@@ -81,6 +84,16 @@
 	<button class="stop" disabled={!terminalId} onclick={stop} title="Interrupt the current turn (Esc)">
 		Stop
 	</button>
+
+	{#if onTranscript}
+		<button
+			class="stop"
+			disabled={!terminalId}
+			onclick={onTranscript}
+			title="Conversation, timeline, fork and rewind">
+			Transcript
+		</button>
+	{/if}
 </div>
 
 <style>

@@ -98,7 +98,16 @@
 		openMenuId = null;
 		addTerminal(p, 'shell', e);
 	}
+	/**
+	 * The primary entry point. Sessions now run the agent's own TUI in a persistent
+	 * rmux pane; the Agent-SDK sidecar remains available from the ⋯ menu for
+	 * existing conversations until it is retired.
+	 */
 	function menuClaude(p: ProjectRec, e: Event) {
+		openMenuId = null;
+		addTerminal(p, 'agent', e);
+	}
+	function menuSidecar(p: ProjectRec, e: Event) {
 		openMenuId = null;
 		addTerminal(p, 'claude', e);
 	}
@@ -107,10 +116,7 @@
 	 * Offered alongside the existing entry point rather than replacing it, so the
 	 * new path can be lived with before it becomes the default.
 	 */
-	function menuAgent(p: ProjectRec, e: Event) {
-		openMenuId = null;
-		addTerminal(p, 'agent', e);
-	}
+
 	async function menuVscode(p: ProjectRec, e: Event) {
 		e.stopPropagation();
 		openMenuId = null;
@@ -431,8 +437,8 @@
 			tabindex="-1"
 			style="left: {menuPos.x}px; top: {menuPos.y}px">
 			<button onclick={(e) => menuClaude(p, e)}>New session</button>
-			<button onclick={(e) => menuAgent(p, e)} title="Run the agent's own TUI in a persistent pane">
-				New session (terminal)
+			<button onclick={(e) => menuSidecar(p, e)} title="Legacy Agent-SDK chat (being retired)">
+				New session (legacy chat)
 			</button>
 			<button onclick={(e) => menuShell(p, e)}>New shell</button>
 			<button onclick={(e) => menuVscode(p, e)}>Open in VS Code</button>
