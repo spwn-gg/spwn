@@ -28,7 +28,7 @@
 	} from './stores';
 	import { get } from 'svelte/store';
 	import { ACTIONS } from './labels';
-	import { claudeForest, type SessionNode } from './forest';
+	import { claudeForest, isSessionTerminal, type SessionNode } from './forest';
 	import type { ProjectRec, TerminalRec } from './types';
 
 	let collapsed = $state(new Set<string>());
@@ -180,6 +180,7 @@
 		openTab({
 			projectId: p.id,
 			kind: t.kind,
+			agent: t.agent ?? undefined,
 			terminalId: t.id,
 			title: t.title,
 			projectName: p.name,
@@ -224,7 +225,10 @@
 
 	async function removeTerminal(p: ProjectRec, t: TerminalRec, e: Event) {
 		e.stopPropagation();
-		const isSession = t.kind === 'claude';
+		// BOTH transports are sessions. Classifying a TUI session as a shell here
+		// meant the confirm said "Delete shell", skipped stakeRows entirely, and so
+		// destroyed a worktree with unmerged commits without naming what was at risk.
+		const isSession = isSessionTerminal(t);
 		const { rows, atRisk } = isSession
 			? await stakeRows(p, t)
 			: { rows: [] as ConfirmRow[], atRisk: false };
@@ -321,7 +325,7 @@
 {#snippet termRow(p: ProjectRec, t: TerminalRec, nested: boolean)}
 	<div class="row terminal" class:nested class:active={isActiveTerm(t)}>
 		<button class="row-main" onclick={() => openExisting(p, t)} title={t.title}>
-			<span class="t-icon">{t.kind === 'claude' ? '✦' : '$'}</span>
+			<span class="t-icon">{isSessionTerminal(t) ? '✦' : '$'}</span>
 			<span class="t-title">{t.title}</span>
 		</button>
 		<button class="icon-btn t-del" title="Delete shell" onclick={(e) => removeTerminal(p, t, e)}>×</button>

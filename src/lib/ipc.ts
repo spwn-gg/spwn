@@ -449,6 +449,17 @@ export function agentSend(terminalId: string, text: string, submit = false): Pro
 	return invoke('agent_send', { terminalId, text, submit });
 }
 
+/**
+ * Repaint a terminal with its pane's current screen.
+ *
+ * Call this AFTER subscribing to `onPtyOutput`, never before: the output stream
+ * starts at "now", so a reattached pane is blank until its process next writes, and
+ * anything the backend emits before the subscription exists is dropped.
+ */
+export function primePty(terminalId: string, cols: number, rows: number): Promise<void> {
+	return invoke('prime_pty', { terminalId, cols, rows });
+}
+
 /** Send a raw key token (tmux names: `Enter`, `Escape`, `C-c`, `BTab`, `Up`…). */
 export function agentKey(terminalId: string, key: string): Promise<void> {
 	return invoke('agent_key', { terminalId, key });

@@ -105,6 +105,80 @@ impl PaneSession {
     }
 }
 
+/// Rewrite bare `\n` as `\r\n`.
+///
+/// `capture-pane` separates rows with a plain newline, which is fine for a file but
+/// wrong for a terminal: with the pty in raw mode, LF moves the cursor DOWN without
+/// returning it to column 0. Writing a capture verbatim therefore renders a
+/// staircase — every row starting where the previous row ended, text broken across
+/// the screen at increasing offsets. It reads convincingly like a width mismatch,
+/// which is what makes it worth naming here.
+fn crlf(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len() + bytes.len() / 40);
+    let mut prev = 0u8;
+    for &b in bytes {
+        if b == b'\n' && prev != b'\r' {
+            out.push(b'\r');
+        }
+        out.push(b);
+        prev = b;
+    }
+    out
+}
+
+/// Emit the pane's CURRENT screen on `pty://output/<id>` so a freshly-attached
+/// client paints immediately.
+///
+/// The output stream starts at `Now`, so without this a reattached pane stays blank
+/// until the process next writes — which for an idle full-screen TUI can be forever.
+///
+/// This is a SEPARATE call rather than part of `spawn_pane` on purpose. Priming
+/// inside the spawn broadcasts before `open_terminal` has even returned, so the
+/// client — which can only subscribe once it knows the terminal id — is guaranteed
+/// to miss it. The frame goes out to a topic with no listeners and the pane renders
+/// blank anyway. The client must subscribe first, then ask for the repaint.
+///
+/// `escape_ansi(true)` keeps SGR as real escape sequences, so the bytes can be
+/// written straight into xterm. (`escape_sequences(true)` octal-escapes them into
+/// literal text, which renders as visible garbage — measured in the M0 spike.)
+pub async fn prime_pane(pane: &Pane, hub: &EventHub, id: &str, cols: u16, rows: u16) {
+    let engine = base64::engine::general_purpose::STANDARD;
+    let out_event = format!("pty://output/{id}");
+
+    // Match the pane to the client's geometry FIRST.
+    //
+    // A capture is a grid of the pane's current width. Written into an xterm of a
+    // different width it re-wraps, and the result is visibly scrambled — text broken
+    // mid-word across columns, the composer offset. `EnsureSession`'s size applies
+    // when a session is created, not when an existing one is reused, so a reattach
+    // from a differently-sized window lands mismatched unless we resize here.
+    //
+    // The resize is also worth more than it looks: if the size really changed, the
+    // TUI redraws itself at the new geometry, which is a fresher and more correct
+    // repaint than any capture.
+    let _ = pane
+        .resize(TerminalSizeSpec::new(cols.max(1), rows.max(1)))
+        .await;
+    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+
+    match pane.capture_pane().escape_ansi(true).await {
+        Ok(cap) if !cap.stdout.is_empty() => {
+            // Clear and home before painting: the client's xterm may hold stale
+            // content (or a stale cursor position) from a previous attach, and the
+            // capture is a full-screen image, not a delta.
+            let mut out = b"\x1b[2J\x1b[H".to_vec();
+            out.extend_from_slice(&crlf(&cap.stdout));
+            hub.emit(&out_event, engine.encode(&out));
+        }
+        // Capture unsupported or empty: ask the program to repaint instead.
+        // Harmless at a shell prompt (redraws the line), and the alternative is a
+        // blank pane.
+        _ => {
+            let _ = pane.send_key("C-l".to_string()).await;
+        }
+    }
+}
+
 /// How to start a pane.
 pub struct SpawnSpec<'a> {
     pub id: &'a str,
@@ -148,28 +222,6 @@ pub async fn spawn_pane(rmux: &Rmux, hub: EventHub, spec: SpawnSpec<'_>) -> anyh
     let out_event = format!("pty://output/{}", spec.id);
     let exit_event = format!("pty://exit/{}", spec.id);
     let engine = base64::engine::general_purpose::STANDARD;
-
-    // Prime the client with the pane's CURRENT screen before streaming.
-    //
-    // The output stream starts at `Now`, so without this a reattached pane is blank
-    // until the process next writes. For a shell at a prompt that's merely odd; for
-    // a full-screen TUI — which is the primary surface now — it looks broken on
-    // every browser reload and every tab switch, and an idle agent may not write
-    // anything for minutes.
-    //
-    // `escape_ansi(true)` keeps SGR as real escape sequences, so the bytes can go
-    // straight into xterm. (`escape_sequences(true)` octal-escapes them into
-    // literal text, which renders as garbage — measured in the M0 spike.)
-    match pane.capture_pane().escape_ansi(true).await {
-        Ok(cap) if !cap.stdout.is_empty() => {
-            hub.emit(&out_event, engine.encode(&cap.stdout));
-        }
-        // Capture unsupported or empty: ask the TUI to repaint instead. Harmless at
-        // a shell prompt (redraws the line), and the alternative is a blank pane.
-        _ => {
-            let _ = pane.send_key("C-l".to_string()).await;
-        }
-    }
 
     let pane_out = pane.clone();
     let activity_out = Arc::clone(&activity);
@@ -215,6 +267,16 @@ mod tests {
     use super::*;
     use rmux_sdk::RmuxBuilder;
     use std::time::Duration;
+
+    #[test]
+    fn crlf_fixes_bare_newlines_without_doubling_existing_ones() {
+        assert_eq!(crlf(b"a\nb"), b"a\r\nb".to_vec());
+        // Already-correct line endings must not become \r\r\n, which renders as a
+        // blank line between every row.
+        assert_eq!(crlf(b"a\r\nb"), b"a\r\nb".to_vec());
+        assert_eq!(crlf(b"a\nb\r\nc\n"), b"a\r\nb\r\nc\r\n".to_vec());
+        assert_eq!(crlf(b"no newlines"), b"no newlines".to_vec());
+    }
 
     /// Locate the rmux daemon, or `None` to skip (same precedence as `launcher`).
     fn rmux_available() -> bool {
@@ -283,11 +345,12 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(1500)).await;
         first.output_task.abort();
 
-        // Second attach = what a browser reload does. Subscribe BEFORE reattaching,
-        // then assert the very first frames already contain the marker — i.e. it came
-        // from the capture, not from new output (the process is sleeping and writes
-        // nothing more).
-        let mut rx = hub.subscribe();
+        // Second attach = what reopening the session does.
+        //
+        // The ordering here mirrors the real client EXACTLY, and that matters: the
+        // browser cannot subscribe until `open_terminal` has returned it a terminal
+        // id, so anything emitted during the spawn is missed. An earlier version of
+        // this test subscribed before spawning and passed while the UI stayed blank.
         let second = spawn_pane(
             &rmux,
             hub.clone(),
@@ -304,6 +367,10 @@ mod tests {
         )
         .await
         .expect("reattach");
+
+        // ...only now can a client subscribe, and only then ask for the repaint.
+        let mut rx = hub.subscribe();
+        prime_pane(&second.pane, &hub, "prime2", 80, 24).await;
 
         let mut seen = String::new();
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);

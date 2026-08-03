@@ -1948,6 +1948,24 @@ pub async fn write_to_pty(
         .map_err(|e| e.to_string())
 }
 
+/// Repaint a freshly-attached client with the pane's current screen.
+///
+/// Called by the client AFTER it has subscribed to `pty://output/<id>` — the
+/// subscription can't exist any earlier, since the terminal id only comes back from
+/// `open_terminal`. Anything the backend emits before that point is broadcast to
+/// nobody.
+pub async fn prime_pty(
+    state: &AppState,
+    pty_id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    let pane = state.sessions.lock().get(&pty_id).map(|s| s.pane.clone());
+    let pane = pane.ok_or_else(|| "no such terminal".to_string())?;
+    crate::pty::prime_pane(&pane, &state.hub, &pty_id, cols, rows).await;
+    Ok(())
+}
+
 pub async fn resize_pty(
     state: &AppState,
     pty_id: String,

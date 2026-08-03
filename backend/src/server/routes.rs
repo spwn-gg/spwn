@@ -255,6 +255,10 @@ pub async fn invoke(
             let a: WriteToPtyArgs = parse(&body)?;
             ok_result(cmd::write_to_pty(&state, a.pty_id, a.data).await)
         }
+        "prime_pty" => {
+            let a: PrimePtyArgs = parse(&body)?;
+            ok_result(cmd::prime_pty(&state, a.terminal_id, a.cols, a.rows).await)
+        }
         "resize_pty" => {
             let a: ResizePtyArgs = parse(&body)?;
             ok_result(cmd::resize_pty(&state, a.pty_id, a.cols, a.rows).await)
@@ -602,6 +606,14 @@ struct AgentKeyArgs {
 struct AgentSetModeArgs {
     terminal_id: String,
     mode: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PrimePtyArgs {
+    terminal_id: String,
+    cols: u16,
+    rows: u16,
 }
 
 #[derive(Deserialize)]

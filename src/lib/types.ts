@@ -12,6 +12,8 @@ export interface TerminalRec {
 	id: string;
 	title: string;
 	kind: TerminalKind;
+	/** Which agent definition drives this session (kind === 'agent'). */
+	agent?: string | null;
 	cwd: string;
 	sessionId?: string | null;
 	groupId?: string | null;

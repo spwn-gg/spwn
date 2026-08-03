@@ -8,6 +8,7 @@
 		writeToPty,
 		resizePty,
 		closeTerminal,
+		primePty,
 		onPtyOutput,
 		onPtyExit
 	} from './ipc';
@@ -83,11 +84,15 @@
 		onOpened?.(id);
 		refreshProjects();
 
-		// The backend primes this stream with a capture of the pane's current
-		// screen, so a reattached TUI paints immediately instead of staying blank
-		// until the process next writes.
 		unlisten.push(await onPtyOutput(id, (bytes) => term?.write(bytes)));
 		unlisten.push(await onPtyExit(id, () => term?.writeln('\r\n\x1b[90m[session ended]\x1b[0m')));
+
+		// Only NOW ask the backend to repaint the pane's current screen. It has to be
+		// after the subscription above: the output stream starts at "now", so a
+		// reattached pane shows nothing until the process next writes — forever, for
+		// an idle TUI. Priming any earlier (e.g. inside openTerminal) broadcasts
+		// before this listener exists and is silently dropped.
+		primePty(id, term.cols, term.rows).catch(() => {});
 
 		term.onData((d) => {
 			if (id) writeToPty(id, d);
