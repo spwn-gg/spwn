@@ -21,14 +21,16 @@
 		openTabs,
 		activeTab,
 		hookRunning,
-		claudeStatus,
-		setClaudeStatus,
+		agentStatus,
+		setAgentStatus,
 		confirmDialog,
 		type ConfirmRow
 	} from './stores';
 	import { get } from 'svelte/store';
 	import { ACTIONS } from './labels';
-	import { claudeForest, type SessionNode } from './forest';
+	import { claudeForest, isSessionTerminal, type SessionNode } from './forest';
+	import { listAgents } from './ipc';
+	import type { AgentSummary } from './types';
 	import type { ProjectRec, TerminalRec } from './types';
 
 	let collapsed = $state(new Set<string>());
@@ -94,14 +96,41 @@
 		menuPos = { x: Math.min(r.left, window.innerWidth - 210), y: Math.max(8, y) };
 		openMenuId = p.id;
 	}
+	// Which agents can actually be launched. Loaded once; the picker only appears
+	// when there is a genuine choice, so the common single-agent setup stays a
+	// one-click "New session".
+	let agentDefs = $state<AgentSummary[]>([]);
+	listAgents().then((a) => (agentDefs = a)).catch(() => {});
+	const installedAgents = $derived(agentDefs.filter((a) => a.binary));
+
+	function startAgent(p: ProjectRec, agentId: string, e: Event) {
+		e.stopPropagation();
+		openMenuId = null;
+		const def = agentDefs.find((a) => a.id === agentId);
+		openTab({
+			projectId: p.id,
+			kind: 'agent',
+			agent: agentId,
+			title: def?.name ?? 'session',
+			projectName: p.name
+		});
+	}
+
 	function menuShell(p: ProjectRec, e: Event) {
 		openMenuId = null;
 		addTerminal(p, 'shell', e);
 	}
+	/** Start a session with the default agent. */
 	function menuClaude(p: ProjectRec, e: Event) {
 		openMenuId = null;
-		addTerminal(p, 'claude', e);
+		addTerminal(p, 'agent', e);
 	}
+	/**
+	 * Start a session on the rmux/TUI transport instead of the Agent-SDK sidecar.
+	 * Offered alongside the existing entry point rather than replacing it, so the
+	 * new path can be lived with before it becomes the default.
+	 */
+
 	async function menuVscode(p: ProjectRec, e: Event) {
 		e.stopPropagation();
 		openMenuId = null;
@@ -130,9 +159,10 @@
 		await refreshProjects();
 	}
 
-	function addTerminal(p: ProjectRec, kind: 'shell' | 'claude', e: Event) {
+	function addTerminal(p: ProjectRec, kind: 'shell' | 'agent', e: Event) {
 		e.stopPropagation();
-		openTab({ projectId: p.id, kind, title: kind === 'claude' ? 'session' : 'shell', projectName: p.name });
+		const title = kind === 'shell' ? 'shell' : 'session';
+		openTab({ projectId: p.id, kind, title, projectName: p.name });
 	}
 
 	async function openSessionCode(t: TerminalRec, e: Event) {
@@ -160,16 +190,17 @@
 	}
 
 	function openExisting(p: ProjectRec, t: TerminalRec) {
-		// Viewing a session clears its attention. Drop the live "needs you" status now so
-		// the dot clears immediately (the still-alive sidecar won't re-emit until its next
-		// event); keep a live "thinking" spinner. Also clear the persisted flag.
-		if ($claudeStatus.get(t.id) !== 'thinking') setClaudeStatus(t.id, 'idle');
+		// Viewing a session clears its attention. Drop the live "needs you" status now
+		// so the dot clears immediately rather than waiting for the pane's next
+		// observable change; keep a live "thinking" spinner. Also clear the persisted flag.
+		if ($agentStatus.get(t.id) !== 'thinking') setAgentStatus(t.id, 'idle');
 		if (t.needsAttention) {
 			clearTerminalAttention(t.id).then(() => refreshProjects());
 		}
 		openTab({
 			projectId: p.id,
 			kind: t.kind,
+			agent: t.agent ?? undefined,
 			terminalId: t.id,
 			title: t.title,
 			projectName: p.name,
@@ -214,7 +245,10 @@
 
 	async function removeTerminal(p: ProjectRec, t: TerminalRec, e: Event) {
 		e.stopPropagation();
-		const isSession = t.kind === 'claude';
+		// BOTH transports are sessions. Classifying a TUI session as a shell here
+		// meant the confirm said "Delete shell", skipped stakeRows entirely, and so
+		// destroyed a worktree with unmerged commits without naming what was at risk.
+		const isSession = isSessionTerminal(t);
 		const { rows, atRisk } = isSession
 			? await stakeRows(p, t)
 			: { rows: [] as ConfirmRow[], atRisk: false };
@@ -268,7 +302,7 @@
 		if (!t.sessionId) return;
 		openTab({
 			projectId: p.id,
-			kind: 'claude',
+			kind: 'agent',
 			title: 'fork',
 			projectName: p.name,
 			claudeFork: t.sessionId,
@@ -283,19 +317,19 @@
 	const isActiveTerm = (t: TerminalRec) => $activeTab?.terminalId === t.id;
 
 	/** The status token to render on a session row: a live spinner while it works, or an
-	 * attention state when it needs you. Prefers the live `claude://status` feed; falls
-	 * back to the persisted flag (+reason) when no sidecar is attached (e.g. after
+	 * attention state when it needs you. Prefers the live `agent://status` feed; falls
+	 * back to the persisted flag (+reason) when no pane has been observed yet (e.g. after
 	 * restart). Attention states are hidden for the session you're already viewing. */
 	type RowStatus = 'thinking' | 'blocked' | 'done' | 'error' | null;
 	function statusFor(t: TerminalRec): RowStatus {
-		const live = $claudeStatus.get(t.id);
+		const live = $agentStatus.get(t.id);
 		let s: RowStatus = null;
 		if (live === 'thinking') s = 'thinking';
 		else if (live === 'blockedPermission' || live === 'blockedQuestion') s = 'blocked';
 		else if (live === 'done') s = 'done';
 		else if (live === 'error') s = 'error';
 		else if (t.needsAttention) {
-			// No live sidecar → fall back to the persisted reason.
+			// Nothing observed live → fall back to the persisted reason.
 			s = t.attentionReason === 'blocked' ? 'blocked' : t.attentionReason === 'error' ? 'error' : 'done';
 		}
 		// You're looking at it — don't nag with an attention dot (a spinner still shows).
@@ -311,7 +345,7 @@
 {#snippet termRow(p: ProjectRec, t: TerminalRec, nested: boolean)}
 	<div class="row terminal" class:nested class:active={isActiveTerm(t)}>
 		<button class="row-main" onclick={() => openExisting(p, t)} title={t.title}>
-			<span class="t-icon">{t.kind === 'claude' ? '✦' : '$'}</span>
+			<span class="t-icon">{isSessionTerminal(t) ? '✦' : '$'}</span>
 			<span class="t-title">{t.title}</span>
 		</button>
 		<button class="icon-btn t-del" title="Delete shell" onclick={(e) => removeTerminal(p, t, e)}>×</button>
@@ -416,7 +450,15 @@
 			role="menu"
 			tabindex="-1"
 			style="left: {menuPos.x}px; top: {menuPos.y}px">
-			<button onclick={(e) => menuClaude(p, e)}>New session</button>
+			{#if installedAgents.length > 1}
+				{#each installedAgents as a (a.id)}
+					<button onclick={(e) => startAgent(p, a.id, e)}>
+						New {a.name} session{a.untested ? ' (experimental)' : ''}
+					</button>
+				{/each}
+			{:else}
+				<button onclick={(e) => menuClaude(p, e)}>New session</button>
+			{/if}
 			<button onclick={(e) => menuShell(p, e)}>New shell</button>
 			<button onclick={(e) => menuVscode(p, e)}>Open in VS Code</button>
 			<div class="sep"></div>

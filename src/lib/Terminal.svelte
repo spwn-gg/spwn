@@ -8,32 +8,39 @@
 		writeToPty,
 		resizePty,
 		closeTerminal,
-		setTerminalSession,
+		primePty,
 		onPtyOutput,
-		onPtyExit,
-		onPtySessionId
+		onPtyExit
 	} from './ipc';
-	import { setTabTerminalId, setTabSession, refreshProjects } from './stores';
+	import { setTabTerminalId, refreshProjects } from './stores';
 	import type { TerminalKind } from './types';
 
 	let {
 		tabKey,
 		projectId,
 		kind = 'shell',
+		agent = undefined,
 		terminalId = undefined,
 		claudeResume = undefined,
 		claudeFork = undefined,
 		parentTerminalId = undefined,
-		initialPrompt = undefined
+		initialPrompt = undefined,
+		permissionMode = undefined,
+		onOpened = undefined
 	}: {
 		tabKey: string;
 		projectId: string;
 		kind?: TerminalKind;
+		/** Which agent definition to run, when kind === 'agent'. */
+		agent?: string;
 		terminalId?: string;
 		claudeResume?: string;
 		claudeFork?: string;
 		parentTerminalId?: string;
 		initialPrompt?: string;
+		permissionMode?: string;
+		/** Called with the backend terminal id once the pane is live. */
+		onOpened?: (id: string) => void;
 	} = $props();
 
 	let container: HTMLDivElement;
@@ -60,33 +67,32 @@
 				projectId,
 				terminalId,
 				kind,
+				agent,
 				cols: term.cols,
 				rows: term.rows,
 				claudeResume,
 				claudeFork,
 				parentTerminalId,
-				initialPrompt
+				initialPrompt,
+				permissionMode
 			});
 		} catch (e) {
 			term.writeln(`\r\n\x1b[31m[open error] ${e}\x1b[0m`);
 			return;
 		}
 		setTabTerminalId(tabKey, id);
+		onOpened?.(id);
 		refreshProjects();
 
 		unlisten.push(await onPtyOutput(id, (bytes) => term?.write(bytes)));
 		unlisten.push(await onPtyExit(id, () => term?.writeln('\r\n\x1b[90m[session ended]\x1b[0m')));
 
-		// New/forked Claude sessions reveal their id once written to disk; bind it
-		// so the chat mirror can read the transcript.
-		if (kind === 'claude') {
-			unlisten.push(
-				await onPtySessionId(id, (sid) => {
-					setTabSession(tabKey, sid);
-					if (id) setTerminalSession(projectId, id, sid).then(refreshProjects);
-				})
-			);
-		}
+		// Only NOW ask the backend to repaint the pane's current screen. It has to be
+		// after the subscription above: the output stream starts at "now", so a
+		// reattached pane shows nothing until the process next writes — forever, for
+		// an idle TUI. Priming any earlier (e.g. inside openTerminal) broadcasts
+		// before this listener exists and is silently dropped.
+		primePty(id, term.cols, term.rows).catch(() => {});
 
 		term.onData((d) => {
 			if (id) writeToPty(id, d);

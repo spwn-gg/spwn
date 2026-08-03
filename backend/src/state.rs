@@ -1,9 +1,8 @@
 //! Shared backend state, wrapped in an `Arc` and handed to commands + the server.
 
-use crate::claude::{ClaudeAgent, SessionStatus};
 use crate::hooks::HookRun;
 use crate::projects::ProjectsWatcher;
-use crate::pty::RmuxSession;
+use crate::pty::PaneSession;
 use crate::server::hub::EventHub;
 use crate::settings::Settings;
 use crate::store::ProjectStore;
@@ -22,10 +21,10 @@ pub struct AppState {
     pub hub: EventHub,
     /// Lazily-connected rmux daemon handle.
     pub rmux: OnceCell<Rmux>,
-    /// Live shell terminals (rmux), keyed by terminal id.
-    pub sessions: Mutex<HashMap<String, RmuxSession>>,
-    /// Live Claude chat sessions (Agent SDK sidecars), keyed by terminal id.
-    pub claude_agents: Mutex<HashMap<String, ClaudeAgent>>,
+    /// Live rmux panes, keyed by terminal id — shells AND agent TUIs. One map, so
+    /// write/resize/close/kill have a single code path regardless of what's running
+    /// inside.
+    pub sessions: Mutex<HashMap<String, PaneSession>>,
     /// Watches ~/.claude/projects for live transcript refresh.
     pub watcher: Mutex<Option<ProjectsWatcher>>,
     /// CM-owned projects/terminals (persisted to disk).
@@ -56,8 +55,13 @@ pub struct AppState {
     /// The synchronous hook runner blocks on the receiver; `hooks_prompt_answer` sends
     /// the chosen label(s) to unblock it.
     pub hook_prompts: Mutex<HashMap<String, std::sync::mpsc::Sender<String>>>,
-    /// Live Claude session status: terminal id → status. Derived in the sidecar reader
-    /// so background sessions (no pane) still drive the sidebar. Ephemeral (empty on
-    /// launch; restart falls back to persisted `needs_attention`/`attention_reason`).
-    pub claude_status: Mutex<HashMap<String, SessionStatus>>,
+    /// Agent definitions spwn can drive (built-in + `~/.spwn/agents` + per-repo).
+    /// Loaded at startup and reloadable at runtime, so editing a TOML to fix a
+    /// changed TUI doesn't need a restart.
+    pub agents: Mutex<crate::agents::AgentRegistry>,
+    /// Live agent-session status: terminal id → status. Derived from the pane, so
+    /// background sessions with no mounted tab still drive the sidebar.
+    pub agent_status: Mutex<HashMap<String, crate::agents::SessionStatus>>,
+    /// Which turn each session last fired `session-turn` hooks for.
+    pub turns: Mutex<crate::agents::turns::TurnTracker>,
 }

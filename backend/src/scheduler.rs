@@ -3,8 +3,7 @@
 //! the process is alive (the tray keeps it alive across window closes); on start
 //! a missed occurrence is caught up exactly once.
 
-use crate::claude::HeadlessEvent;
-use crate::commands::{bind_session, persist, resolved_claude, setup_session_worktree};
+use crate::commands::{bind_session, persist, setup_session_worktree};
 use crate::gitwt;
 use crate::state::AppState;
 use crate::store::{ContextBlock, ScheduledTask, TerminalRec};
@@ -79,6 +78,13 @@ pub fn fire(state: &Arc<AppState>, project_id: &str, task_id: &str) {
     }
 
     // Under the store lock: load the task + project, and create the session record.
+    // Which agent runs this task: the configured default, else the first installed.
+    let agent_id = {
+        let overrides = state.settings.lock().agent_paths.clone();
+        let preferred = state.settings.lock().default_agent.clone();
+        state.agents.lock().default_id(preferred.as_deref(), &overrides)
+    };
+
     let prepared: Option<(String, String, Vec<ContextBlock>, ScheduledTask)> = {
         let mut store = state.store.lock();
         store.project_mut(project_id).and_then(|project| {
@@ -95,7 +101,8 @@ pub fn fire(state: &Arc<AppState>, project_id: &str, task_id: &str) {
             project.terminals.push(TerminalRec {
                 id: terminal_id.clone(),
                 title: format!("◷ {}", task.name),
-                kind: "claude".to_string(),
+                kind: "agent".to_string(),
+                agent: agent_id.clone(),
                 cwd: directory.clone(),
                 session_id: None,
                 group_id: None,
@@ -140,55 +147,66 @@ pub fn fire(state: &Arc<AppState>, project_id: &str, task_id: &str) {
     }
     first_turn.push_str(&task.prompt);
 
-    let Some(claude_bin) = resolved_claude(state) else {
+    let Some(agent_id) = agent_id else {
+        eprintln!("scheduled run: no agent available");
+        finalize(state, project_id, &terminal_id, task_id, false);
+        return;
+    };
+    let Some(def) = state.agents.lock().get(&agent_id).cloned() else {
+        eprintln!("scheduled run: unknown agent '{agent_id}'");
         finalize(state, project_id, &terminal_id, task_id, false);
         return;
     };
     let cwd_path = std::fs::canonicalize(&run_dir).unwrap_or_else(|_| PathBuf::from(&run_dir));
 
-    // Callback observes the sidecar: bind the session id on init, finalize on end.
+    // Assign the session id up front. Because the definition assigns rather than
+    // discovers it, binding is synchronous — there is no init event to wait for, and
+    // no window where the run exists but its transcript can't be found.
+    let session_id = Uuid::new_v4().to_string();
+    bind_session(state, &terminal_id, &session_id);
+    state.hub.emit("projects://changed", Vec::<String>::new());
+
+    let project_id_owned = project_id.to_string();
+    let terminal_id_owned = terminal_id.clone();
+    let task_id_owned = task_id.to_string();
     let state_cb = state.clone();
     let project_cb = project_id.to_string();
     let terminal_cb = terminal_id.clone();
     let task_cb = task_id.to_string();
-    let agent = crate::claude::spawn_claude_agent_headless(
-        state.clone(),
-        &terminal_id,
-        &cwd_path,
-        &claude_bin,
-        move |ev| match ev {
-            HeadlessEvent::Init { session_id } => {
-                bind_session(&state_cb, &terminal_cb, &session_id);
-                // Refresh the tree so the bound session (and its title) show up.
-                state_cb.hub.emit("projects://changed", Vec::<String>::new());
+    let state_spawn = state.clone();
+    tokio::spawn(async move {
+        let rmux = match crate::commands::connect(&state_spawn).await {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("scheduled run: {e}");
+                finalize(&state_spawn, &project_cb, &terminal_cb, &task_cb, false);
+                return;
             }
-            HeadlessEvent::Result { ok } => {
+        };
+        let res = crate::agents::headless::run(
+            state_spawn.clone(),
+            rmux,
+            &def,
+            terminal_cb.clone(),
+            session_id,
+            &cwd_path,
+            first_turn,
+            move |outcome| {
+                let ok = matches!(outcome, crate::agents::headless::Outcome::Ok);
+                if let crate::agents::headless::Outcome::Failed(why) = &outcome {
+                    eprintln!("scheduled run failed: {why}");
+                }
                 finalize(&state_cb, &project_cb, &terminal_cb, &task_cb, ok);
-            }
-            HeadlessEvent::Error { message } => {
-                eprintln!("scheduled run failed: {message}");
-                finalize(&state_cb, &project_cb, &terminal_cb, &task_cb, false);
-            }
-        },
-    );
-
-    match agent {
-        Ok(agent) => {
-            // Register the agent BEFORE sending (send-before-insert = "no such session").
-            state
-                .claude_agents
-                .lock()
-                .insert(terminal_id.clone(), agent);
-            let payload = serde_json::json!({ "t": "user", "text": first_turn }).to_string();
-            if let Some(a) = state.claude_agents.lock().get_mut(&terminal_id) {
-                let _ = a.send_json(&payload);
-            }
-        }
-        Err(e) => {
+            },
+        )
+        .await;
+        if let Err(e) = res {
             eprintln!("scheduled run spawn failed: {e}");
-            finalize(state, project_id, &terminal_id, task_id, false);
+            // `on_done` never fires on a spawn failure, so finalize here or the task
+            // stays flagged "running" and can never fire again.
+            finalize(&state_spawn, project_id_owned.as_str(), &terminal_id_owned, &task_id_owned, false);
         }
-    }
+    });
 }
 
 /// Wind down a finished (or failed) scheduled run: flag the session for attention,
@@ -202,9 +220,8 @@ fn finalize(state: &AppState, project_id: &str, terminal_id: &str, task_id: &str
     }
     persist(state);
     state.running_tasks.lock().remove(task_id);
-    if let Some(mut agent) = state.claude_agents.lock().remove(terminal_id) {
-        agent.kill();
-    }
+    // The pane is left alive on purpose: a finished scheduled run stays attachable
+    // so you can read what it did. It is torn down with the session on delete.
     state.hub.emit(
         "schedule://fired",
         serde_json::json!({ "projectId": project_id, "terminalId": terminal_id, "ok": ok }),

@@ -1,11 +1,17 @@
 // Mirrors the Rust serde types (camelCase) returned by the backend.
 
-export type TerminalKind = 'shell' | 'claude';
+/**
+ * `shell` — a login shell in an rmux pane.
+ * `agent` — a coding agent driven as its real TUI in an rmux pane.
+ */
+export type TerminalKind = 'shell' | 'agent';
 
 export interface TerminalRec {
 	id: string;
 	title: string;
 	kind: TerminalKind;
+	/** Which agent definition drives this session (kind === 'agent'). */
+	agent?: string | null;
 	cwd: string;
 	sessionId?: string | null;
 	groupId?: string | null;
@@ -21,7 +27,7 @@ export interface TerminalRec {
 	attentionReason?: string | null;
 }
 
-/** Live status of a Claude session (mirrors Rust `SessionStatus`). Drives the
+/** Live status of a session (mirrors Rust `SessionStatus`). Drives the
  * sidebar/tab-bar spinner and attention dots. */
 export type SessionStatus =
 	| 'thinking'
@@ -157,10 +163,42 @@ export interface ProjectRec {
 export type WorktreeLocation = 'sibling' | 'internal' | 'appData';
 
 export interface Settings {
-	claudePath?: string | null;
+	/** Per-agent binary overrides, keyed by agent id. Absent/empty ⇒ auto-detect. */
+	agentPaths?: Record<string, string>;
+	/** Agent id for new sessions when none is picked. Null ⇒ first installed agent. */
+	defaultAgent?: string | null;
 	worktreeLocation?: WorktreeLocation;
 	/** Whether the shared global hooks in ~/.spwn/hooks run (default true). */
 	globalHooksEnabled?: boolean;
+}
+
+/** Where an agent definition came from; later scopes override earlier ones by id. */
+export type AgentScope = 'builtIn' | 'global' | 'repo';
+
+/**
+ * What an agent can actually do, derived from its definition. The UI hides
+ * affordances rather than offering ones that will fail — an agent with no
+ * transcript adapter genuinely cannot be rewound.
+ */
+export interface AgentCapabilities {
+	transcript: boolean;
+	rewind: boolean;
+	headless: boolean;
+	/** Has real status rules, vs. generic activity detection only. */
+	status: boolean;
+}
+
+/** One agent definition, as the picker and Settings need it. */
+export interface AgentSummary {
+	id: string;
+	name: string;
+	icon?: string | null;
+	/** Ships with spwn but has never been driven against the real binary. */
+	untested: boolean;
+	scope: AgentScope;
+	/** Resolved executable, or null when it isn't installed. */
+	binary?: string | null;
+	capabilities: AgentCapabilities;
 }
 
 export interface Block {
@@ -204,23 +242,3 @@ export interface CheckpointMeta {
 	kind: 'turn' | 'baseline' | 'pre-restore' | 'pre-switch';
 }
 
-/** Streamed events from the Claude sidecar (mirrors its stdout JSON-line protocol). */
-export type ClaudeEvent =
-	| { t: 'init'; sessionId: string }
-	| { t: 'delta'; text: string }
-	| { t: 'thinking'; text: string }
-	| { t: 'tool_use'; id: string; name: string; input: unknown }
-	| { t: 'tool_result'; id: string; text: string; isError?: boolean }
-	| { t: 'permission'; id: string; tool: string; input: unknown; title?: string }
-	| { t: 'question'; id: string; questions: QuestionSpec[] }
-	| { t: 'assistant_uuid'; uuid: string }
-	| { t: 'result'; subtype: string; sessionId: string }
-	| { t: 'error'; message: string };
-
-/** A pending tool-permission request awaiting the user's allow/deny. */
-export interface PermissionReq {
-	id: string;
-	tool: string;
-	input: unknown;
-	title?: string;
-}

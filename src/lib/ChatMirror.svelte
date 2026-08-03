@@ -4,8 +4,7 @@
 		readTranscript,
 		onProjectsChanged,
 		addContextBlock,
-		claudeRewind,
-		claudeRewindRestore,
+		agentRewind,
 		listCheckpoints
 	} from './ipc';
 	import {
@@ -17,7 +16,7 @@
 		toggleInspector,
 		confirmDialog
 	} from './stores';
-	import type { Turn, QuestionSpec } from './types';
+	import type { Turn, QuestionSpec, TerminalKind } from './types';
 	import { marked } from 'marked';
 	import DOMPurify from 'dompurify';
 
@@ -60,11 +59,17 @@
 		liveTools = [],
 		pendingUserText = null,
 		onReload = () => {},
-		onRewound = () => {}
+		onRewound = () => {},
+		kind = 'agent',
+		embedded = false
 	}: {
 		projectId: string;
 		terminalId?: string;
 		sessionId?: string;
+		/** Which transport owns this session; decides how a rewind is performed. */
+		kind?: TerminalKind;
+		/** Rendered inside the Inspector — hides controls that would toggle it. */
+		embedded?: boolean;
 		busy?: boolean;
 		streamingText?: string;
 		streamingThinking?: string;
@@ -162,16 +167,24 @@
 		}
 		rewindBaseline = turns.length ? turns[turns.length - 1].uuid : null;
 		rewindAnchor = uuid;
-		const p = restore
-			? claudeRewindRestore(terminalId, uuid, true)
-			: claudeRewind(terminalId, uuid);
-		p.catch((e) => setStatus(String(e)));
-		setStatus(
-			restore
-				? 'Rewound + restored files to this point. A safety snapshot was saved.'
-				: 'Rewound here — your next message continues from this point; later turns drop.'
-		);
-		onRewound();
+		// Rewinding drives the agent's own rewind UI, which can legitimately refuse
+		// (the point may no longer be in its list). Surface that instead of leaving
+		// the optimistic truncation in place claiming success.
+		agentRewind(terminalId, uuid, restore)
+			.then(() => {
+				setStatus(
+					restore
+						? 'Rewound + restored files to this point. A safety snapshot was saved.'
+						: 'Rewound here — your next message continues from this point; later turns drop.'
+				);
+				onRewound();
+			})
+			.catch((e: unknown) => {
+				// Put the view back: nothing was changed, so showing a truncated
+				// conversation would be a lie.
+				rewindAnchor = null;
+				setStatus(String(e).replace(/^Error:\s*/, ''));
+			});
 	}
 
 	$effect(() => {
@@ -398,6 +411,11 @@
 		window.removeEventListener('keydown', onGlobalKey);
 	});
 
+	/** This session's own record, for its agent id when forking. */
+	const currentTerm = $derived(
+		$projects.find((p) => p.id === projectId)?.terminals.find((t) => t.id === terminalId)
+	);
+
 	// If this is a forked (child) session, find its parent terminal so responses
 	// can be pasted back into the parent's input.
 	const parentTerm = $derived.by(() => {
@@ -421,7 +439,8 @@
 		// Open/focus the parent session, then drop the response into its input.
 		openTab({
 			projectId,
-			kind: 'claude',
+			kind: parent.kind,
+			agent: parent.agent ?? undefined,
 			terminalId: parent.id,
 			sessionId: parent.sessionId ?? undefined,
 			title: parent.title,
@@ -435,7 +454,8 @@
 		if (!sessionId) return;
 		openTab({
 			projectId,
-			kind: 'claude',
+			kind,
+			agent: currentTerm?.agent ?? undefined,
 			title: 'fork',
 			claudeFork: sessionId,
 			parentTerminalId: terminalId,
@@ -485,7 +505,9 @@
 		<span class="title">Conversation</span>
 		<button class="act" disabled={!sessionId} onclick={fork} title="Fork a new session from this one">⑂ Fork</button>
 		<button class="act" class:on={findOpen} onclick={() => (findOpen ? closeFind() : openFind())} title="Find in conversation (⌘F)">🔍 Find</button>
-		<button class="act" class:on={terminalId && $inspectorOpen.has(terminalId)} disabled={!terminalId} onclick={() => terminalId && toggleInspector(terminalId)} title="Session inspector — worktree, merge, timeline, hooks">ⓘ Inspector</button>
+		{#if !embedded}
+			<button class="act" class:on={terminalId && $inspectorOpen.has(terminalId)} disabled={!terminalId} onclick={() => terminalId && toggleInspector(terminalId)} title="Session inspector — worktree, merge, timeline, hooks">ⓘ Inspector</button>
+		{/if}
 	</div>
 	{#if findOpen}
 		<div class="find">

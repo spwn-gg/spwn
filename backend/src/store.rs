@@ -11,8 +11,15 @@ use std::path::{Path, PathBuf};
 pub struct TerminalRec {
     pub id: String,
     pub title: String,
-    /// "shell" | "claude"
+    /// `"shell"` | `"agent"`.
+    ///
+    /// Records written before the sidecar was retired carry `"claude"`; they are
+    /// rewritten to `"agent"` on load (see [`ProjectStore::migrate`]).
     pub kind: String,
+    /// Which agent definition drives this session (`TerminalRec.kind == "agent"`).
+    /// `None` for shells and for legacy sidecar sessions.
+    #[serde(default)]
+    pub agent: Option<String>,
     pub cwd: String,
     /// Claude session id once discovered (enables the transcript/rewind panel).
     #[serde(default)]
@@ -111,10 +118,31 @@ pub struct ProjectStore {
 
 impl ProjectStore {
     pub fn load(path: &Path) -> Self {
-        std::fs::read_to_string(path)
+        let mut s: Self = std::fs::read_to_string(path)
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        s.migrate();
+        s
+    }
+
+    /// Rewrite legacy sidecar records as TUI agent sessions.
+    ///
+    /// The Agent-SDK sidecar is gone, so a `kind: "claude"` record has nothing left
+    /// to render it. Its conversation is not lost: the session id is unchanged, so
+    /// the session reopens as the agent's own TUI resuming exactly where it was, and
+    /// its worktree, branch and checkpoints carry over untouched.
+    ///
+    /// Idempotent, and it never overwrites an agent that was already chosen.
+    pub fn migrate(&mut self) {
+        for p in &mut self.projects {
+            for t in &mut p.terminals {
+                if t.kind == "claude" {
+                    t.kind = "agent".to_string();
+                    t.agent.get_or_insert_with(|| "claude".to_string());
+                }
+            }
+        }
     }
 
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
@@ -150,10 +178,101 @@ impl ProjectStore {
     }
 }
 
+#[allow(dead_code)]
+impl TerminalRec {
+    /// Does this session run a coding agent (as opposed to a plain shell)?
+    pub fn is_agent(&self) -> bool {
+        self.kind == "agent"
+    }
+}
+
 /// The rmux session name for a terminal — stable across restarts so we can
 /// reattach to the same daemon-side session.
 pub fn rmux_session_name(terminal_id: &str) -> String {
     format!("cm-{}", terminal_id.replace('-', ""))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rec(kind: &str, agent: Option<&str>) -> TerminalRec {
+        TerminalRec {
+            id: "t1".into(),
+            title: "t".into(),
+            kind: kind.into(),
+            agent: agent.map(str::to_string),
+            cwd: "/tmp".into(),
+            session_id: None,
+            group_id: None,
+            parent_id: None,
+            branch: None,
+            base_branch: None,
+            needs_attention: false,
+            attention_reason: None,
+        }
+    }
+
+    #[test]
+    fn distinguishes_sessions_from_shells() {
+        assert!(!rec("shell", None).is_agent());
+        assert!(rec("agent", Some("claude")).is_agent());
+    }
+
+    fn migrated(json: &str) -> ProjectStore {
+        let mut s: ProjectStore = serde_json::from_str(json).unwrap();
+        s.migrate();
+        s
+    }
+
+    #[test]
+    fn a_legacy_sidecar_record_becomes_a_claude_tui_session() {
+        // Sessions created before the sidecar was retired must keep working. The
+        // session id is untouched, so the conversation resumes rather than restarts —
+        // losing it would mean losing real work and its worktree.
+        let store = migrated(
+            r#"{"projects":[{"id":"p","name":"P","directory":"/tmp","terminals":[
+                {"id":"t","title":"my session","kind":"claude","cwd":"/tmp",
+                 "sessionId":"abc-123","branch":"spwn/t"}]}]}"#,
+        );
+        let t = &store.projects[0].terminals[0];
+        assert_eq!(t.kind, "agent");
+        assert_eq!(t.agent.as_deref(), Some("claude"));
+        assert_eq!(t.session_id.as_deref(), Some("abc-123"));
+        assert_eq!(t.branch.as_deref(), Some("spwn/t"));
+    }
+
+    #[test]
+    fn migration_is_idempotent_and_leaves_shells_alone() {
+        let mut store = migrated(
+            r#"{"projects":[{"id":"p","name":"P","directory":"/tmp","terminals":[
+                {"id":"a","title":"s","kind":"shell","cwd":"/tmp"},
+                {"id":"b","title":"x","kind":"claude","cwd":"/tmp"}]}]}"#,
+        );
+        store.migrate();
+        store.migrate();
+        assert_eq!(store.projects[0].terminals[0].kind, "shell");
+        assert_eq!(store.projects[0].terminals[0].agent, None);
+        assert_eq!(store.projects[0].terminals[1].kind, "agent");
+    }
+
+    #[test]
+    fn migration_never_overrides_an_agent_already_chosen() {
+        let store = migrated(
+            r#"{"projects":[{"id":"p","name":"P","directory":"/tmp","terminals":[
+                {"id":"t","title":"x","kind":"claude","agent":"codex","cwd":"/tmp"}]}]}"#,
+        );
+        assert_eq!(store.projects[0].terminals[0].agent.as_deref(), Some("codex"));
+    }
+
+    #[test]
+    fn session_name_is_stable_and_dash_free() {
+        // rmux session names can't contain dashes; the mapping has to stay stable
+        // or a restart would fail to reattach to still-running panes.
+        let n = rmux_session_name("0bffa637-c355-43ff-9c59-7d24d78b12b0");
+        assert_eq!(n, "cm-0bffa637c35543ff9c597d24d78b12b0");
+        assert_eq!(n, rmux_session_name("0bffa637-c355-43ff-9c59-7d24d78b12b0"));
+    }
 }
 
 /// Resolve the on-disk path for the project store under the app data dir.

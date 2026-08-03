@@ -10,6 +10,7 @@
 		readTranscript
 	} from './ipc';
 	import { projects, openTab, pasteToInput, refreshProjects } from './stores';
+	import { isSessionTerminal } from './forest';
 	import type { MergeStatus, Turn } from './types';
 
 	let {
@@ -26,10 +27,11 @@
 		onClose: () => void;
 	} = $props();
 
-	// Sibling sessions we could hand work to (any other Claude session with a live id).
+	// Sibling sessions we could hand work to (any other session with a live id),
+	// on either transport.
 	const targets = $derived(
 		($projects.find((p) => p.id === projectId)?.terminals ?? []).filter(
-			(t) => t.kind === 'claude' && t.id !== terminalId && t.sessionId
+			(t) => isSessionTerminal(t) && t.id !== terminalId && t.sessionId
 		)
 	);
 	const projectName = $derived($projects.find((p) => p.id === projectId)?.name);
@@ -95,7 +97,7 @@
 		if (!target || !lastResponse) return;
 		openTab({
 			projectId,
-			kind: 'claude',
+			kind: 'agent',
 			terminalId: target.id,
 			sessionId: target.sessionId ?? undefined,
 			title: target.title,

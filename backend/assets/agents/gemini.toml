@@ -1,0 +1,55 @@
+# Gemini CLI (Google) — spwn agent definition.
+#
+# UNTESTED — see the note at the top of codex.toml. The same rule applies: no
+# invented detect patterns. Generic activity-based status only, no transcript,
+# no rewind, until someone drives it with the M0 spike and fills these in.
+
+id       = "gemini"
+name     = "Gemini CLI"
+icon     = "◈"
+schema   = 1
+untested = true
+
+[binary]
+env        = "GEMINI_BIN"
+name       = "gemini"
+candidates = [".local/bin/gemini", ".npm-global/bin/gemini"]
+
+[env]
+TERM = "xterm-256color"
+
+[session]
+idStrategy = "none"
+
+[argv]
+new      = ["{bin}"]
+resume   = ["{bin}"]
+headless = ["{bin}", "-p", "{prompt}"]
+
+[transcript]
+format = "none"
+
+[keys]
+submit        = ["Enter"]
+interrupt     = ["Escape"]
+clear         = ["C-u"]
+interruptHard = ["C-c", "C-c"]
+modeCycle     = []
+redraw        = ["C-l"]
+menuUp        = ["Up"]
+menuDown      = ["Down"]
+menuAccept    = ["Enter"]
+menuCancel    = ["Escape"]
+
+[input]
+paste         = "bracketed"
+pastePrefix   = "[200~"
+pasteSuffix   = "[201~"
+submitDelayMs = 120
+
+[detect]
+idleAfterMs   = 1500
+confirmFrames = 2
+
+[rewind]
+strategy = "none"

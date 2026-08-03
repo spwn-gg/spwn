@@ -1,22 +1,42 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { getSettings, setSettings, detectClaude, pickFile, openGlobalHooksDir } from './ipc';
+	import {
+		getSettings,
+		setSettings,
+		pickFile,
+		openGlobalHooksDir,
+		listAgents,
+		reloadAgents,
+		openAgentsDir
+	} from './ipc';
 	import { showSettings } from './stores';
-	import type { WorktreeLocation } from './types';
+	import type { WorktreeLocation, AgentSummary } from './types';
 
-	let claudePath = $state('');
 	let worktreeLocation = $state<WorktreeLocation>('sibling');
 	let globalHooksEnabled = $state(true);
-	let detected = $state<string | null>(null);
 	let saved = $state(false);
 	let version = $state('');
 
+	// --- Agents ---
+	let agents = $state<AgentSummary[]>([]);
+	let agentPaths = $state<Record<string, string>>({});
+	let defaultAgent = $state<string>('');
+	let agentMsg = $state('');
+	let agentErrors = $state<string[]>([]);
+
+	const installed = $derived(agents.filter((a) => a.binary));
+
+	async function loadAgents() {
+		agents = await listAgents();
+	}
+
 	onMount(async () => {
 		const s = await getSettings();
-		claudePath = s.claudePath ?? '';
 		worktreeLocation = s.worktreeLocation ?? 'sibling';
 		globalHooksEnabled = s.globalHooksEnabled ?? true;
-		detected = await detectClaude();
+		agentPaths = { ...(s.agentPaths ?? {}) };
+		defaultAgent = s.defaultAgent ?? '';
+		await loadAgents();
 		try {
 			const res = await fetch('/api/version');
 			if (res.ok) version = (await res.json()).version ?? '';
@@ -25,17 +45,46 @@
 		}
 	});
 
-	async function browse() {
+	async function browseAgent(id: string) {
 		const p = await pickFile();
-		if (p) claudePath = p;
+		if (p) agentPaths = { ...agentPaths, [id]: p };
+	}
+
+	async function reload() {
+		agentMsg = '';
+		try {
+			agentErrors = await reloadAgents();
+			await loadAgents();
+			agentMsg = agentErrors.length
+				? `${agentErrors.length} definition(s) failed to parse`
+				: 'Definitions reloaded.';
+		} catch (e) {
+			agentMsg = String(e);
+		}
+		setTimeout(() => (agentMsg = ''), 4000);
+	}
+
+	async function revealAgents() {
+		try {
+			await openAgentsDir();
+		} catch (e) {
+			agentMsg = String(e);
+		}
 	}
 
 	async function save() {
+		// Drop blank overrides so they mean "auto-detect" rather than "this empty path".
+		const paths = Object.fromEntries(
+			Object.entries(agentPaths).filter(([, v]) => v.trim())
+		);
 		await setSettings({
-			claudePath: claudePath.trim() || null,
+			agentPaths: paths,
+			defaultAgent: defaultAgent || null,
 			worktreeLocation,
 			globalHooksEnabled
 		});
+		agentPaths = paths;
+		await loadAgents();
 		saved = true;
 		setTimeout(() => (saved = false), 1500);
 	}
@@ -63,19 +112,78 @@
 
 		<div class="body">
 			<div class="field">
-				<div class="lbl">Claude CLI path</div>
-				<div class="row">
-					<input bind:value={claudePath} placeholder={detected ?? '/path/to/claude'} spellcheck="false" />
-					<button class="browse" onclick={browse}>Browse…</button>
-				</div>
+				<div class="lbl">Agents</div>
 				<div class="hint">
-					{#if detected}
-						Auto-detected: <code>{detected}</code>
-					{:else}
-						No <code>claude</code> auto-detected — set its path here.
-					{/if}
+					Each agent is a <code>.toml</code> file describing how to drive one CLI. Edit or add
+					your own in <code>~/.spwn/agents</code> — a change there takes effect on Reload, with
+					no rebuild.
 				</div>
-				<div class="hint">Leave blank to use the auto-detected path.</div>
+
+				<div class="agents">
+					{#each agents as a (a.id)}
+						<div class="agent" class:missing={!a.binary}>
+							<div class="a-head">
+								<span class="a-icon">{a.icon ?? '✦'}</span>
+								<span class="a-name">{a.name}</span>
+								{#if a.untested}
+									<span class="chip warn" title="Ships with spwn but has never been driven against the real CLI">experimental</span>
+								{/if}
+								<span class="chip scope">{a.scope === 'builtIn' ? 'built-in' : a.scope}</span>
+								<span class="spacer"></span>
+								{#if a.binary}
+									<span class="chip ok">installed</span>
+								{:else}
+									<span class="chip miss">not found</span>
+								{/if}
+							</div>
+
+							<div class="caps">
+								{#each [['transcript', a.capabilities.transcript], ['status', a.capabilities.status], ['rewind', a.capabilities.rewind], ['scheduled', a.capabilities.headless]] as [label, on] (label)}
+									<span class="cap" class:on>{on ? '✓' : '—'} {label}</span>
+								{/each}
+							</div>
+
+							<div class="row">
+								<input
+									value={agentPaths[a.id] ?? ''}
+									oninput={(e) => (agentPaths = { ...agentPaths, [a.id]: e.currentTarget.value })}
+									placeholder={a.binary ?? `path to ${a.id}`}
+									spellcheck="false" />
+								<button class="browse" onclick={() => browseAgent(a.id)}>Browse…</button>
+							</div>
+							<div class="hint sm">
+								{#if a.binary}
+									Using <code>{a.binary}</code>. Leave blank to keep auto-detecting.
+								{:else}
+									Not on your <code>PATH</code> — set it here, or install the CLI.
+								{/if}
+							</div>
+						</div>
+					{/each}
+				</div>
+
+				{#if agentErrors.length}
+					<div class="agent-errs">
+						{#each agentErrors as e (e)}<div class="err-line">{e}</div>{/each}
+					</div>
+				{/if}
+
+				<div class="row">
+					<button class="browse" onclick={revealAgents}>Open ~/.spwn/agents</button>
+					<button class="browse" onclick={reload}>Reload definitions</button>
+					{#if agentMsg}<span class="hint sm">{agentMsg}</span>{/if}
+				</div>
+			</div>
+
+			<div class="field">
+				<div class="lbl">Default agent for new sessions</div>
+				<select bind:value={defaultAgent}>
+					<option value="">First installed ({installed[0]?.name ?? 'none'})</option>
+					{#each installed as a (a.id)}
+						<option value={a.id}>{a.name}</option>
+					{/each}
+				</select>
+				<div class="hint">Used when you start a session without picking an agent.</div>
 			</div>
 
 			<div class="field">
@@ -246,6 +354,78 @@
 	.browse:hover {
 		background: #333;
 		color: #fff;
+	}
+	.agents {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+		margin: 8px 0;
+	}
+	.agent {
+		border: 1px solid var(--border, #2a2a2a);
+		border-radius: 6px;
+		padding: 8px 10px;
+	}
+	.agent.missing {
+		opacity: 0.72;
+	}
+	.a-head {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		margin-bottom: 6px;
+	}
+	.a-name {
+		font-weight: 600;
+	}
+	.spacer {
+		flex: 1;
+	}
+	.chip {
+		font-size: 10px;
+		padding: 1px 6px;
+		border-radius: 999px;
+		border: 1px solid var(--border, #2a2a2a);
+		color: var(--fg-dim, #9a9a9a);
+	}
+	.chip.ok {
+		color: #7fb069;
+		border-color: #3c5a30;
+	}
+	.chip.miss {
+		color: #d8a657;
+		border-color: #5c4a2a;
+	}
+	.chip.warn {
+		color: #d8a657;
+		border-color: #5c4a2a;
+	}
+	.caps {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+		margin-bottom: 6px;
+	}
+	.cap {
+		font-size: 11px;
+		color: var(--fg-dim, #7a7a7a);
+	}
+	.cap.on {
+		color: var(--fg, #cfcfcf);
+	}
+	.agent-errs {
+		border: 1px solid #5c2a2a;
+		border-radius: 6px;
+		padding: 6px 8px;
+		margin: 6px 0;
+	}
+	.err-line {
+		font-size: 11px;
+		color: #e06c75;
+		white-space: pre-wrap;
+	}
+	.hint.sm {
+		font-size: 11px;
 	}
 	.hint {
 		font-size: 11px;

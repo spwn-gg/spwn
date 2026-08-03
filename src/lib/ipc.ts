@@ -6,8 +6,8 @@
 
 import { writable } from 'svelte/store';
 import type {
+	AgentSummary,
 	CheckpointMeta,
-	ClaudeEvent,
 	GitBranches,
 	HookPromptCloseEvent,
 	HookPromptEvent,
@@ -152,9 +152,26 @@ export function openGlobalHooksDir(): Promise<void> {
 	return invoke('open_global_hooks_dir');
 }
 
-/** Auto-detected claude path (probe; ignores the configured override). */
-export function detectClaude(): Promise<string | null> {
-	return invoke('find_claude');
+/**
+ * Every agent definition spwn knows about, with its resolved binary and
+ * capabilities. Installed agents sort first, experimental ones last.
+ */
+export function listAgents(): Promise<AgentSummary[]> {
+	return invoke('list_agents');
+}
+
+/**
+ * Re-read agent definitions from disk; resolves to the list of parse errors
+ * (empty when all loaded cleanly). Running panes are unaffected — a definition is
+ * only consulted when a session starts or a key is sent.
+ */
+export function reloadAgents(): Promise<string[]> {
+	return invoke('reload_agents');
+}
+
+/** Reveal ~/.spwn/agents in Finder (creates it if needed). */
+export function openAgentsDir(): Promise<void> {
+	return invoke('open_agents_dir');
 }
 
 /** File picker (server-side browser); returns the chosen host path or null. */
@@ -278,15 +295,17 @@ export interface OpenTerminalArgs {
 	projectId: string;
 	terminalId?: string;
 	kind: TerminalKind;
+	/** Which agent definition to run, when kind === 'agent'. */
+	agent?: string;
 	cols: number;
 	rows: number;
 	claudeResume?: string;
 	claudeFork?: string;
 	/** Terminal a fork/branch came from (to inherit its group). */
 	parentTerminalId?: string;
-	/** Seed a new Claude session: pasted into the input box (not auto-submitted). */
+	/** Seed a new session: pasted into the composer (not auto-submitted). */
 	initialPrompt?: string;
-	/** Initial permission/execution mode for a new Claude session. */
+	/** Initial permission/execution mode for a new session. */
 	permissionMode?: string;
 }
 
@@ -362,7 +381,7 @@ export function gitSync(projectId: string): Promise<string> {
 	return invoke('git_sync', { projectId });
 }
 
-/** Persist a discovered claude session id onto a terminal record. */
+/** Persist a discovered agent session id onto a terminal record. */
 export function setTerminalSession(
 	projectId: string,
 	terminalId: string,
@@ -379,50 +398,59 @@ export function resizePty(terminalId: string, cols: number, rows: number): Promi
 	return invoke('resize_pty', { ptyId: terminalId, cols, rows });
 }
 
-// --- Claude chat (Agent SDK sidecar) ---
+// --- Agent TUI control (rmux panes) ---
 
-/** Send a user turn to a Claude session's sidecar. */
-export function claudeSend(terminalId: string, text: string): Promise<void> {
-	return invoke('claude_send', { terminalId, text });
+/**
+ * Put text into an agent's composer.
+ *
+ * `submit` defaults to FALSE on purpose: pasting without sending is the contract
+ * for "→ parent" and context injection — the human reads and edits before a turn
+ * is spent. Pass true only when the user explicitly asked to send.
+ */
+export function agentSend(terminalId: string, text: string, submit = false): Promise<void> {
+	return invoke('agent_send', { terminalId, text, submit });
 }
 
-/** Answer a tool-permission request. */
-export function claudePermission(
-	terminalId: string,
-	id: string,
-	allow: boolean,
-	message?: string
-): Promise<void> {
-	return invoke('claude_permission', { terminalId, id, allow, message });
+/**
+ * Repaint a terminal with its pane's current screen.
+ *
+ * Call this AFTER subscribing to `onPtyOutput`, never before: the output stream
+ * starts at "now", so a reattached pane is blank until its process next writes, and
+ * anything the backend emits before the subscription exists is dropped.
+ */
+export function primePty(terminalId: string, cols: number, rows: number): Promise<void> {
+	return invoke('prime_pty', { terminalId, cols, rows });
 }
 
-/** Change the permission mode live (Shift-Tab): default | acceptEdits | plan | bypassPermissions. */
-export function claudeSetMode(terminalId: string, mode: string): Promise<void> {
-	return invoke('claude_set_mode', { terminalId, mode });
+/** Send a raw key token (tmux names: `Enter`, `Escape`, `C-c`, `BTab`, `Up`…). */
+export function agentKey(terminalId: string, key: string): Promise<void> {
+	return invoke('agent_key', { terminalId, key });
 }
 
-/** Interrupt the in-flight turn (Esc). */
-export function claudeInterrupt(terminalId: string): Promise<void> {
-	return invoke('claude_interrupt', { terminalId });
-}
-
-/** Answer an AskUserQuestion picker (id = the question event's id). */
-export function claudeAnswer(terminalId: string, id: string, text: string): Promise<void> {
-	return invoke('claude_answer', { terminalId, id, text });
-}
-
-/** Rewind a session to an earlier turn (anchorUuid = the turn's uuid). */
-export function claudeRewind(terminalId: string, anchorUuid: string): Promise<void> {
-	return invoke('claude_rewind', { terminalId, anchorUuid });
-}
-
-/** Rewind AND restore the project files to that turn's checkpoint. */
-export function claudeRewindRestore(
+/**
+ * Return an agent session's conversation to an earlier turn, optionally restoring
+ * the working tree from that turn's checkpoint.
+ *
+ * Rejects — changing nothing — if spwn cannot positively identify the turn in the
+ * agent's own rewind list. Given the choice between rewinding somewhere near where
+ * you asked and refusing, it refuses.
+ */
+export function agentRewind(
 	terminalId: string,
 	anchorUuid: string,
-	restore: boolean
+	restoreFiles = false
 ): Promise<void> {
-	return invoke('claude_rewind_restore', { terminalId, anchorUuid, restore });
+	return invoke('agent_rewind', { terminalId, anchorUuid, restoreFiles });
+}
+
+/** Interrupt the running turn. */
+export function agentInterrupt(terminalId: string): Promise<void> {
+	return invoke('agent_interrupt', { terminalId });
+}
+
+/** Cycle the agent's permission mode until the screen reports `mode`. */
+export function agentSetMode(terminalId: string, mode: string): Promise<void> {
+	return invoke('agent_set_mode', { terminalId, mode });
 }
 
 // --- Project hooks (discovered shell scripts run on session lifecycle events) ---
@@ -437,7 +465,7 @@ export function hooksRun(terminalId: string, event: string): Promise<void> {
 	return invoke('hooks_run', { terminalId, event });
 }
 
-/** Fire the `session-turn` hooks after a completed Claude turn (default: commit the
+/** Fire the `session-turn` hooks after a completed turn (default: commit the
  * turn onto the session branch + snapshot a checkpoint). No-op without a worktree. */
 export function hooksRunTurn(terminalId: string, turnUuid: string): Promise<void> {
 	return invoke('hooks_run_turn', { terminalId, turnUuid });
@@ -460,16 +488,30 @@ export function onHookRunning(cb: (e: HookRunningEvent) => void): Promise<Unlist
 	return listen<HookRunningEvent>('hooks://running', (e) => cb(e.payload));
 }
 
+
 /** A session's live status changed (thinking / blocked / done / error / idle). */
-export interface ClaudeStatusEvent {
+export interface AgentStatusEvent {
 	terminalId: string;
 	status: SessionStatus;
 }
 
-/** Fires (globally) whenever any Claude session's live status changes — drives the
- * sidebar/tab-bar spinner and attention dots without opening the session. */
-export function onClaudeStatus(cb: (e: ClaudeStatusEvent) => void): Promise<UnlistenFn> {
-	return listen<ClaudeStatusEvent>('claude://status', (e) => cb(e.payload));
+/**
+ * Fires globally whenever any session's live status changes — drives the sidebar
+ * and tab-bar spinners and attention dots without the session being open.
+ */
+export function onAgentStatus(cb: (e: AgentStatusEvent) => void): Promise<UnlistenFn> {
+	return listen<AgentStatusEvent>('agent://status', (e) => cb(e.payload));
+}
+
+/** A finished turn: the `session-turn` hooks (commit + checkpoint) have just run. */
+export interface AgentTurnEvent {
+	terminalId: string;
+	sessionId: string;
+	turnUuid: string;
+}
+
+export function onAgentTurn(cb: (e: AgentTurnEvent) => void): Promise<UnlistenFn> {
+	return listen<AgentTurnEvent>('agent://turn', (e) => cb(e.payload));
 }
 
 /** One streamed output line from a session's currently-running hook. */
@@ -528,9 +570,9 @@ export function listCheckpoints(sessionId: string): Promise<CheckpointMeta[]> {
 	return invoke('list_checkpoints', { sessionId });
 }
 
-// --- Claude transcript ---
+// --- Conversation transcript ---
 
-/** Prior conversation turns for a saved claude session (history on reattach). */
+/** Prior conversation turns for a saved session. */
 export function readTranscript(sessionId: string): Promise<Turn[]> {
 	return invoke('read_transcript', { sessionId });
 }
@@ -545,26 +587,6 @@ export function onPtyExit(terminalId: string, cb: () => void): Promise<UnlistenF
 	return listen(`pty://exit/${terminalId}`, () => cb());
 }
 
-/** Fires once a new/forked Claude pty session's id is discovered on disk. */
-export function onPtySessionId(terminalId: string, cb: (sessionId: string) => void): Promise<UnlistenFn> {
-	return listen<string>(`pty://session-id/${terminalId}`, (e) => cb(e.payload));
-}
-
-/** Streamed events from a Claude session's sidecar (init/delta/thinking/tool_use/…). */
-export function onClaudeEvent(terminalId: string, cb: (ev: ClaudeEvent) => void): Promise<UnlistenFn> {
-	return listen<string>(`claude://event/${terminalId}`, (e) => {
-		try {
-			cb(JSON.parse(e.payload) as ClaudeEvent);
-		} catch {
-			/* ignore a malformed line */
-		}
-	});
-}
-
-/** Fires when a Claude session's sidecar process exits. */
-export function onClaudeExit(terminalId: string, cb: () => void): Promise<UnlistenFn> {
-	return listen(`claude://exit/${terminalId}`, () => cb());
-}
 
 /** Fires (debounced) whenever ~/.claude/projects changes; the payload is the list
  *  of changed session ids (empty when the affected sessions can't be determined). */

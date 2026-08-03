@@ -15,4 +15,11 @@ Dev is two processes bridged by Vite's proxy:
 - `npm run check` — svelte-check typecheck before committing.
 - `npm run build:app` — build the SPA + sidecar and compile the release binary
   (`backend/target/release/spwn`, which embeds the SPA). Run it with `spwn` (or `spwn serve`).
-- Restarting the backend kills Claude sidecars but rmux shell sessions persist.
+- Restarting the backend kills legacy Claude sidecars, but **rmux panes persist** —
+  shells and agent sessions both survive, and reattach with their processes intact.
+- Agent definitions live in `backend/assets/agents/*.toml` (installed to
+  `~/.spwn/agents`). Editing one there and hitting **Reload definitions** in Settings
+  applies it without a rebuild — that's the intended way to track a TUI change.
+- `backend/tests/agent_tui_spike.rs` (`make agent-spike`) drives a real `claude` in a
+  real rmux pane and dumps annotated frames. Run it when a detect pattern or the
+  rewind choreography stops matching; it is how those values were derived.

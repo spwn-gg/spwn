@@ -6,10 +6,9 @@
 //! stable, persistent ids so they reattach across restarts.
 
 use crate::checkpoints::{self, CheckpointMeta};
-use crate::claude::SessionStatus;
 use crate::gitwt;
 use crate::hooks;
-use crate::pty::{default_shell, find_claude_bin, spawn_rmux_session};
+use crate::pty::{default_shell, spawn_pane};
 use crate::settings::{Settings, WorktreeLocation};
 use crate::state::AppState;
 use crate::store::{rmux_session_name, ContextBlock, ProjectRec, ScheduledTask, TerminalRec};
@@ -241,18 +240,22 @@ fn push_block(state: &AppState, project_id: &str, block: ContextBlock) -> Result
 pub struct OpenTerminalSpec {
     pub project_id: String,
     pub terminal_id: Option<String>,
-    /// "shell" | "claude" (for new terminals).
+    /// `"shell"` | `"agent"` | `"claude"` (legacy sidecar), for new terminals.
     pub kind: String,
+    /// Which agent definition to run when `kind == "agent"`. Defaults to the
+    /// configured default agent, then the first installed one.
+    #[serde(default)]
+    pub agent: Option<String>,
     pub cols: u16,
     pub rows: u16,
-    /// Resume this claude session id.
+    /// Resume this session id.
     pub claude_resume: Option<String>,
-    /// Fork this claude session id into a new one.
+    /// Fork this session id into a new one.
     pub claude_fork: Option<String>,
     /// The terminal a fork/branch originated from (to inherit its group).
     pub parent_terminal_id: Option<String>,
-    /// Initial permission/execution mode for a new Claude session (seeds the
-    /// sidecar at construction so the first turn runs under the chosen mode).
+    /// Initial permission/execution mode, applied at launch so the first turn can't
+    /// run under the wrong one (a race a post-spawn change would lose).
     pub permission_mode: Option<String>,
 }
 
@@ -260,7 +263,7 @@ pub async fn open_terminal(
     state: Arc<AppState>,
     spec: OpenTerminalSpec,
 ) -> Result<String, String> {
-    let (terminal_id, kind, cwd, resume_src, fork, is_new, project_dir, fork_base) = {
+    let (terminal_id, kind, agent_id, cwd, resume_src, fork, is_new, project_dir, fork_base) = {
         let mut store = state.store.lock();
         let project = store
             .project(&spec.project_id)
@@ -285,6 +288,24 @@ pub async fn open_terminal(
             .as_ref()
             .map(|t| t.kind.clone())
             .unwrap_or_else(|| spec.kind.clone());
+        // Reattaching keeps whatever agent the session was created with; a new one
+        // takes the caller's choice, else the configured default, else the first
+        // installed agent. Resolved here so the record and the launch agree.
+        let agent_id = if kind == "agent" {
+            existing.as_ref().and_then(|t| t.agent.clone()).or_else(|| {
+                let overrides = state.settings.lock().agent_paths.clone();
+                let preferred = spec
+                    .agent
+                    .clone()
+                    .or_else(|| state.settings.lock().default_agent.clone());
+                state
+                    .agents
+                    .lock()
+                    .default_id(preferred.as_deref(), &overrides)
+            })
+        } else {
+            None
+        };
         // Reattaching uses the stored cwd (a Claude session's own worktree, if it
         // has one); a fresh session starts from the project dir until its worktree
         // is created below.
@@ -297,7 +318,7 @@ pub async fn open_terminal(
         // Claude resume/fork resolution. Fork resumes its source then branches; a
         // plain resume continues a saved session; otherwise it's a fresh session
         // whose id arrives later via the sidecar's `init` event.
-        let (resume_src, fork) = if kind == "claude" {
+        let (resume_src, fork) = if kind == "claude" || kind == "agent" {
             if let Some(fork_id) = spec.claude_fork.clone() {
                 (Some(fork_id), true)
             } else if let Some(r) = spec.claude_resume.clone().or(saved_session.clone()) {
@@ -320,11 +341,17 @@ pub async fn open_terminal(
             });
             // The direct parent in the branch tree (the terminal we forked from).
             let parent_id = spec.parent_terminal_id.clone();
+            let title = match kind.as_str() {
+                "claude" => "claude".to_string(),
+                "agent" => agent_id.clone().unwrap_or_else(|| "agent".to_string()),
+                _ => "shell".to_string(),
+            };
             if let Some(p) = store.project_mut(&spec.project_id) {
                 p.terminals.push(TerminalRec {
                     id: terminal_id.clone(),
-                    title: if kind == "claude" { "claude" } else { "shell" }.to_string(),
+                    title,
                     kind: kind.clone(),
+                    agent: agent_id.clone(),
                     cwd: cwd.clone(),
                     session_id: None,
                     group_id,
@@ -340,6 +367,7 @@ pub async fn open_terminal(
         (
             terminal_id,
             kind,
+            agent_id,
             cwd,
             resume_src,
             fork,
@@ -355,7 +383,7 @@ pub async fn open_terminal(
     // gitignored build dirs are COW-cloned in so the agent can build immediately.
     // Falls back to the project dir if it's not a git repo or the worktree fails.
     let mut cwd = cwd;
-    if is_new && kind == "claude" {
+    if is_new && (kind == "claude" || kind == "agent") {
         if let Some(repo) = gitwt::repo_root(Path::new(&project_dir)) {
             if let Some(base) = fork_base.or_else(|| gitwt::current_branch(&repo)) {
                 // Create the worktree via the `session-created` hooks (native fallback
@@ -371,44 +399,134 @@ pub async fn open_terminal(
 
     let cwd_path = std::fs::canonicalize(&cwd).unwrap_or_else(|_| PathBuf::from(&cwd));
 
-    if kind == "claude" {
-        // Claude sessions run via the Agent SDK sidecar (a node process), NOT rmux.
-        // The chat UI drives it over stdin/stdout; its `init` event supplies the
-        // session id (bound by the frontend via set_terminal_session).
-        let claude_bin = resolved_claude(&state)
-            .ok_or_else(|| "claude binary not found (set its path in Settings)".to_string())?;
-        let agent = crate::claude::spawn_claude_agent(
-            state.clone(),
-            &terminal_id,
-            &cwd_path,
-            resume_src.as_deref(),
-            None, // resume_at: per-turn rewind is a v2 feature
-            fork,
-            &claude_bin,
-            spec.permission_mode.as_deref(),
-        )
-        .map_err(|e| e.to_string())?;
-        state.claude_agents.lock().insert(terminal_id.clone(), agent);
-        return Ok(terminal_id);
-    }
+    // Everything else runs in an rmux pane: a login shell, or an agent's real TUI.
+    let (argv, env, runtime) = if kind == "agent" {
+        let agent_id = agent_id
+            .clone()
+            .ok_or_else(|| "no agent available (none installed?)".to_string())?;
+        let overrides = state.settings.lock().agent_paths.clone();
+        let def = state
+            .agents
+            .lock()
+            .get(&agent_id)
+            .cloned()
+            .ok_or_else(|| format!("unknown agent '{agent_id}'"))?;
+        let bin = crate::agents::resolve_binary(&def, &overrides).ok_or_else(|| {
+            format!("{} binary not found (set its path in Settings)", def.name)
+        })?;
 
-    // Shell: a real login shell in a persistent rmux pty.
-    let argv = vec![default_shell(), "-l".to_string()];
+        // Assign the session id up front when the agent supports it. This is what
+        // makes binding synchronous: the transcript path is known before the process
+        // starts, so there is no window where a session exists but can't be found.
+        let session_id = match def.session.id_strategy {
+            crate::agents::def::IdStrategy::Assign => Some(
+                resume_src
+                    .clone()
+                    .filter(|_| !fork)
+                    .unwrap_or_else(|| Uuid::new_v4().to_string()),
+            ),
+            _ => resume_src.clone(),
+        };
+
+        let template = if fork {
+            def.argv.fork.as_ref().unwrap_or(&def.argv.new)
+        } else if resume_src.is_some() {
+            &def.argv.resume
+        } else {
+            &def.argv.new
+        };
+
+        let permission_mode = spec
+            .permission_mode
+            .as_deref()
+            .and_then(|m| def.modes.launch.get(m).cloned())
+            .unwrap_or_default();
+        let ctx: std::collections::BTreeMap<&str, String> = [
+            ("bin", bin.to_string_lossy().into_owned()),
+            ("sessionId", session_id.clone().unwrap_or_default()),
+            ("sourceSessionId", resume_src.clone().unwrap_or_default()),
+            ("permissionMode", permission_mode),
+            ("cwd", cwd_path.to_string_lossy().into_owned()),
+        ]
+        .into_iter()
+        .collect();
+
+        let argv = crate::agents::def::render_argv(template, &ctx);
+        let env: Vec<String> = def.env.iter().map(|(k, v)| format!("{k}={v}")).collect();
+
+        // Bind immediately for an assigned id — the record is what the transcript,
+        // checkpoints and Timeline all key off.
+        if let Some(sid) = session_id.clone() {
+            if !fork {
+                bind_session(&state, &terminal_id, &sid);
+            }
+        }
+
+        (
+            argv,
+            env,
+            Some(crate::pty::AgentRuntime {
+                agent_id,
+                session_id,
+                mode: parking_lot::Mutex::new(spec.permission_mode.clone()),
+            }),
+        )
+    } else {
+        (vec![default_shell(), "-l".to_string()], Vec::new(), None)
+    };
+
     let rmux = connect(&state).await?;
     let session_name = rmux_session_name(&terminal_id);
-    let session = spawn_rmux_session(
+    let session = spawn_pane(
         rmux,
         state.hub.clone(),
-        &terminal_id,
-        &session_name,
-        argv,
-        &cwd_path,
-        spec.cols,
-        spec.rows,
+        crate::pty::SpawnSpec {
+            id: &terminal_id,
+            session_name: &session_name,
+            argv,
+            cwd: &cwd_path,
+            cols: spec.cols,
+            rows: spec.rows,
+            env,
+            agent: runtime,
+        },
     )
     .await
     .map_err(|e| e.to_string())?;
-    state.sessions.lock().insert(terminal_id.clone(), session);
+
+    // Opening the same terminal twice (two browser tabs, or a reload racing the
+    // unmount) would otherwise leak the previous forwarding task, which keeps
+    // emitting to the same topic — the client then sees every byte twice.
+    let (pane_handle, activity) = (session.pane.clone(), Arc::clone(&session.activity));
+    let is_agent_pane = session.agent.is_some();
+    if let Some(prev) = state.sessions.lock().insert(terminal_id.clone(), session) {
+        prev.output_task.abort();
+    }
+
+    if is_agent_pane {
+        if let Some(def) = agent_id
+            .as_ref()
+            .and_then(|id| state.agents.lock().get(id).cloned())
+        {
+            // Seed the turn tracker with whatever turn the transcript already rests
+            // on, so reattaching to an old conversation doesn't fire a commit and a
+            // checkpoint for a turn that finished days ago.
+            if let Some(sid) = state.store.lock().terminal(&terminal_id).and_then(|t| t.session_id.clone()) {
+                if let Some(path) = crate::projects::locate_session(&sid) {
+                    if let Some(u) = crate::transcript::tail_summary(&path).last_uuid {
+                        state.turns.lock().prime(&terminal_id, &u);
+                    }
+                }
+            }
+            crate::agents::status::spawn_watcher(
+                Arc::clone(&state),
+                terminal_id.clone(),
+                def,
+                pane_handle,
+                activity,
+            );
+        }
+    }
 
     Ok(terminal_id)
 }
@@ -420,10 +538,9 @@ pub fn close_terminal(state: &AppState, terminal_id: String) -> Result<(), Strin
     if let Some(session) = state.sessions.lock().remove(&terminal_id) {
         session.output_task.abort();
     }
-    if let Some(mut agent) = state.claude_agents.lock().remove(&terminal_id) {
-        agent.kill();
-        clear_claude_status(state, &terminal_id);
-    }
+    // An rmux pane survives detach, but its watcher does not (it exits once the
+    // pane leaves `sessions`), so drop the live status with it.
+    clear_agent_status(state, &terminal_id);
     Ok(())
 }
 
@@ -900,160 +1017,15 @@ pub fn clear_terminal_attention(state: &AppState, terminal_id: String) -> Result
             t.attention_reason = None;
         }
     }
-    // Drop any live "needs you" status too, so the sidebar clears immediately even
-    // though the (still-alive) sidecar won't re-emit until its next event.
+    // Drop any live "needs you" status too, so the sidebar clears immediately
+    // rather than waiting for the pane's next observable change.
     {
-        let mut map = state.claude_status.lock();
-        if !matches!(map.get(&terminal_id), Some(SessionStatus::Thinking)) {
+        let mut map = state.agent_status.lock();
+        if !matches!(map.get(&terminal_id), Some(crate::agents::SessionStatus::Thinking)) {
             map.remove(&terminal_id);
         }
     }
     persist(&state);
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Claude chat I/O (Agent SDK sidecar)
-// ---------------------------------------------------------------------------
-
-/// Send a user turn to a Claude session's sidecar.
-pub fn claude_send(state: &AppState, terminal_id: String, text: String) -> Result<(), String> {
-    let payload = serde_json::json!({ "t": "user", "text": text }).to_string();
-    send_to_agent(&state, &terminal_id, &payload)
-}
-
-/// Answer a tool-permission request for a Claude session.
-pub fn claude_permission(
-    state: &AppState,
-    terminal_id: String,
-    id: String,
-    allow: bool,
-    message: Option<String>,
-) -> Result<(), String> {
-    let payload =
-        serde_json::json!({ "t": "permission", "id": id, "allow": allow, "message": message })
-            .to_string();
-    send_to_agent(&state, &terminal_id, &payload)
-}
-
-/// Change the permission mode live (the Shift-Tab affordance): default → acceptEdits → plan.
-pub fn claude_set_mode(
-    state: &AppState,
-    terminal_id: String,
-    mode: String,
-) -> Result<(), String> {
-    let payload = serde_json::json!({ "t": "set_mode", "mode": mode }).to_string();
-    send_to_agent(&state, &terminal_id, &payload)
-}
-
-/// Interrupt the in-flight turn (Esc).
-pub fn claude_interrupt(state: &AppState, terminal_id: String) -> Result<(), String> {
-    let payload = serde_json::json!({ "t": "interrupt" }).to_string();
-    send_to_agent(&state, &terminal_id, &payload)
-}
-
-/// Answer an AskUserQuestion picker (id is the tool_use id from the question event).
-pub fn claude_answer(
-    state: &AppState,
-    terminal_id: String,
-    id: String,
-    text: String,
-) -> Result<(), String> {
-    let payload = serde_json::json!({ "t": "answer", "id": id, "text": text }).to_string();
-    send_to_agent(&state, &terminal_id, &payload)
-}
-
-/// Rewind a session to an earlier turn: restart its sidecar resumed at `anchor_uuid`,
-/// truncating the conversation to that point (later turns become an abandoned branch
-/// the transcript no longer renders).
-pub fn claude_rewind(
-    state: Arc<AppState>,
-    terminal_id: String,
-    anchor_uuid: String,
-) -> Result<(), String> {
-    let (session_id, cwd) = {
-        let store = state.store.lock();
-        let t = store
-            .terminal(&terminal_id)
-            .ok_or_else(|| "no such session".to_string())?;
-        let sid = t
-            .session_id
-            .clone()
-            .ok_or_else(|| "this session hasn't started yet".to_string())?;
-        (sid, t.cwd.clone())
-    };
-    let claude_bin = resolved_claude(&state)
-        .ok_or_else(|| "claude binary not found (set its path in Settings)".to_string())?;
-    let cwd_path = std::fs::canonicalize(&cwd).unwrap_or_else(|_| PathBuf::from(&cwd));
-    if let Some(mut agent) = state.claude_agents.lock().remove(&terminal_id) {
-        agent.kill();
-        clear_claude_status(&state, &terminal_id);
-    }
-    let agent = crate::claude::spawn_claude_agent(
-        state.clone(),
-        &terminal_id,
-        &cwd_path,
-        Some(session_id.as_str()),
-        Some(anchor_uuid.as_str()),
-        false,
-        &claude_bin,
-        None,
-    )
-    .map_err(|e| e.to_string())?;
-    state.claude_agents.lock().insert(terminal_id, agent);
-    Ok(())
-}
-
-/// Rewind AND restore the project files to that turn's checkpoint. Restores in the
-/// window where the sidecar is dead (no race), after saving a pre-restore snapshot.
-pub fn claude_rewind_restore(
-    state: Arc<AppState>,
-    terminal_id: String,
-    anchor_uuid: String,
-    restore: bool,
-) -> Result<(), String> {
-    let (session_id, cwd) = {
-        let store = state.store.lock();
-        let t = store
-            .terminal(&terminal_id)
-            .ok_or_else(|| "no such session".to_string())?;
-        let sid = t
-            .session_id
-            .clone()
-            .ok_or_else(|| "this session hasn't started yet".to_string())?;
-        (sid, t.cwd.clone())
-    };
-    let claude_bin = resolved_claude(&state)
-        .ok_or_else(|| "claude binary not found (set its path in Settings)".to_string())?;
-    let cwd_path = std::fs::canonicalize(&cwd).unwrap_or_else(|_| PathBuf::from(&cwd));
-    // 1. Kill the sidecar so the working tree is idle.
-    if let Some(mut agent) = state.claude_agents.lock().remove(&terminal_id) {
-        agent.kill();
-        clear_claude_status(&state, &terminal_id);
-    }
-    // 2. Restore files (safety snapshot first) while the agent is dead.
-    if restore {
-        if let Some(app_data) = app_data_dir(&state) {
-            let pd = Path::new(&cwd);
-            if let Some(cp) = checkpoints::find_for_turn(&app_data, &session_id, &anchor_uuid) {
-                let _ = checkpoints::capture(&app_data, pd, &session_id, "pre-restore", "pre-restore");
-                checkpoints::restore(&app_data, &session_id, &cp.id, pd)?;
-            }
-        }
-    }
-    // 3. Respawn resumed at the anchor.
-    let agent = crate::claude::spawn_claude_agent(
-        state.clone(),
-        &terminal_id,
-        &cwd_path,
-        Some(session_id.as_str()),
-        Some(anchor_uuid.as_str()),
-        false,
-        &claude_bin,
-        None,
-    )
-    .map_err(|e| e.to_string())?;
-    state.claude_agents.lock().insert(terminal_id, agent);
     Ok(())
 }
 
@@ -1227,31 +1199,29 @@ fn set_hook_running(state: &AppState, terminal_id: &str, event: Option<&str>) {
     );
 }
 
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ClaudeStatusPayload {
-    terminal_id: String,
-    status: SessionStatus,
-}
-
-/// Record a session's live status and broadcast it so the sidebar/tab bar track it.
-/// Also persists a coarse attention flag (+reason) on the record for needs-you states,
-/// so a restart (no live sidecar) still surfaces it. Called from the sidecar reader
-/// thread — reaches shared state via the managed `AppState`.
-pub(crate) fn emit_claude_status(state: &AppState, terminal_id: &str, status: SessionStatus) {
+/// Publish an agent-session status derived from its pane.
+///
+/// Live map, persisted `needs_attention` for restart survival, and a broadcast —
+/// so a session with no mounted tab still drives the sidebar, and the flag survives
+/// a restart where no pane has been observed yet.
+pub(crate) fn emit_agent_status(
+    state: &Arc<AppState>,
+    terminal_id: &str,
+    status: crate::agents::SessionStatus,
+) {
+    use crate::agents::SessionStatus as S;
     {
-        let mut map = state.claude_status.lock();
-        if status == SessionStatus::Idle {
+        let mut map = state.agent_status.lock();
+        if status == S::Idle {
             map.remove(terminal_id);
         } else {
             map.insert(terminal_id.to_string(), status);
         }
     }
-    // Persist coarse attention for restart survival + render granularity.
     let reason = match status {
-        SessionStatus::BlockedPermission | SessionStatus::BlockedQuestion => Some("blocked"),
-        SessionStatus::Done => Some("done"),
-        SessionStatus::Error => Some("error"),
+        S::BlockedPermission | S::BlockedQuestion => Some("blocked"),
+        S::Done => Some("done"),
+        S::Error => Some("error"),
         _ => None,
     };
     if let Some(reason) = reason {
@@ -1271,29 +1241,48 @@ pub(crate) fn emit_claude_status(state: &AppState, terminal_id: &str, status: Se
         }
     }
     state.hub.emit(
-        "claude://status",
-        ClaudeStatusPayload {
-            terminal_id: terminal_id.to_string(),
-            status,
-        },
+        "agent://status",
+        serde_json::json!({ "terminalId": terminal_id, "status": status }),
+    );
+
+    // A settled pane is the second half of turn detection. The transcript watcher
+    // sees records land while the agent is still mid-response and correctly declines
+    // to fire; without this re-check the turn would never fire at all, because the
+    // file stops changing before the pane goes quiet.
+    if matches!(status, S::Done | S::BlockedPermission | S::BlockedQuestion) {
+        crate::agents::turns::on_status_settled(state, terminal_id);
+    }
+}
+
+/// Clear an agent session's live status (intentional teardown).
+pub(crate) fn clear_agent_status(state: &AppState, terminal_id: &str) {
+    state.agent_status.lock().remove(terminal_id);
+    state.turns.lock().forget(terminal_id);
+    state.hub.emit(
+        "agent://status",
+        serde_json::json!({
+            "terminalId": terminal_id,
+            "status": crate::agents::SessionStatus::Idle,
+        }),
     );
 }
 
-/// Clear a session's live status entry and broadcast `idle` — used when a sidecar is
-/// intentionally torn down (close/delete/rewind) so the reader thread's exit doesn't
-/// own the transition.
-fn clear_claude_status(state: &AppState, terminal_id: &str) {
-    {
-        state.claude_status.lock().remove(terminal_id);
+/// Fire the `session-turn` hooks for a finished turn (commit + checkpoint).
+///
+/// Backend-driven, unlike the old frontend-triggered path: a session with no open
+/// tab still commits and checkpoints.
+pub(crate) fn fire_turn_hooks(state: &AppState, terminal_id: &str, turn_uuid: &str) {
+    let Some(mut ctx) = hook_ctx_by_id(state, terminal_id) else {
+        return;
+    };
+    // Only sessions with their own worktree branch get per-turn commit/checkpoint.
+    if ctx.branch.is_none() {
+        return;
     }
-    state.hub.emit(
-        "claude://status",
-        ClaudeStatusPayload {
-            terminal_id: terminal_id.to_string(),
-            status: SessionStatus::Idle,
-        },
-    );
+    ctx.turn_uuid = Some(turn_uuid.to_string());
+    fire_hooks(state, &ctx, "session-turn", false);
 }
+
 
 /// Stream one output line of a running hook to the session's Hooks panel.
 fn emit_hook_output(state: &AppState, terminal_id: &str, event: &str, line: &str) {
@@ -1645,14 +1634,279 @@ pub fn list_checkpoints(state: &AppState, session_id: String) -> Vec<CheckpointM
         .unwrap_or_default()
 }
 
-/// Write one JSON-line command to a Claude sidecar's stdin.
-fn send_to_agent(state: &AppState, terminal_id: &str, payload: &str) -> Result<(), String> {
-    let mut agents = state.claude_agents.lock();
-    agents
-        .get_mut(terminal_id)
-        .ok_or_else(|| "no such claude session".to_string())?
-        .send_json(payload)
-        .map_err(|e| e.to_string())
+// ---------------------------------------------------------------------------
+// Agent rewind (drives the agent's own rewind UI)
+// ---------------------------------------------------------------------------
+
+/// Which menu row to select in order to KEEP everything up to `anchor_uuid`.
+///
+/// The menu's own wording is "restore to the point **before** you sent this
+/// message", so a row labelled with prompt P discards P and everything after it.
+/// To keep the anchor turn, the row to select is therefore the one labelled with the
+/// **next** user prompt — not the anchor's own.
+///
+/// Getting this backwards is not a cosmetic error: it silently throws away one more
+/// turn than the user asked for, and paired with a file restore it reverts the
+/// working tree further than they expected. The row text is also the only join key
+/// between spwn's uuid anchors and the agent's UI, since the menu lists messages
+/// rather than ids.
+fn rewind_target_text(session_id: &str, anchor_uuid: &str) -> Result<String, String> {
+    let path = crate::projects::locate_session(session_id)
+        .ok_or_else(|| "could not find this session's transcript".to_string())?;
+    let turns = crate::transcript::read_transcript(&path);
+    let idx = turns
+        .iter()
+        .position(|t| t.uuid == anchor_uuid)
+        .ok_or_else(|| "could not find that turn in the transcript".to_string())?;
+    let text = |t: &crate::transcript::Turn| {
+        t.blocks
+            .iter()
+            .find(|b| b.kind == "text")
+            .and_then(|b| b.text.clone())
+    };
+    turns[idx + 1..]
+        .iter()
+        .find(|t| t.role == "user")
+        .and_then(text)
+        .ok_or_else(|| {
+            "this is already the latest turn — there is nothing after it to undo".to_string()
+        })
+}
+
+/// Return a session's conversation to an earlier turn, optionally restoring files.
+///
+/// The conversation rewind is performed by the agent itself; spwn only drives the
+/// menu, and refuses if it cannot positively identify the requested turn. Files are
+/// spwn's own checkpoints, restored only AFTER the conversation rewind succeeded —
+/// so a failed or mis-targeted rewind can never leave the working tree reverted to a
+/// point the conversation didn't reach.
+pub async fn agent_rewind(
+    state: Arc<AppState>,
+    terminal_id: String,
+    anchor_uuid: String,
+    restore_files: bool,
+) -> Result<(), String> {
+    let (pane, def) = agent_pane(&state, &terminal_id)?;
+    if def.rewind.strategy == crate::agents::def::RewindStrategy::None {
+        return Err(format!("{} does not support rewinding", def.name));
+    }
+    let (session_id, cwd) = {
+        let store = state.store.lock();
+        let t = store
+            .terminal(&terminal_id)
+            .ok_or_else(|| "no such session".to_string())?;
+        let sid = t
+            .session_id
+            .clone()
+            .ok_or_else(|| "this session hasn't started yet".to_string())?;
+        (sid, t.cwd.clone())
+    };
+
+    let anchor_text = rewind_target_text(&session_id, &anchor_uuid)?;
+
+    // Drive the agent's menu. Errors here mean nothing was changed.
+    crate::agents::rewind::drive(&pane, &def, &anchor_text, restore_files).await?;
+
+    // Only now touch the working tree. `/rewind` branches the transcript in place
+    // and keeps the same session id, so checkpoints stay correctly keyed and there
+    // is no re-binding to do.
+    if restore_files && def.rewind.tui.as_ref().is_some_and(|t| t.restore_both.is_none()) {
+        if let Some(app_data) = app_data_dir(&state) {
+            let pd = Path::new(&cwd);
+            if let Some(cp) = checkpoints::find_for_turn(&app_data, &session_id, &anchor_uuid) {
+                // Safety snapshot before overwriting anything.
+                let _ =
+                    checkpoints::capture(&app_data, pd, &session_id, "pre-restore", "pre-restore");
+                checkpoints::restore(&app_data, &session_id, &cp.id, pd)?;
+            }
+        }
+    }
+
+    // The conversation now rests on the anchor turn. Re-seed the turn tracker so the
+    // restored turn isn't mistaken for a newly-finished one and re-committed.
+    state.turns.lock().prime(&terminal_id, &anchor_uuid);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Agent TUI control (rmux panes)
+// ---------------------------------------------------------------------------
+
+/// The pane handle and agent definition for a terminal, or an error naming which
+/// half is missing.
+fn agent_pane(
+    state: &AppState,
+    terminal_id: &str,
+) -> Result<(rmux_sdk::Pane, crate::agents::AgentDef), String> {
+    let (pane, agent_id) = {
+        let sessions = state.sessions.lock();
+        let s = sessions
+            .get(terminal_id)
+            .ok_or_else(|| "no such terminal".to_string())?;
+        let id = s
+            .agent_id()
+            .ok_or_else(|| "not an agent session".to_string())?
+            .to_string();
+        (s.pane.clone(), id)
+    };
+    let def = state
+        .agents
+        .lock()
+        .get(&agent_id)
+        .cloned()
+        .ok_or_else(|| format!("unknown agent '{agent_id}'"))?;
+    Ok((pane, def))
+}
+
+/// Send a prompt to an agent's composer.
+///
+/// `submit` false pastes without pressing Enter — that is the "→ parent" and
+/// context-injection contract: the text lands in the composer for the human to read
+/// and edit, and is never sent on their behalf.
+///
+/// The paste is bracketed so a multi-line blob arrives as ONE paste; sent literally,
+/// a 20-line prompt would be 20 separate submissions.
+pub async fn agent_send(
+    state: &AppState,
+    terminal_id: String,
+    text: String,
+    submit: bool,
+) -> Result<(), String> {
+    let (pane, def) = agent_pane(state, &terminal_id)?;
+    let input = &def.input;
+
+    // "Send this text" has to send exactly this text, so empty the composer first.
+    //
+    // The composer is not reliably empty: an agent pre-fills it after a rewind (with
+    // the message you rewound past), and a user may have typed something. Appending
+    // produced a real corruption — a follow-up prompt arrived as
+    // "…word: charlieReply with exactly one word: delta" and was sent to the model.
+    //
+    // Only for `submit`: a paste-for-review deliberately leaves the human in
+    // control of the composer, and clearing there could discard what they typed.
+    if submit {
+        for k in &def.keys.clear {
+            pane.send_key(k.clone()).await.map_err(|e| e.to_string())?;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    }
+
+    match input.paste {
+        crate::agents::def::PasteMode::Bracketed => {
+            pane.send_text(format!("{}{}{}", input.paste_prefix, text, input.paste_suffix))
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        crate::agents::def::PasteMode::Literal => {
+            pane.send_text(&text).await.map_err(|e| e.to_string())?;
+        }
+        crate::agents::def::PasteMode::Chunked => {
+            for chunk in text.as_bytes().chunks(input.chunk_bytes.max(1)) {
+                pane.send_text(String::from_utf8_lossy(chunk).into_owned())
+                    .await
+                    .map_err(|e| e.to_string())?;
+                tokio::time::sleep(std::time::Duration::from_millis(input.chunk_delay_ms)).await;
+            }
+        }
+    }
+    if submit {
+        // Let the paste land before Enter, or Enter arrives while the TUI is still
+        // absorbing the bracketed paste and is swallowed — leaving the prompt
+        // sitting in the composer, unsent, with no error anywhere. Observed live at
+        // the original 120ms.
+        tokio::time::sleep(std::time::Duration::from_millis(input.submit_delay_ms)).await;
+
+        // Verify rather than trust. A successful submit always changes the screen
+        // (the composer clears, or the message queues); if nothing moved, the key
+        // didn't register and we press once more.
+        //
+        // Comparing whole-screen text is deliberately agent-agnostic — it needs no
+        // knowledge of where this particular TUI draws its composer, so it keeps
+        // working for an agent whose definition someone else wrote.
+        let before = pane.snapshot().await.ok().map(|s| s.visible_text());
+        send_keys(&pane, &def.keys.submit).await?;
+        if let Some(before) = before {
+            tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+            let after = pane.snapshot().await.ok().map(|s| s.visible_text());
+            if after.as_deref() == Some(before.as_str()) {
+                send_keys(&pane, &def.keys.submit).await?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Send raw key tokens (tmux names like `Enter`, `Escape`, `C-c`, `BTab`).
+pub async fn agent_key(state: &AppState, terminal_id: String, key: String) -> Result<(), String> {
+    let (pane, _) = agent_pane(state, &terminal_id)?;
+    pane.send_key(key).await.map_err(|e| e.to_string())
+}
+
+/// Interrupt a running turn.
+pub async fn agent_interrupt(state: &AppState, terminal_id: String) -> Result<(), String> {
+    let (pane, def) = agent_pane(state, &terminal_id)?;
+    send_keys(&pane, &def.keys.interrupt).await
+}
+
+/// Cycle the agent's permission mode until the screen reports the target.
+///
+/// The mode key is a blind cycle — there is no "set mode to X" input — so this
+/// presses and reads back, bounded by the number of modes. Reading back matters:
+/// the starting mode comes from the user's own config and is not knowable in
+/// advance, so a fixed number of presses would land somewhere arbitrary.
+pub async fn agent_set_mode(
+    state: &AppState,
+    terminal_id: String,
+    mode: String,
+) -> Result<(), String> {
+    let (pane, def) = agent_pane(state, &terminal_id)?;
+    if def.keys.mode_cycle.is_empty() {
+        return Err("this agent has no mode cycle".to_string());
+    }
+    let re = def
+        .modes
+        .line
+        .as_deref()
+        .and_then(|p| regex::Regex::new(p).ok());
+
+    let read_mode = |pane: rmux_sdk::Pane, re: Option<regex::Regex>| async move {
+        let snap = pane.snapshot().await.ok()?;
+        let text = snap.visible_text();
+        let re = re?;
+        let caps = re.captures(&text)?;
+        Some(caps.get(1)?.as_str().trim().to_string())
+    };
+
+    let target = mode.to_lowercase();
+    // +1 attempt so a full cycle can return to where it started before giving up.
+    let limit = def.modes.cycle.len().max(1) + 1;
+    for _ in 0..limit {
+        if let Some(cur) = read_mode(pane.clone(), re.clone()).await {
+            if cur.to_lowercase().replace(' ', "") == target.replace(' ', "") {
+                if let Some(s) = state.sessions.lock().get(&terminal_id) {
+                    if let Some(a) = &s.agent {
+                        *a.mode.lock() = Some(mode.clone());
+                    }
+                }
+                return Ok(());
+            }
+        } else {
+            // Can't read the mode: press once and stop rather than cycling blindly
+            // through every mode, which could land on bypassPermissions.
+            send_keys(&pane, &def.keys.mode_cycle).await?;
+            return Ok(());
+        }
+        send_keys(&pane, &def.keys.mode_cycle).await?;
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+    }
+    Err(format!("could not reach '{mode}' mode"))
+}
+
+async fn send_keys(pane: &rmux_sdk::Pane, keys: &[String]) -> Result<(), String> {
+    for k in keys {
+        pane.send_key(k.clone()).await.map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1669,6 +1923,24 @@ pub async fn write_to_pty(
         .send_text(&data)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Repaint a freshly-attached client with the pane's current screen.
+///
+/// Called by the client AFTER it has subscribed to `pty://output/<id>` — the
+/// subscription can't exist any earlier, since the terminal id only comes back from
+/// `open_terminal`. Anything the backend emits before that point is broadcast to
+/// nobody.
+pub async fn prime_pty(
+    state: &AppState,
+    pty_id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    let pane = state.sessions.lock().get(&pty_id).map(|s| s.pane.clone());
+    let pane = pane.ok_or_else(|| "no such terminal".to_string())?;
+    crate::pty::prime_pane(&pane, &state.hub, &pty_id, cols, rows).await;
+    Ok(())
 }
 
 pub async fn resize_pty(
@@ -1688,17 +1960,14 @@ pub async fn resize_pty(
 // Claude transcript (prior history on reattach)
 // ---------------------------------------------------------------------------
 
-/// Auto-detected `claude` path (probe only; ignores the configured override).
-/// Used by Settings to show "detected: …".
-pub fn find_claude() -> Option<String> {
-    find_claude_bin().map(|p| p.to_string_lossy().into_owned())
-}
-
 pub fn get_settings(state: &AppState) -> Settings {
     state.settings.lock().clone()
 }
 
-pub fn set_settings(state: &AppState, settings: Settings) -> Result<(), String> {
+pub fn set_settings(state: &AppState, mut settings: Settings) -> Result<(), String> {
+    // Normalize on the way in, not just on load — the client may still send the
+    // legacy `claudePath` shape.
+    settings.migrate();
     *state.settings.lock() = settings;
     let path = state.settings_path.lock().clone();
     if let Some(path) = path {
@@ -1723,16 +1992,38 @@ pub fn open_global_hooks_dir() -> Result<(), String> {
     Ok(())
 }
 
-/// The `claude` binary to use: the configured override (if it exists), else auto-detect.
-pub(crate) fn resolved_claude(state: &AppState) -> Option<PathBuf> {
-    let configured = state.settings.lock().claude_path.clone();
-    if let Some(p) = configured.filter(|s| !s.trim().is_empty()) {
-        let pb = PathBuf::from(p);
-        if pb.exists() {
-            return Some(pb);
-        }
-    }
-    find_claude_bin()
+// ---------------------------------------------------------------------------
+// Agent registry
+// ---------------------------------------------------------------------------
+
+/// Every agent definition spwn knows about, with its resolved binary and
+/// capabilities, for the session picker and the Settings panel.
+pub fn list_agents(state: &AppState) -> Vec<crate::agents::AgentSummary> {
+    let overrides = state.settings.lock().agent_paths.clone();
+    state.agents.lock().summaries(&overrides)
+}
+
+/// Re-read agent definitions from disk. Editing a TOML to track an upstream TUI
+/// change should not require restarting the server (and killing nothing — panes
+/// are unaffected, since a definition is only consulted when a session starts or
+/// a key is sent).
+pub fn reload_agents(state: &AppState) -> Result<Vec<String>, String> {
+    let reg = crate::agents::AgentRegistry::load(None);
+    let errors = reg.errors().to_vec();
+    *state.agents.lock() = reg;
+    Ok(errors)
+}
+
+/// Reveal `~/.spwn/agents` so the user can edit definitions.
+pub fn open_agents_dir() -> Result<(), String> {
+    let dir = crate::agents::global_agents_dir()
+        .ok_or_else(|| "could not resolve ~/.spwn/agents".to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::process::Command::new("open")
+        .arg(&dir)
+        .status()
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 pub fn read_transcript(session_id: String) -> Vec<Turn> {
@@ -1746,7 +2037,7 @@ pub fn read_transcript(session_id: String) -> Vec<Turn> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-async fn connect(state: &AppState) -> Result<&Rmux, String> {
+pub(crate) async fn connect(state: &AppState) -> Result<&Rmux, String> {
     state
         .rmux
         .get_or_try_init(|| async {
@@ -1759,17 +2050,14 @@ async fn connect(state: &AppState) -> Result<&Rmux, String> {
         .map_err(|e| e.to_string())
 }
 
-/// Permanently kill the given terminals (rmux sessions and/or Claude sidecars) by id.
+/// Permanently kill the given terminals (their rmux panes) by id.
 async fn kill_terminals(state: &AppState, terminal_ids: &[String]) {
     let mut rmux_ids = Vec::new();
     for tid in terminal_ids {
         if let Some(session) = state.sessions.lock().remove(tid) {
             session.output_task.abort();
         }
-        if let Some(mut agent) = state.claude_agents.lock().remove(tid) {
-            agent.kill();
-            clear_claude_status(state, tid);
-        }
+        clear_agent_status(state, tid);
         rmux_ids.push(tid.clone());
     }
     if !rmux_ids.is_empty() {

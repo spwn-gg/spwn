@@ -13,12 +13,12 @@
 		activeTab,
 		closeTab,
 		setHookRunning,
-		setClaudeStatus
+		setAgentStatus
 	} from '$lib/stores';
 	import {
 		onStoreError,
 		onHookRunning,
-		onClaudeStatus,
+		onAgentStatus,
 		clearTerminalAttention,
 		onHookPrompt,
 		onHookPromptClose,
@@ -78,18 +78,19 @@
 		unlistenHookPromptClose = await onHookPromptClose((e) => {
 			hookPrompts = hookPrompts.filter((p) => p.id !== e.id);
 		});
-		// Track live Claude session status → drives sidebar/tab-bar spinners + attention.
-		unlistenStatus = await onClaudeStatus((e) => {
+		// Track live session status → drives sidebar/tab-bar spinners + attention.
+		const onStatus = (e: { terminalId: string; status: SessionStatus }) => {
 			const active = get(activeTab);
 			// If you're already looking at this session, don't nag — clear it (and the
 			// persisted flag) instead of lighting a dot. A live "thinking" still shows.
 			if (active?.terminalId === e.terminalId && NEEDS_YOU.includes(e.status)) {
-				setClaudeStatus(e.terminalId, 'idle');
+				setAgentStatus(e.terminalId, 'idle');
 				clearTerminalAttention(e.terminalId).catch(() => {});
 				return;
 			}
-			setClaudeStatus(e.terminalId, e.status);
-		});
+			setAgentStatus(e.terminalId, e.status);
+		};
+		unlistenStatus = await onAgentStatus(onStatus);
 	});
 	onDestroy(() => {
 		window.removeEventListener('keydown', onKey);

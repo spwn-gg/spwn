@@ -65,13 +65,23 @@ pub async fn invoke(
 ) -> ApiResult {
     match command.as_str() {
         // --- Settings / misc ---
-        "find_claude" => ok(cmd::find_claude()),
         "get_settings" => blocking!(state, body, NoArgs, st, _a, ok(cmd::get_settings(&st))),
         "set_settings" => {
             blocking!(state, body, SetSettingsArgs, st, a, ok_result(cmd::set_settings(&st, a.settings)))
         }
         "open_global_hooks_dir" => ok_result(
             tokio::task::spawn_blocking(cmd::open_global_hooks_dir)
+                .await
+                .map_err(join_err)?,
+        ),
+
+        // --- Agents ---
+        "list_agents" => blocking!(state, body, NoArgs, st, _a, ok(cmd::list_agents(&st))),
+        "reload_agents" => {
+            blocking!(state, body, NoArgs, st, _a, ok_result(cmd::reload_agents(&st)))
+        }
+        "open_agents_dir" => ok_result(
+            tokio::task::spawn_blocking(cmd::open_agents_dir)
                 .await
                 .map_err(join_err)?,
         ),
@@ -177,36 +187,6 @@ pub async fn invoke(
             ok_result(cmd::set_terminal_session(&st, a.project_id, a.terminal_id, a.session_id))
         ),
 
-        // --- Claude chat I/O ---
-        "claude_send" => blocking!(
-            state, body, ClaudeSendArgs, st, a,
-            ok_result(cmd::claude_send(&st, a.terminal_id, a.text))
-        ),
-        "claude_permission" => blocking!(
-            state, body, ClaudePermissionArgs, st, a,
-            ok_result(cmd::claude_permission(&st, a.terminal_id, a.id, a.allow, a.message))
-        ),
-        "claude_set_mode" => blocking!(
-            state, body, ClaudeSetModeArgs, st, a,
-            ok_result(cmd::claude_set_mode(&st, a.terminal_id, a.mode))
-        ),
-        "claude_interrupt" => blocking!(
-            state, body, TerminalIdArgs, st, a,
-            ok_result(cmd::claude_interrupt(&st, a.terminal_id))
-        ),
-        "claude_answer" => blocking!(
-            state, body, ClaudeAnswerArgs, st, a,
-            ok_result(cmd::claude_answer(&st, a.terminal_id, a.id, a.text))
-        ),
-        "claude_rewind" => blocking!(
-            state, body, ClaudeRewindArgs, st, a,
-            ok_result(cmd::claude_rewind(st, a.terminal_id, a.anchor_uuid))
-        ),
-        "claude_rewind_restore" => blocking!(
-            state, body, ClaudeRewindRestoreArgs, st, a,
-            ok_result(cmd::claude_rewind_restore(st, a.terminal_id, a.anchor_uuid, a.restore))
-        ),
-
         // --- Checkpoints ---
         "checkpoint_project" => blocking!(
             state, body, CheckpointProjectArgs, st, a,
@@ -221,10 +201,41 @@ pub async fn invoke(
             ok(cmd::list_checkpoints(&st, a.session_id))
         ),
 
+        // --- Agent rewind ---
+        "agent_rewind" => {
+            let a: AgentRewindArgs = parse(&body)?;
+            ok_result(
+                cmd::agent_rewind(state.clone(), a.terminal_id, a.anchor_uuid, a.restore_files)
+                    .await,
+            )
+        }
+
+        // --- Agent TUI control (rmux panes) ---
+        "agent_send" => {
+            let a: AgentSendArgs = parse(&body)?;
+            ok_result(cmd::agent_send(&state, a.terminal_id, a.text, a.submit).await)
+        }
+        "agent_key" => {
+            let a: AgentKeyArgs = parse(&body)?;
+            ok_result(cmd::agent_key(&state, a.terminal_id, a.key).await)
+        }
+        "agent_interrupt" => {
+            let a: TerminalIdArgs = parse(&body)?;
+            ok_result(cmd::agent_interrupt(&state, a.terminal_id).await)
+        }
+        "agent_set_mode" => {
+            let a: AgentSetModeArgs = parse(&body)?;
+            ok_result(cmd::agent_set_mode(&state, a.terminal_id, a.mode).await)
+        }
+
         // --- Shell pty I/O ---
         "write_to_pty" => {
             let a: WriteToPtyArgs = parse(&body)?;
             ok_result(cmd::write_to_pty(&state, a.pty_id, a.data).await)
+        }
+        "prime_pty" => {
+            let a: PrimePtyArgs = parse(&body)?;
+            ok_result(cmd::prime_pty(&state, a.terminal_id, a.cols, a.rows).await)
         }
         "resize_pty" => {
             let a: ResizePtyArgs = parse(&body)?;
@@ -482,52 +493,6 @@ struct SetTerminalSessionArgs {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ClaudeSendArgs {
-    terminal_id: String,
-    text: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ClaudePermissionArgs {
-    terminal_id: String,
-    id: String,
-    allow: bool,
-    message: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ClaudeSetModeArgs {
-    terminal_id: String,
-    mode: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ClaudeAnswerArgs {
-    terminal_id: String,
-    id: String,
-    text: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ClaudeRewindArgs {
-    terminal_id: String,
-    anchor_uuid: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ClaudeRewindRestoreArgs {
-    terminal_id: String,
-    anchor_uuid: String,
-    restore: bool,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct CheckpointProjectArgs {
     project_id: String,
     session_id: String,
@@ -548,6 +513,48 @@ struct RestoreCheckpointArgs {
 #[serde(rename_all = "camelCase")]
 struct SessionIdArgs {
     session_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentRewindArgs {
+    terminal_id: String,
+    anchor_uuid: String,
+    #[serde(default)]
+    restore_files: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentSendArgs {
+    terminal_id: String,
+    text: String,
+    /// Press the submit key after pasting. False = paste for review, which is what
+    /// "→ parent" and context injection rely on.
+    #[serde(default)]
+    submit: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentKeyArgs {
+    terminal_id: String,
+    key: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentSetModeArgs {
+    terminal_id: String,
+    mode: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PrimePtyArgs {
+    terminal_id: String,
+    cols: u16,
+    rows: u16,
 }
 
 #[derive(Deserialize)]

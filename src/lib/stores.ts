@@ -32,6 +32,8 @@ export interface OpenTab {
 	projectId: string;
 	projectName?: string;
 	kind: PaneKind;
+	/** Which agent definition to run, when kind === 'agent'. */
+	agent?: string;
 	title: string;
 	terminalId?: string;
 	cwd?: string;
@@ -74,12 +76,12 @@ export function setHookRunning(terminalId: string, event: string | null) {
 	});
 }
 
-/** Live Claude session status (terminalId → status), fed by the backend `claude://status`
+/** Live session status (terminalId → status), fed by the backend `agent://status`
  * event. The single source of truth for the sidebar/tab-bar spinner and attention dots —
  * it tracks background sessions the pane can't see. `idle`/null removes the entry. */
-export const claudeStatus = writable<Map<string, SessionStatus>>(new Map());
-export function setClaudeStatus(terminalId: string, status: SessionStatus | null) {
-	claudeStatus.update((m) => {
+export const agentStatus = writable<Map<string, SessionStatus>>(new Map());
+export function setAgentStatus(terminalId: string, status: SessionStatus | null) {
+	agentStatus.update((m) => {
 		const n = new Map(m);
 		if (status && status !== 'idle') n.set(terminalId, status);
 		else n.delete(terminalId);
@@ -87,90 +89,26 @@ export function setClaudeStatus(terminalId: string, status: SessionStatus | null
 	});
 }
 
-/** Claude permission/execution mode. Kept in sync with InputBar's local union. */
+/** The agent's permission/execution mode, remembered across sessions. */
 export type PermMode = 'default' | 'acceptEdits' | 'plan' | 'auto';
-const CLAUDE_MODE_KEY = 'cm.claudeMode';
+const AGENT_MODE_KEY = 'cm.agentMode';
 const VALID_MODES: PermMode[] = ['default', 'acceptEdits', 'plan', 'auto'];
 
-function loadClaudeMode(): PermMode {
+function loadAgentMode(): PermMode {
 	if (typeof localStorage === 'undefined') return 'default';
-	const v = localStorage.getItem(CLAUDE_MODE_KEY) as PermMode | null;
+	const v = localStorage.getItem(AGENT_MODE_KEY) as PermMode | null;
 	return v && VALID_MODES.includes(v) ? v : 'default';
 }
 
 /** The last execution mode the user selected — seeds new Claude panes so the
  * choice sticks across panes and app restarts. */
-export const claudeMode = writable<PermMode>(loadClaudeMode());
-claudeMode.subscribe((m) => {
-	if (typeof localStorage !== 'undefined') localStorage.setItem(CLAUDE_MODE_KEY, m);
+export const agentMode = writable<PermMode>(loadAgentMode());
+agentMode.subscribe((m) => {
+	if (typeof localStorage !== 'undefined') localStorage.setItem(AGENT_MODE_KEY, m);
 });
 
 /** Whether the settings panel is shown. */
 export const showSettings = writable(false);
-
-// ── Tool permission grants ──────────────────────────────────────────────────
-// Auto-allow a tool without re-prompting, scoped to a single session or globally
-// ("always", persisted across restarts). Client-side: the pane resolves a matching
-// permission request itself instead of surfacing the prompt.
-
-export type GrantScope = 'once' | 'session' | 'always';
-
-const ALWAYS_KEY = 'cm.alwaysAllowTools';
-function loadAlways(): Set<string> {
-	if (typeof localStorage === 'undefined') return new Set();
-	try {
-		const v = JSON.parse(localStorage.getItem(ALWAYS_KEY) ?? '[]');
-		return new Set(Array.isArray(v) ? v : []);
-	} catch {
-		return new Set();
-	}
-}
-/** Tools allowed in every session, persisted. */
-export const alwaysAllowTools = writable<Set<string>>(loadAlways());
-alwaysAllowTools.subscribe((s) => {
-	if (typeof localStorage !== 'undefined')
-		localStorage.setItem(ALWAYS_KEY, JSON.stringify([...s]));
-});
-
-/** Tools allowed for the rest of a single session: terminalId → tool names. */
-export const sessionAllowTools = writable<Map<string, Set<string>>>(new Map());
-
-/** Record a grant (no-op for 'once', which allows a single request only). */
-export function grantTool(terminalId: string, tool: string, scope: GrantScope) {
-	if (scope === 'always') {
-		alwaysAllowTools.update((s) => new Set(s).add(tool));
-	} else if (scope === 'session') {
-		sessionAllowTools.update((m) => {
-			const n = new Map(m);
-			const set = new Set(n.get(terminalId) ?? []);
-			set.add(tool);
-			n.set(terminalId, set);
-			return n;
-		});
-	}
-}
-
-/** Whether a tool should be auto-allowed for this session (session or always grant). */
-export function isToolGranted(terminalId: string, tool: string): boolean {
-	return get(alwaysAllowTools).has(tool) || (get(sessionAllowTools).get(terminalId)?.has(tool) ?? false);
-}
-
-/** Revoke a tool's grant (both session- and always-scope). */
-export function revokeTool(terminalId: string, tool: string) {
-	alwaysAllowTools.update((s) => {
-		const n = new Set(s);
-		n.delete(tool);
-		return n;
-	});
-	sessionAllowTools.update((m) => {
-		const n = new Map(m);
-		const set = new Set(n.get(terminalId) ?? []);
-		set.delete(tool);
-		if (set.size) n.set(terminalId, set);
-		else n.delete(terminalId);
-		return n;
-	});
-}
 
 /** Which sessions have their Inspector drawer open (by terminal id). */
 export const inspectorOpen = writable<Set<string>>(new Set());

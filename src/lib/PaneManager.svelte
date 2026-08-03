@@ -1,15 +1,15 @@
 <script lang="ts">
 	import Terminal from './Terminal.svelte';
-	import ClaudePane from './ClaudePane.svelte';
+	import AgentPane from './AgentPane.svelte';
 	import ContextComposer from './ContextComposer.svelte';
 	import ScheduledTasks from './ScheduledTasks.svelte';
-	import { openTabs, activeTabKey, closeTab, hookRunning, claudeStatus } from './stores';
+	import { openTabs, activeTabKey, closeTab, hookRunning, agentStatus } from './stores';
 	import type { OpenTab } from './stores';
 	import { GLYPHS } from './labels';
 
 	/** The icon glyph for a tab, kept 1:1 with the sidebar via labels.ts. */
 	function tabIcon(kind: OpenTab['kind']): string {
-		return kind === 'claude'
+		return kind === 'agent'
 			? GLYPHS.session
 			: kind === 'context'
 				? GLYPHS.mergeTray
@@ -27,13 +27,13 @@
 	 * active tab (you're looking at it); a "thinking" spinner still shows via isBusy. */
 	function tabAttn(tab: OpenTab, activeKey: string | null): 'blocked' | 'done' | 'error' | null {
 		if (!tab.terminalId || tab.key === activeKey) return null;
-		const s = $claudeStatus.get(tab.terminalId);
+		const s = $agentStatus.get(tab.terminalId);
 		if (s === 'blockedPermission' || s === 'blockedQuestion') return 'blocked';
 		if (s === 'done') return 'done';
 		if (s === 'error') return 'error';
 		return null;
 	}
-	const isBusy = (tab: OpenTab) => tab.terminalId && $claudeStatus.get(tab.terminalId) === 'thinking';
+	const isBusy = (tab: OpenTab) => tab.terminalId && $agentStatus.get(tab.terminalId) === 'thinking';
 </script>
 
 <div class="panes">
@@ -71,10 +71,11 @@
 					<ContextComposer projectId={tab.projectId} />
 				{:else if tab.kind === 'schedule'}
 					<ScheduledTasks projectId={tab.projectId} />
-				{:else if tab.kind === 'claude'}
-					<ClaudePane
+				{:else if tab.kind === 'agent'}
+					<AgentPane
 						tabKey={tab.key}
 						projectId={tab.projectId}
+						agent={tab.agent}
 						terminalId={tab.terminalId}
 						sessionId={tab.sessionId}
 						claudeResume={tab.claudeResume}
