@@ -109,6 +109,78 @@ pub fn read_transcript(path: &Path) -> Vec<Turn> {
     path
 }
 
+/// A cheap summary of a transcript's tail — enough to decide "did a turn just
+/// finish", without the allocation of a full [`read_transcript`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct TailSummary {
+    /// uuid of the last main-chain user/assistant record.
+    pub last_uuid: Option<String>,
+    /// Role of that record.
+    pub last_role: Option<String>,
+    /// Whether it contains a `tool_use` block — i.e. the assistant is about to act
+    /// and the turn is NOT over.
+    pub last_has_tool_use: bool,
+    /// Total main-chain turns, for cheap change detection.
+    pub turns: usize,
+}
+
+/// Scan a transcript for its tail state.
+///
+/// Used to detect turn boundaries for the `session-turn` hooks. Deliberately not
+/// `read_transcript`: that clones every block of every turn, and this runs on every
+/// debounced filesystem change for every live session.
+pub fn tail_summary(path: &Path) -> TailSummary {
+    let mut out = TailSummary {
+        last_uuid: None,
+        last_role: None,
+        last_has_tool_use: false,
+        turns: 0,
+    };
+    let Ok(text) = fs::read_to_string(path) else {
+        return out;
+    };
+    for line in text.lines() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let kind = v.get("type").and_then(Value::as_str).unwrap_or("");
+        if kind != "user" && kind != "assistant" {
+            continue;
+        }
+        if v.get("isSidechain").and_then(Value::as_bool).unwrap_or(false) {
+            continue;
+        }
+        let Some(uuid) = v.get("uuid").and_then(Value::as_str) else {
+            continue;
+        };
+        out.turns += 1;
+        out.last_uuid = Some(uuid.to_string());
+        out.last_role = Some(kind.to_string());
+        out.last_has_tool_use = v
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .and_then(Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .any(|b| b.get("type").and_then(Value::as_str) == Some("tool_use"))
+            })
+            .unwrap_or(false);
+    }
+    out
+}
+
+impl TailSummary {
+    /// Is the conversation resting on a completed assistant turn?
+    ///
+    /// The test is "last main-chain record is an assistant message carrying no
+    /// `tool_use` block". Notably NOT `stop_reason`: Claude Code writes one record
+    /// per content block and copies `stop_reason: "tool_use"` onto records that
+    /// contain no tool_use block at all, so it is not a reliable per-record marker.
+    pub fn turn_complete(&self) -> bool {
+        self.last_role.as_deref() == Some("assistant") && !self.last_has_tool_use
+    }
+}
+
 /// Map a `message` object's `content` (string or block list) into display blocks.
 fn parse_blocks(message: &Value) -> Vec<Block> {
     let Some(content) = message.get("content") else {

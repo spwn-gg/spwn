@@ -19,6 +19,7 @@
 		onStoreError,
 		onHookRunning,
 		onClaudeStatus,
+		onAgentStatus,
 		clearTerminalAttention,
 		onHookPrompt,
 		onHookPromptClose,
@@ -37,6 +38,7 @@
 	let unlistenError: (() => void) | undefined;
 	let unlistenHook: (() => void) | undefined;
 	let unlistenStatus: (() => void) | undefined;
+	let unlistenAgentStatus: (() => void) | undefined;
 	let unlistenHookPrompt: (() => void) | undefined;
 	let unlistenHookPromptClose: (() => void) | undefined;
 
@@ -78,8 +80,9 @@
 		unlistenHookPromptClose = await onHookPromptClose((e) => {
 			hookPrompts = hookPrompts.filter((p) => p.id !== e.id);
 		});
-		// Track live Claude session status → drives sidebar/tab-bar spinners + attention.
-		unlistenStatus = await onClaudeStatus((e) => {
+		// Track live session status → drives sidebar/tab-bar spinners + attention.
+		// Both transports emit the same payload, so one handler serves both.
+		const onStatus = (e: { terminalId: string; status: SessionStatus }) => {
 			const active = get(activeTab);
 			// If you're already looking at this session, don't nag — clear it (and the
 			// persisted flag) instead of lighting a dot. A live "thinking" still shows.
@@ -89,13 +92,16 @@
 				return;
 			}
 			setClaudeStatus(e.terminalId, e.status);
-		});
+		};
+		unlistenStatus = await onClaudeStatus(onStatus);
+		unlistenAgentStatus = await onAgentStatus(onStatus);
 	});
 	onDestroy(() => {
 		window.removeEventListener('keydown', onKey);
 		unlistenError?.();
 		unlistenHook?.();
 		unlistenStatus?.();
+		unlistenAgentStatus?.();
 		unlistenHookPrompt?.();
 		unlistenHookPromptClose?.();
 		stopResize();

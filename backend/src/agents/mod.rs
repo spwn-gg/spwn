@@ -7,6 +7,8 @@
 
 pub mod def;
 pub mod defaults;
+pub mod status;
+pub mod turns;
 
 pub use def::{AgentDef, Capabilities, SessionStatus};
 pub use defaults::{global_agents_dir, install_default_agents};

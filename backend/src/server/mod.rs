@@ -81,7 +81,7 @@ pub async fn serve(opts: ServeOpts) -> anyhow::Result<()> {
 
     // Watch ~/.claude/projects so the transcript panel refreshes live.
     let root = projects::projects_root();
-    match projects::start_watcher(state.hub.clone(), &root) {
+    match projects::start_watcher(state.clone(), &root) {
         Ok(w) => *state.watcher.lock() = Some(w),
         Err(e) => eprintln!("failed to start projects watcher: {e}"),
     }

@@ -536,6 +536,28 @@ export function onClaudeStatus(cb: (e: ClaudeStatusEvent) => void): Promise<Unli
 	return listen<ClaudeStatusEvent>('claude://status', (e) => cb(e.payload));
 }
 
+/**
+ * Live status for a TUI agent session, derived from its pane.
+ *
+ * Same payload shape as `claude://status`, so both transports feed one store and
+ * every sidebar dot / tab spinner works identically regardless of which one a
+ * session runs on.
+ */
+export function onAgentStatus(cb: (e: ClaudeStatusEvent) => void): Promise<UnlistenFn> {
+	return listen<ClaudeStatusEvent>('agent://status', (e) => cb(e.payload));
+}
+
+/** A finished turn: the `session-turn` hooks (commit + checkpoint) have just run. */
+export interface AgentTurnEvent {
+	terminalId: string;
+	sessionId: string;
+	turnUuid: string;
+}
+
+export function onAgentTurn(cb: (e: AgentTurnEvent) => void): Promise<UnlistenFn> {
+	return listen<AgentTurnEvent>('agent://turn', (e) => cb(e.payload));
+}
+
 /** One streamed output line from a session's currently-running hook. */
 export interface HookOutputEvent {
 	event: string;

@@ -519,8 +519,35 @@ pub async fn open_terminal(
     // Opening the same terminal twice (two browser tabs, or a reload racing the
     // unmount) would otherwise leak the previous forwarding task, which keeps
     // emitting to the same topic — the client then sees every byte twice.
+    let (pane_handle, activity) = (session.pane.clone(), Arc::clone(&session.activity));
+    let is_agent_pane = session.agent.is_some();
     if let Some(prev) = state.sessions.lock().insert(terminal_id.clone(), session) {
         prev.output_task.abort();
+    }
+
+    if is_agent_pane {
+        if let Some(def) = agent_id
+            .as_ref()
+            .and_then(|id| state.agents.lock().get(id).cloned())
+        {
+            // Seed the turn tracker with whatever turn the transcript already rests
+            // on, so reattaching to an old conversation doesn't fire a commit and a
+            // checkpoint for a turn that finished days ago.
+            if let Some(sid) = state.store.lock().terminal(&terminal_id).and_then(|t| t.session_id.clone()) {
+                if let Some(path) = crate::projects::locate_session(&sid) {
+                    if let Some(u) = crate::transcript::tail_summary(&path).last_uuid {
+                        state.turns.lock().prime(&terminal_id, &u);
+                    }
+                }
+            }
+            crate::agents::status::spawn_watcher(
+                Arc::clone(&state),
+                terminal_id.clone(),
+                def,
+                pane_handle,
+                activity,
+            );
+        }
     }
 
     Ok(terminal_id)
@@ -537,6 +564,9 @@ pub fn close_terminal(state: &AppState, terminal_id: String) -> Result<(), Strin
         agent.kill();
         clear_claude_status(state, &terminal_id);
     }
+    // An rmux pane survives detach, but its watcher does not (it exits once the
+    // pane leaves `sessions`), so drop the live status with it.
+    clear_agent_status(state, &terminal_id);
     Ok(())
 }
 
@@ -1390,6 +1420,91 @@ pub(crate) fn emit_claude_status(state: &AppState, terminal_id: &str, status: Se
             status,
         },
     );
+}
+
+/// Publish an agent-session status derived from its pane.
+///
+/// Deliberately mirrors `emit_claude_status`'s behavior — live map, persisted
+/// `needs_attention` for restart survival, broadcast — so the sidebar dots, tab
+/// dots, and `clear_terminal_attention` all work identically regardless of which
+/// transport a session runs on.
+pub(crate) fn emit_agent_status(
+    state: &Arc<AppState>,
+    terminal_id: &str,
+    status: crate::agents::SessionStatus,
+) {
+    use crate::agents::SessionStatus as S;
+    {
+        let mut map = state.agent_status.lock();
+        if status == S::Idle {
+            map.remove(terminal_id);
+        } else {
+            map.insert(terminal_id.to_string(), status);
+        }
+    }
+    let reason = match status {
+        S::BlockedPermission | S::BlockedQuestion => Some("blocked"),
+        S::Done => Some("done"),
+        S::Error => Some("error"),
+        _ => None,
+    };
+    if let Some(reason) = reason {
+        let mut changed = false;
+        {
+            let mut store = state.store.lock();
+            if let Some(t) = store.terminal_mut(terminal_id) {
+                if !t.needs_attention || t.attention_reason.as_deref() != Some(reason) {
+                    t.needs_attention = true;
+                    t.attention_reason = Some(reason.to_string());
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            persist(state);
+        }
+    }
+    state.hub.emit(
+        "agent://status",
+        serde_json::json!({ "terminalId": terminal_id, "status": status }),
+    );
+
+    // A settled pane is the second half of turn detection. The transcript watcher
+    // sees records land while the agent is still mid-response and correctly declines
+    // to fire; without this re-check the turn would never fire at all, because the
+    // file stops changing before the pane goes quiet.
+    if matches!(status, S::Done | S::BlockedPermission | S::BlockedQuestion) {
+        crate::agents::turns::on_status_settled(state, terminal_id);
+    }
+}
+
+/// Clear an agent session's live status (intentional teardown).
+pub(crate) fn clear_agent_status(state: &AppState, terminal_id: &str) {
+    state.agent_status.lock().remove(terminal_id);
+    state.turns.lock().forget(terminal_id);
+    state.hub.emit(
+        "agent://status",
+        serde_json::json!({
+            "terminalId": terminal_id,
+            "status": crate::agents::SessionStatus::Idle,
+        }),
+    );
+}
+
+/// Fire the `session-turn` hooks for a finished turn (commit + checkpoint).
+///
+/// Backend-driven, unlike the old frontend-triggered path: a session with no open
+/// tab still commits and checkpoints.
+pub(crate) fn fire_turn_hooks(state: &AppState, terminal_id: &str, turn_uuid: &str) {
+    let Some(mut ctx) = hook_ctx_by_id(state, terminal_id) else {
+        return;
+    };
+    // Only sessions with their own worktree branch get per-turn commit/checkpoint.
+    if ctx.branch.is_none() {
+        return;
+    }
+    ctx.turn_uuid = Some(turn_uuid.to_string());
+    fire_hooks(state, &ctx, "session-turn", false);
 }
 
 /// Clear a session's live status entry and broadcast `idle` — used when a sidecar is

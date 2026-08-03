@@ -62,6 +62,11 @@ pub struct AppState {
     /// Loaded at startup and reloadable at runtime, so editing a TOML to fix a
     /// changed TUI doesn't need a restart.
     pub agents: Mutex<crate::agents::AgentRegistry>,
+    /// Live agent-session status: terminal id → status. Derived from the pane, so
+    /// background sessions with no mounted tab still drive the sidebar.
+    pub agent_status: Mutex<HashMap<String, crate::agents::SessionStatus>>,
+    /// Which turn each session last fired `session-turn` hooks for.
+    pub turns: Mutex<crate::agents::turns::TurnTracker>,
     /// Live Claude session status: terminal id → status. Derived in the sidecar reader
     /// so background sessions (no pane) still drive the sidebar. Ephemeral (empty on
     /// launch; restart falls back to persisted `needs_attention`/`attention_reason`).
