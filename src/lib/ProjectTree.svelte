@@ -29,6 +29,8 @@
 	import { get } from 'svelte/store';
 	import { ACTIONS } from './labels';
 	import { claudeForest, isSessionTerminal, type SessionNode } from './forest';
+	import { listAgents } from './ipc';
+	import type { AgentSummary } from './types';
 	import type { ProjectRec, TerminalRec } from './types';
 
 	let collapsed = $state(new Set<string>());
@@ -94,6 +96,26 @@
 		menuPos = { x: Math.min(r.left, window.innerWidth - 210), y: Math.max(8, y) };
 		openMenuId = p.id;
 	}
+	// Which agents can actually be launched. Loaded once; the picker only appears
+	// when there is a genuine choice, so the common single-agent setup stays a
+	// one-click "New session".
+	let agentDefs = $state<AgentSummary[]>([]);
+	listAgents().then((a) => (agentDefs = a)).catch(() => {});
+	const installedAgents = $derived(agentDefs.filter((a) => a.binary));
+
+	function startAgent(p: ProjectRec, agentId: string, e: Event) {
+		e.stopPropagation();
+		openMenuId = null;
+		const def = agentDefs.find((a) => a.id === agentId);
+		openTab({
+			projectId: p.id,
+			kind: 'agent',
+			agent: agentId,
+			title: def?.name ?? 'session',
+			projectName: p.name
+		});
+	}
+
 	function menuShell(p: ProjectRec, e: Event) {
 		openMenuId = null;
 		addTerminal(p, 'shell', e);
@@ -352,6 +374,15 @@
 			<span class="t-icon" class:branch={depth > 0}>{depth > 0 ? '↳' : '✦'}</span>
 			<span class="t-title" class:attn={status === 'blocked' || status === 'done'} class:err={status === 'error'}>{t.title}</span>
 			{#if $hookRunning.has(t.id)}<span class="hook-spin" title="Running {$hookRunning.get(t.id)} hook…"></span>{/if}
+			{#if t.kind === 'claude'}
+				<!--
+					Both transports render the same ✦ and the same title, which makes it easy
+					to open the legacy one by accident and wonder why it behaves differently
+					(it has no terminal, and needs the Node sidecar). Say which is which
+					until the sidecar is retired.
+				-->
+				<span class="legacy" title="Legacy Agent-SDK chat — no terminal; this transport is being retired">chat</span>
+			{/if}
 			{#if t.branch}<span class="wt-chip" title="git branch (this session's worktree): {t.branch}">⎇ {t.branch.replace(/^cm\//, '')}</span>{/if}
 			{#if status === 'thinking'}<span class="think-spin" title="Working…"></span>
 			{:else if status === 'blocked'}<span class="attn-dot blocked" title="Waiting for you"></span>
@@ -436,7 +467,15 @@
 			role="menu"
 			tabindex="-1"
 			style="left: {menuPos.x}px; top: {menuPos.y}px">
-			<button onclick={(e) => menuClaude(p, e)}>New session</button>
+			{#if installedAgents.length > 1}
+				{#each installedAgents as a (a.id)}
+					<button onclick={(e) => startAgent(p, a.id, e)}>
+						New {a.name} session{a.untested ? ' (experimental)' : ''}
+					</button>
+				{/each}
+			{:else}
+				<button onclick={(e) => menuClaude(p, e)}>New session</button>
+			{/if}
 			<button onclick={(e) => menuSidecar(p, e)} title="Legacy Agent-SDK chat (being retired)">
 				New session (legacy chat)
 			</button>
@@ -799,6 +838,14 @@
 	}
 	.t-icon.ctx {
 		color: #b8a9d8;
+	}
+	.legacy {
+		font-size: 9px;
+		padding: 0 4px;
+		border-radius: 3px;
+		border: 1px solid #5c4a2a;
+		color: #d8a657;
+		flex: 0 0 auto;
 	}
 	.t-title {
 		flex: 1 1 auto;

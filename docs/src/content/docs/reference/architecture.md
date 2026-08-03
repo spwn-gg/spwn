@@ -7,12 +7,17 @@ spwn is a native macOS app that sits on top of your existing Claude Code setup. 
 page explains what it touches and where your data lives — the short version is: it
 uses **your** Claude and **your** files, and keeps its own data **on your Mac**.
 
-## It uses your own Claude
+## It uses your own agent
 
 spwn runs **your** authenticated `claude` command with **your** existing login. There
 is no separate account, no sign-in inside spwn, and nothing is proxied through a
 server in between. Your conversations go straight to Claude the same way they do when
 you run `claude` yourself.
+
+In fact spwn runs the agent's **own terminal UI**, in a pane — so what you're talking
+to is exactly the CLI you'd get in a terminal, with its own prompts and shortcuts.
+That also means spwn isn't limited to Claude: any agent CLI can be described in a
+small config file and driven the same way. See [Agents](/spwn/guides/agents/).
 
 If your `claude` is installed somewhere unusual, point spwn at it in
 [Settings](/spwn/reference/settings/).
@@ -25,7 +30,7 @@ sessions you'd see in the terminal, not a separate copy kept somewhere else.
 
 ## Sessions keep running
 
-Your shell and Claude sessions run in the background and are managed so they **survive
+Your shell and agent sessions run in the background and are managed so they **survive
 closing the app**. That's why reopening spwn brings everything back exactly where you
 left it, including running programs. Fork and the Timeline build on this: a fork is a real
 branched session, and the Timeline rolls a session back to an earlier checkpoint.
