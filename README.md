@@ -138,9 +138,11 @@ attention-flagged sessions.
 
 ## How it works
 
-A **Tauri** app: a **Svelte** UI, a **Rust** backend (git worktrees, checkpoints, hooks,
-scheduler), and a **Node** sidecar that drives the **Claude Agent SDK** and streams events to
-the app. It only **reads/watches** (never writes) `~/.claude/projects/` and `~/.claude.json`.
+A **CLI + web server**: one **Rust** binary (git worktrees, checkpoints, hooks, scheduler)
+serving HTTP + a WebSocket, with the **Svelte** UI embedded in it and opened in your browser.
+Agents run as **TUIs in rmux panes** — the same `claude` you'd run in a terminal, driven and
+watched by spwn. It only **reads/watches** (never writes) `~/.claude/projects/` and
+`~/.claude.json`.
 
 **On disk** (`~/Library/Application Support/com.markbarta.spwn/`): `projects.json`,
 `settings.json`, `checkpoints/<session_id>/` (APFS copy-on-write code-undo snapshots), and — for
