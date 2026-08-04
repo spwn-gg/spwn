@@ -18,8 +18,9 @@ image:
 sh:
 	$(COMPOSE) run --rm dev bash
 
-## One-time: authenticate the container's claude (persists in the claude-config
-## volume). Follow the printed OAuth URL in your Mac browser, paste the code back.
+## One-time: authenticate the container's Linux claude. Follow the printed OAuth URL
+## in your Mac browser, paste the code back. The container shares your real host home,
+## so the credentials land in your host ~/.claude.json — not a throwaway volume.
 login:
 	$(COMPOSE) run --rm dev claude
 
@@ -40,7 +41,7 @@ test:
 	$(RUN) "npm install && npm run build && cd backend && cargo test -- --nocapture"
 
 ## Run ONLY the gated M0 rewind/branch pty spike against a real, authed claude.
-## Requires a one-time `make login` first (auth persists in the claude-config volume).
+## Requires a one-time `make login` first (see that target for where auth lands).
 spike:
 	$(COMPOSE) run --rm -e RUN_CLAUDE_PTY_SPIKE=1 dev bash -c \
 		"npm install && npm run build && cd backend && cargo test --test rewind_branch_spike -- --nocapture --test-threads=1"

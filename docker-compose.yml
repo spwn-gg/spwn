@@ -12,6 +12,11 @@
 # root-owned on the host, and it has rw access to everything under $HOME.
 #
 # Named volumes cache the cargo registry, the Rust target dir, and node_modules.
+#
+# PANES: the container runs its OWN rmux daemon (the socket lives under the
+# container's $TMPDIR, not $HOME, so it never collides with the daemon on your Mac).
+# That also means panes do NOT survive the container — `--rm` takes the daemon with
+# it. Host-side pane persistence is a host-`spwn` property, not a Docker one.
 
 x-common: &common
   build: .
@@ -29,6 +34,9 @@ x-common: &common
     # the host (already authenticated). CARGO_HOME is set in the image, so the Rust
     # toolchain is unaffected by this.
     - "HOME=${HOME}"
+    # Shell panes run $SHELL, falling back to /bin/zsh (the macOS default) — which
+    # this Debian image doesn't have. Without this, every shell pane fails to spawn.
+    - SHELL=/bin/bash
 
 services:
   dev:

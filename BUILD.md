@@ -42,27 +42,31 @@ npm run dev          # Vite on :1420 with HMR, proxies /api + /ws → backend
 
 ### Distribution (flat layout)
 
-spwn talks to two local helpers: **rmux** (shell terminals) and **node** running the
-Claude Agent SDK **sidecar** (`resources/sidecar.mjs`, produced by `npm run build:sidecar`).
-Discovery prefers paths next to the executable, then env overrides, then `$PATH`:
+Since agents became TUIs in rmux panes, spwn talks to one local helper: **rmux**, which
+backs every pane — shell and agent alike. Discovery prefers a binary next to the
+executable, then the env override, then `$PATH`:
 
-- `rmux`  → `<exe dir>/rmux`, else `RMUX_SDK_DAEMON_BINARY`, else `rmux` on `$PATH`.
-- `node`  → `<exe dir>/node`, else `CM_NODE`, else `node` on `$PATH` / common dirs / nvm.
-- sidecar → `CM_SIDECAR`, else `<exe dir>/sidecar.mjs` or `<exe dir>/resources/sidecar.mjs`,
-  else the repo source in dev.
+- `rmux` → `<exe dir>/rmux`, else `RMUX_SDK_DAEMON_BINARY`, else `rmux` on `$PATH`,
+  else the usual install dirs (`/opt/homebrew/bin`, `/usr/local/bin`, `~/.cargo/bin`).
 
-So a release tarball is just `spwn`, `rmux`, `node`, and `sidecar.mjs` in one directory;
-a Homebrew-style install (rmux/node as formula deps on `$PATH`) needs no bundling at all.
+Its version is not free-floating: `rmux-sdk` accepts a single wire version, so the
+daemon's minor has to track the dep in `backend/Cargo.toml` (0.6.x today).
+
+Agent binaries (`claude`, …) are resolved separately, from the agent definitions in
+`~/.spwn/agents`. So a release tarball is just `spwn` and `rmux` in one directory; a
+Homebrew-style install (rmux as a formula dep on `$PATH`) needs no bundling at all.
 Self-update is dropped — reinstall to upgrade.
 
 ## Development (Docker)
 
 Development can run **inside Docker**. The container compiles the Rust backend and
 SvelteKit frontend, runs tests, and can run the web server with its port published to
-your host browser (the container's `claude` is a Linux build, authenticated separately).
+your host browser. The image ships a Linux `claude` and a version-pinned `rmux` (the
+daemon behind every pane — its minor must match the `rmux-sdk` dep, since the SDK
+accepts exactly one wire version).
 
 ```sh
-make image   # build the dev image (Rust + Node + Linux claude)
+make image   # build the dev image (Rust + Node + Linux claude + rmux)
 make login   # ONE-TIME: authenticate the container's claude
 make gui     # run `spwn serve`; then open http://localhost:4317 on the host
 make fe      # npm install + build the SvelteKit frontend (produces ./build)
@@ -72,16 +76,31 @@ make sh      # interactive shell in the container
 make clean   # drop the cached volumes
 ```
 
-Cargo registry, the Rust `target/` dir, `node_modules`, and the container's
-`~/.claude` are cached in named Docker volumes, so only the first build is slow and
-Linux artifacts never land in the host tree.
+The cargo registry, the Rust `target/` dir, and `node_modules` are cached in named
+Docker volumes, so only the first build is slow and Linux artifacts never land in the
+host tree.
 
-### Authentication in Docker
+### Home directory and auth in Docker
 
-The container's `claude` authenticates **separately** from your host. Run
-`make login` once and follow the printed OAuth URL. The token persists in the
-`claude-config` Docker volume; the container's `~/.claude` is isolated from your host
-`~/.claude`.
+The compose file mounts your **real host home at the same path** and sets `HOME` to it,
+so the container's `claude` reads the same `~/.claude.json` + `~/.claude/` you use on
+the host, and every session's original working dir resolves at its real path (which is
+what makes resume/branch work in the container at all). The consequence worth knowing:
+the container runs as root with read-write access to everything under `$HOME`. On
+Docker Desktop for Mac the file sharing layer maps writes back to your own uid, so
+container-created files are not root-owned; on a Linux host with a plain bind mount
+they would be.
+
+The container's `claude` is a Linux build, so it may still need its own OAuth pass even
+when the host is signed in — `make login` once, follow the printed URL. Those
+credentials go into your **shared host** `~/.claude.json`, not a throwaway volume.
+
+### Panes in Docker
+
+The container starts its own rmux daemon, on a socket under the container's `$TMPDIR`
+rather than `$HOME` — so it never collides with the rmux running on your Mac. It also
+means panes die with the container: `make gui`/`make sh` use `--rm`, and pane
+persistence across restarts is a property of host `spwn`, not of this image.
 
 ### Embedded frontend
 
