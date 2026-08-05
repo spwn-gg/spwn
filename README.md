@@ -17,7 +17,8 @@ Fork a coding session the moment an idea splits: spwn branches the *AI conversat
 
 Three features, one idea: **exploration should be cheap, isolated, and disposable.** Two of
 them are what make spwn different from a terminal full of Claude tabs — **session branching**
-and a **per-session hook system** — so they lead below.
+and a **per-session hook system**, which is also how a session gets its own container — so
+they lead below.
 
 ---
 
@@ -108,7 +109,46 @@ echo "ready on $SPWN_BRANCH"
   never blocks the session.
 
 📖 [Hooks reference](https://spwn-gg.github.io/spwn/reference/hooks/) · runnable
-[`examples/hooks/`](examples/hooks/) with a 6-recipe cookbook (preview env, seed DB, copy secrets, teardown, …).
+[`examples/hooks/`](examples/hooks/) with an 8-recipe cookbook (preview env, seed DB, copy secrets, teardown, …).
+
+## 📦 Per-session dev environments
+
+A session is isolated in *files* — its own branch, its own worktree — but by default it still
+builds and tests against **your** machine's toolchain. So parallel sessions share one Node, one
+Python, one set of ports, and a session that needs a different stack has nowhere to go.
+
+A hook can hand spwn an **environment** instead, and spwn runs the session inside it: the agent's
+TUI, its shells, its builds, its tests. One line does it.
+
+```sh
+# .spwn/hooks/session-created.d/20-container.sh — abridged; the runnable example also
+# mounts the repo's .git (so git works in there) and ~/.claude (so your login does)
+docker run -d --name "spwn-$SPWN_TERMINAL_ID" \
+  -v "$SPWN_WORKTREE:$SPWN_WORKTREE" -w "$SPWN_WORKTREE" my-dev-image sleep infinity
+
+echo "::spwn:set:: exec=docker exec -it -w $SPWN_WORKTREE spwn-$SPWN_TERMINAL_ID"
+```
+
+- **spwn ships no Docker code.** It prepends the prefix your hook reported to each pane's argv and
+  never looks inside it — Docker, Podman, a VM, an SSH host, whatever you wired up. spwn *had* a
+  built-in compose integration once; it was removed for being too opinionated, and this replaces it
+  with the same `::spwn:set::` callback that already lets a hook create the worktree.
+- **The environment is isolated; your files aren't.** The worktree is bind-mounted at its *identical
+  absolute path*, so your editor, host-side `git`, per-turn commits, and the Timeline all keep
+  working exactly as before. What's isolated is the toolchain — not your ability to see the work.
+- **Different stacks, side by side.** One session on Node 18, another on Node 22, a third with a
+  system library you'd rather not install. Install something in one and the others never see it.
+- **Share what's expensive, isolate what isn't.** The [services
+  recipe](https://spwn-gg.github.io/spwn/cookbook/hooks/#per-session-dev-environment-with-services)
+  runs one shared database *server* with a separate database per session — ten parallel sessions
+  don't mean ten postgres processes, and they still can't clobber each other's rows.
+- **Torn down with the session.** `session-deleted` fires before the worktree goes, so the container
+  leaves with it — the same delete that removes the branch.
+
+> Your laptop stays clean, and "works on my machine" stops being a property of the machine.
+
+📖 [Running a session somewhere else](https://spwn-gg.github.io/spwn/reference/hooks/#running-a-session-somewhere-else) ·
+runnable [`docker-env/`](examples/hooks/docker-env/) and [`dev-env-services/`](examples/hooks/dev-env-services/)
 
 ---
 
