@@ -51,6 +51,46 @@ pub struct TerminalRec {
     /// when `needs_attention` is false.
     #[serde(default)]
     pub attention_reason: Option<String>,
+    /// The environment this session's panes run in, reported by a `session-created`
+    /// hook via `::spwn:set:: exec=…`. None → panes run directly on the host, which
+    /// is every session that has no such hook.
+    #[serde(default)]
+    pub exec: Option<ExecSpec>,
+}
+
+/// How to run a session's processes somewhere other than the host — a container, a
+/// VM, a remote shell. spwn never creates or inspects that environment; a hook does,
+/// and reports back how to reach it.
+///
+/// Deliberately opaque: the prefix is whatever the hook says, so spwn carries no
+/// opinion about Docker (the per-session docker-compose integration that preceded
+/// project hooks was removed for exactly that reason — see `hooks.rs`).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecSpec {
+    /// Command prefix every interactive pane's argv is prepended with, e.g.
+    /// `docker exec -it -w /path/to/worktree spwn-<id>`.
+    ///
+    /// For a TUI agent this MUST allocate a tty (`-t` under docker): without one the
+    /// agent renders nothing, every `detect` rule in its definition misses, and
+    /// `C-c` kills the wrapper instead of interrupting the turn.
+    pub prefix: String,
+    /// Prefix for headless (scheduled) runs. Separate from `prefix` because headless
+    /// output is parsed as line-delimited JSON — a tty interleaves spinner bytes with
+    /// it — so this one must NOT allocate a tty. None → scheduled runs stay on the
+    /// host rather than silently failing to parse.
+    #[serde(default)]
+    pub headless_prefix: Option<String>,
+    /// Agent binary inside the environment. None → the agent definition's bare
+    /// `binary.name`, resolved by the environment's own PATH. The host-resolved
+    /// absolute path is never right here: a macOS binary can't exec in a Linux
+    /// container.
+    #[serde(default)]
+    pub bin: Option<String>,
+    /// Shell for shell panes inside the environment. None → `/bin/sh`, which is the
+    /// only shell a minimal image is guaranteed to have.
+    #[serde(default)]
+    pub shell: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -210,6 +250,7 @@ mod tests {
             base_branch: None,
             needs_attention: false,
             attention_reason: None,
+            exec: None,
         }
     }
 
@@ -240,6 +281,31 @@ mod tests {
         assert_eq!(t.agent.as_deref(), Some("claude"));
         assert_eq!(t.session_id.as_deref(), Some("abc-123"));
         assert_eq!(t.branch.as_deref(), Some("spwn/t"));
+    }
+
+    #[test]
+    fn a_record_written_before_environments_existed_still_loads() {
+        // `ProjectStore::load` turns ANY deserialization error into an empty store —
+        // i.e. every project silently gone. So a store written by an older spwn, with
+        // no `exec` key, must parse; that's what makes `exec` safe to add.
+        let store = migrated(
+            r#"{"projects":[{"id":"p","name":"P","directory":"/tmp","terminals":[
+                {"id":"t","title":"s","kind":"agent","agent":"claude","cwd":"/tmp"}]}]}"#,
+        );
+        assert_eq!(store.projects[0].terminals[0].exec, None);
+    }
+
+    #[test]
+    fn an_environment_round_trips_through_the_store() {
+        let json = r#"{"projects":[{"id":"p","name":"P","directory":"/tmp","terminals":[
+            {"id":"t","title":"s","kind":"agent","agent":"claude","cwd":"/tmp",
+             "exec":{"prefix":"docker exec -it box","execShell":"/bin/bash"}}]}]}"#;
+        let store = migrated(json);
+        let e = store.projects[0].terminals[0].exec.as_ref().unwrap();
+        assert_eq!(e.prefix, "docker exec -it box");
+        // Absent optional keys stay None rather than failing the whole parse.
+        assert_eq!(e.bin, None);
+        assert_eq!(e.headless_prefix, None);
     }
 
     #[test]

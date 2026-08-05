@@ -190,6 +190,47 @@ pub struct SpawnSpec<'a> {
     /// Extra `KEY=VALUE` environment, merged after the defaults.
     pub env: Vec<String>,
     pub agent: Option<AgentRuntime>,
+    /// Run the pane's command through this prefix instead of directly — the argv of
+    /// a hook-provided environment (e.g. `docker exec -it … <container>`), already
+    /// split. None → run on the host, unchanged. See [`wrap_argv`].
+    pub exec_prefix: Option<Vec<String>>,
+}
+
+/// Build the argv actually handed to rmux: the environment's prefix, then the
+/// environment as an explicit `env` invocation, then the original command.
+///
+/// The `env` indirection is load-bearing. rmux applies `EnsureSession::environment`
+/// to the process it spawns — which, once a prefix is in play, is the *wrapper*
+/// (the `docker` client), not the agent inside. Passing the variables as arguments
+/// to `env(1)` carries them across the boundary without spwn needing to know what
+/// the boundary is or which flag that particular wrapper spells it with.
+///
+/// `env K= cmd` sets an empty value rather than unsetting, which is exactly what
+/// `claude.toml`'s `CLAUDE_CODE_CHILD_SESSION = ""` requires to keep transcript
+/// saving on.
+/// Split a hook-reported exec prefix into argv, the way a shell would.
+///
+/// Returns None for an empty or unparseable prefix (an unbalanced quote, say). The
+/// caller treats that as "no environment" and runs on the host: a session that
+/// quietly runs uncontained is recoverable, whereas one spawned with shredded argv
+/// is a pane that dies with no diagnosis.
+pub fn split_exec_prefix(prefix: &str) -> Option<Vec<String>> {
+    let parts = shell_words::split(prefix).ok()?;
+    (!parts.is_empty()).then_some(parts)
+}
+
+fn wrap_argv(prefix: Option<Vec<String>>, env: &[String], argv: Vec<String>) -> Vec<String> {
+    match prefix {
+        None => argv,
+        Some(mut v) => {
+            if !env.is_empty() {
+                v.push("env".to_string());
+                v.extend(env.iter().cloned());
+            }
+            v.extend(argv);
+            v
+        }
+    }
 }
 
 /// Create (or reattach to) an rmux session named `session_name` running `argv` in
@@ -204,6 +245,11 @@ pub async fn spawn_pane(rmux: &Rmux, hub: EventHub, spec: SpawnSpec<'_>) -> anyh
     let mut env = vec!["TERM=xterm-256color".to_string()];
     env.extend(spec.env);
 
+    // `working_directory` stays the HOST path either way: it's the cwd of whatever
+    // rmux spawns, which under a prefix is the wrapper process. The cwd *inside* the
+    // environment is the prefix's business (a `-w` flag, say).
+    let argv = wrap_argv(spec.exec_prefix, &env, spec.argv);
+
     let session = rmux
         .ensure_session(
             EnsureSession::named(name)
@@ -211,7 +257,7 @@ pub async fn spawn_pane(rmux: &Rmux, hub: EventHub, spec: SpawnSpec<'_>) -> anyh
                 .detached(true)
                 .size(TerminalSizeSpec::new(spec.cols.max(1), spec.rows.max(1)))
                 .working_directory(spec.cwd.to_string_lossy().into_owned())
-                .process(ProcessSpec::argv(spec.argv))
+                .process(ProcessSpec::argv(argv))
                 .environment(env),
         )
         .await?;
@@ -267,6 +313,79 @@ mod tests {
     use super::*;
     use rmux_sdk::RmuxBuilder;
     use std::time::Duration;
+
+    #[test]
+    fn no_prefix_leaves_argv_untouched() {
+        // The uncontained path is the overwhelming majority of sessions; it must be
+        // byte-identical to what spwn ran before environments existed.
+        let argv = vec!["claude".to_string(), "--session-id".to_string()];
+        assert_eq!(
+            wrap_argv(None, &["TERM=xterm-256color".to_string()], argv.clone()),
+            argv
+        );
+    }
+
+    #[test]
+    fn prefix_wraps_command_and_carries_env_across_the_boundary() {
+        let out = wrap_argv(
+            Some(vec!["docker".into(), "exec".into(), "-it".into(), "box".into()]),
+            &["TERM=xterm-256color".to_string(), "K=v".to_string()],
+            vec!["claude".into(), "--session-id".into(), "abc".into()],
+        );
+        assert_eq!(
+            out,
+            vec![
+                "docker",
+                "exec",
+                "-it",
+                "box",
+                "env",
+                "TERM=xterm-256color",
+                "K=v",
+                "claude",
+                "--session-id",
+                "abc"
+            ]
+        );
+    }
+
+    #[test]
+    fn empty_env_omits_the_env_word() {
+        // A shell pane carries no [env] block. Emitting a bare `env` would still work,
+        // but only on images that have it — don't require one for nothing.
+        let out = wrap_argv(Some(vec!["ssh".into(), "host".into()]), &[], vec!["/bin/sh".into()]);
+        assert_eq!(out, vec!["ssh", "host", "/bin/sh"]);
+    }
+
+    #[test]
+    fn an_empty_env_value_stays_set_rather_than_dropped() {
+        // claude.toml's CLAUDE_CODE_CHILD_SESSION = "" must arrive SET AND EMPTY:
+        // unsetting it turns transcript saving off, which silently kills session
+        // binding, the Timeline and rewind.
+        let out = wrap_argv(
+            Some(vec!["docker".into(), "exec".into(), "box".into()]),
+            &["CLAUDE_CODE_CHILD_SESSION=".to_string()],
+            vec!["claude".into()],
+        );
+        assert!(out.contains(&"CLAUDE_CODE_CHILD_SESSION=".to_string()));
+    }
+
+    #[test]
+    fn a_prefix_path_with_spaces_survives_as_one_argument() {
+        let split = split_exec_prefix("docker exec -w '/Users/me/My Projects/wt' box").unwrap();
+        assert_eq!(
+            split,
+            vec!["docker", "exec", "-w", "/Users/me/My Projects/wt", "box"]
+        );
+    }
+
+    #[test]
+    fn an_unusable_prefix_is_rejected_rather_than_shredded() {
+        assert!(split_exec_prefix("").is_none());
+        assert!(split_exec_prefix("   ").is_none());
+        // Unbalanced quote: splitting this would hand rmux nonsense argv.
+        assert!(split_exec_prefix("docker exec -w 'unterminated").is_none());
+    }
 
     #[test]
     fn crlf_fixes_bare_newlines_without_doubling_existing_ones() {
@@ -336,6 +455,7 @@ mod tests {
                 rows: 24,
                 env: Vec::new(),
                 agent: None,
+                exec_prefix: None,
             },
         )
         .await
@@ -363,6 +483,7 @@ mod tests {
                 rows: 24,
                 env: Vec::new(),
                 agent: None,
+                exec_prefix: None,
             },
         )
         .await

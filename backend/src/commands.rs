@@ -106,7 +106,23 @@ pub async fn delete_project(state: &AppState, project_id: String) -> Result<(), 
             .map(|p| p.terminals.iter().map(|t| t.id.clone()).collect())
             .unwrap_or_default()
     };
-    kill_terminals(&state, &terminal_ids).await;
+    // Delete each session properly instead of just dropping the project record.
+    // `delete_terminal` kills the pane, fires both `session-deleted` scopes — the
+    // repo one for the user's own teardown (a container, say), then the global one
+    // that removes the worktree and its branch — and prunes the session's
+    // checkpoints. Skipping it left a worktree per session on disk, a `spwn/…` branch
+    // per session in the repo, and would now strand a container that a restart policy
+    // brings back on every Docker restart.
+    //
+    // This DOES delete the session branches, and with them any commits that were only
+    // ever on them. That's the same thing deleting each session by hand would do; the
+    // UI warns about unmerged work before getting here.
+    for tid in &terminal_ids {
+        if let Err(e) = delete_terminal(state, project_id.clone(), tid.clone()).await {
+            // One session's teardown failing must not strand the rest, or the project.
+            emit_store_error(state, &format!("could not fully delete a session: {e}"));
+        }
+    }
     state.store.lock().projects.retain(|p| p.id != project_id);
     persist(&state);
     Ok(())
@@ -280,6 +296,19 @@ pub async fn open_terminal(
             .parent_terminal_id
             .as_deref()
             .and_then(|pid| store.terminal(pid).and_then(|t| t.branch.clone()));
+        // A shell opened against a session joins that session's environment, so
+        // "open a terminal here" lands inside the container the agent is working in.
+        //
+        // Only shells: an agent FORK gets its own worktree, so inheriting the parent's
+        // prefix would exec it into a container with the wrong worktree mounted. The
+        // fork's own `session-created` hook reports its own environment below.
+        let inherited_exec = (spec.kind != "agent" && spec.kind != "claude")
+            .then(|| {
+                spec.parent_terminal_id
+                    .as_deref()
+                    .and_then(|pid| store.terminal(pid).and_then(|t| t.exec.clone()))
+            })
+            .flatten();
         let terminal_id = spec
             .terminal_id
             .clone()
@@ -360,6 +389,9 @@ pub async fn open_terminal(
                     base_branch: None,
                     needs_attention: false,
                     attention_reason: None,
+                    // A shell inherits its session's environment; an agent session
+                    // gets its own below, from `setup_session_worktree`.
+                    exec: inherited_exec,
                 });
             }
         }
@@ -399,6 +431,14 @@ pub async fn open_terminal(
 
     let cwd_path = std::fs::canonicalize(&cwd).unwrap_or_else(|_| PathBuf::from(&cwd));
 
+    // The environment a hook stood up for this session, if any. Read AFTER
+    // `setup_session_worktree`, which is what records it.
+    let exec = state
+        .store
+        .lock()
+        .terminal(&terminal_id)
+        .and_then(|t| t.exec.clone());
+
     // Everything else runs in an rmux pane: a login shell, or an agent's real TUI.
     let (argv, env, runtime) = if kind == "agent" {
         let agent_id = agent_id
@@ -411,9 +451,18 @@ pub async fn open_terminal(
             .get(&agent_id)
             .cloned()
             .ok_or_else(|| format!("unknown agent '{agent_id}'"))?;
-        let bin = crate::agents::resolve_binary(&def, &overrides).ok_or_else(|| {
-            format!("{} binary not found (set its path in Settings)", def.name)
-        })?;
+        // Inside an environment the binary is resolved by ITS PATH, not the host's:
+        // the host path is a macOS binary that cannot exec in a Linux container, and
+        // on a host with no agent installed at all — the whole point of containerizing
+        // — `resolve_binary` would fail here and the session would never launch.
+        // `agent_paths` overrides are host paths too, so they don't apply either.
+        let bin = match &exec {
+            Some(e) => e.bin.clone().unwrap_or_else(|| def.binary.name.clone()),
+            None => crate::agents::resolve_binary(&def, &overrides)
+                .ok_or_else(|| format!("{} binary not found (set its path in Settings)", def.name))?
+                .to_string_lossy()
+                .into_owned(),
+        };
 
         // Assign the session id up front when the agent supports it. This is what
         // makes binding synchronous: the transcript path is known before the process
@@ -442,7 +491,7 @@ pub async fn open_terminal(
             .and_then(|m| def.modes.launch.get(m).cloned())
             .unwrap_or_default();
         let ctx: std::collections::BTreeMap<&str, String> = [
-            ("bin", bin.to_string_lossy().into_owned()),
+            ("bin", bin),
             ("sessionId", session_id.clone().unwrap_or_default()),
             ("sourceSessionId", resume_src.clone().unwrap_or_default()),
             ("permissionMode", permission_mode),
@@ -472,7 +521,49 @@ pub async fn open_terminal(
             }),
         )
     } else {
-        (vec![default_shell(), "-l".to_string()], Vec::new(), None)
+        // The host's login shell (`$SHELL`, typically /bin/zsh on macOS) generally
+        // doesn't exist in a Linux image, and `-l` isn't portable across shells —
+        // so inside an environment use its own shell, plain.
+        match &exec {
+            Some(e) => (
+                vec![e.shell.clone().unwrap_or_else(|| "/bin/sh".to_string())],
+                Vec::new(),
+                None,
+            ),
+            None => (vec![default_shell(), "-l".to_string()], Vec::new(), None),
+        }
+    };
+
+    // Check the wrapper itself is runnable before launching into it.
+    //
+    // Deliberately NOT "run the prefix and see if it succeeds": the recommended
+    // prefix allocates a tty (`docker exec -it`), and docker refuses that when its
+    // own stdin isn't one — so an execution probe would report every healthy
+    // environment as broken. What IS checkable without a pty is that argv[0]
+    // resolves, which catches the failure this design is most exposed to: panes are
+    // launched exec-style against the long-lived rmux daemon's PATH, not the hook's,
+    // so a bare `docker` can be missing here while working fine in the hook.
+    //
+    // A container that has since been removed still surfaces as a pane that exits;
+    // recovery is the Hooks panel's Run button on `session-created`.
+    let exec_prefix = match &exec {
+        None => None,
+        Some(e) => {
+            let argv = crate::pty::split_exec_prefix(&e.prefix);
+            if let Some(argv) = &argv {
+                if !wrapper_is_runnable(&argv[0]) {
+                    emit_store_error(
+                        &state,
+                        &format!(
+                            "this session's environment runs `{}`, which isn't on the PATH \
+                             spwn launches panes with — the pane will not start",
+                            argv[0]
+                        ),
+                    );
+                }
+            }
+            argv
+        }
     };
 
     let rmux = connect(&state).await?;
@@ -489,6 +580,7 @@ pub async fn open_terminal(
             rows: spec.rows,
             env,
             agent: runtime,
+            exec_prefix,
         },
     )
     .await
@@ -552,17 +644,22 @@ pub async fn delete_terminal(
     kill_terminals(&state, std::slice::from_ref(&terminal_id)).await;
     // Capture the session id (to prune checkpoints) and its worktree + branch (to
     // remove both) before dropping the record.
-    let (session_id, worktree, base_branch) = {
+    let (session_id, worktree, base_branch, exec, proj_dir, cwd) = {
         let store = state.store.lock();
         let proj_dir = store.project(&project_id).map(|p| p.directory.clone());
         let t = store.terminal(&terminal_id);
-        let sid = t.and_then(|t| t.session_id.clone());
-        let base_branch = t.and_then(|t| t.base_branch.clone());
         let wt = t.and_then(|t| {
             let branch = t.branch.clone()?;
-            Some((proj_dir?, t.cwd.clone(), branch))
+            Some((proj_dir.clone()?, t.cwd.clone(), branch))
         });
-        (sid, wt, base_branch)
+        (
+            t.and_then(|t| t.session_id.clone()),
+            wt,
+            t.and_then(|t| t.base_branch.clone()),
+            t.and_then(|t| t.exec.clone()),
+            proj_dir,
+            t.map(|t| t.cwd.clone()),
+        )
     };
     {
         let mut store = state.store.lock();
@@ -571,6 +668,27 @@ pub async fn delete_terminal(
         }
     }
     persist(&state);
+    // A session with an environment but NO worktree (a non-git project, or one whose
+    // worktree creation failed) would otherwise never fire teardown, leaking whatever
+    // its `session-created` hook stood up. Fire only the REPO scope for it: the global
+    // scope is worktree removal, and handing that script a session whose "worktree" is
+    // really the project dir invites `git worktree remove` on a directory the user
+    // very much still wants.
+    if worktree.is_none() {
+        if let (Some(e), Some(dir), Some(cwd)) = (&exec, &proj_dir, &cwd) {
+            let ctx = hooks::HookCtx {
+                terminal_id: terminal_id.clone(),
+                project_dir: dir.clone(),
+                worktree: PathBuf::from(cwd),
+                branch: None,
+                base_branch: base_branch.clone(),
+                session_id: session_id.clone(),
+                turn_uuid: None,
+                exec: Some(e.prefix.clone()),
+            };
+            fire_hooks_scope(&state, &ctx, "session-deleted", hooks::Scope::Repo, false);
+        }
+    }
     if let Some((proj_dir, wt_path, branch)) = worktree {
         let ctx = hooks::HookCtx {
             terminal_id: terminal_id.clone(),
@@ -580,6 +698,7 @@ pub async fn delete_terminal(
             base_branch,
             session_id: session_id.clone(),
             turn_uuid: None,
+            exec: exec.map(|e| e.prefix),
         };
         // Repo `session-deleted` hook runs FIRST, inside the worktree (user cleanup that
         // must happen before the tree disappears) — synchronously, like all hooks.
@@ -1087,11 +1206,16 @@ fn hook_ctx(
     project_dir: &str,
     worktree: &Path,
 ) -> hooks::HookCtx {
-    let (branch, base_branch, session_id) = {
+    let (branch, base_branch, session_id, exec) = {
         let store = state.store.lock();
         match store.terminal(terminal_id) {
-            Some(t) => (t.branch.clone(), t.base_branch.clone(), t.session_id.clone()),
-            None => (None, None, None),
+            Some(t) => (
+                t.branch.clone(),
+                t.base_branch.clone(),
+                t.session_id.clone(),
+                t.exec.clone(),
+            ),
+            None => (None, None, None, None),
         }
     };
     hooks::HookCtx {
@@ -1102,6 +1226,7 @@ fn hook_ctx(
         base_branch,
         session_id,
         turn_uuid: None,
+        exec: exec.map(|e| e.prefix),
     }
 }
 
@@ -1483,6 +1608,7 @@ pub(crate) fn setup_session_worktree(
         base_branch: Some(base.clone()),
         session_id: None,
         turn_uuid: None,
+        exec: None,
     };
 
     // Worktree creation lives ENTIRELY in the hook: the global `session-created` script
@@ -1501,6 +1627,12 @@ pub(crate) fn setup_session_worktree(
 
     let final_branch = reported.get("branch").cloned().unwrap_or(branch);
     let final_base = reported.get("base").cloned().unwrap_or(base);
+    // Canonicalize before anything downstream sees this path. The pane's cwd is
+    // canonicalized in `open_terminal`, and the transcript is located by a slug of
+    // THAT path — so if the two disagree (a symlinked worktree, `/tmp` vs
+    // `/private/tmp`), session binding and the Timeline die silently. An environment
+    // hook mounting the raw path would compound it.
+    let wt = std::fs::canonicalize(&wt).unwrap_or(wt);
     let cwd = wt.to_string_lossy().into_owned();
     {
         let mut store = state.store.lock();
@@ -1510,14 +1642,72 @@ pub(crate) fn setup_session_worktree(
             t.base_branch = Some(final_base);
         }
     }
+    apply_reported_exec(state, terminal_id, &reported);
     persist(state);
 
     // 3) Repo session-created hook runs inside the now-existing worktree (unchanged
-    //    behavior for committed `.spwn/hooks/session-created.sh`).
+    //    behavior for committed `.spwn/hooks/session-created.sh`). This is also where
+    //    an environment hook belongs — it can only bind-mount a worktree that exists —
+    //    so its report is captured too rather than discarded.
     let ctx2 = hook_ctx(state, terminal_id, project_dir, &wt);
-    fire_hooks_scope(state, &ctx2, "session-created", hooks::Scope::Repo, headless);
+    let reported_repo = fire_hooks_scope(state, &ctx2, "session-created", hooks::Scope::Repo, headless);
+    if apply_reported_exec(state, terminal_id, &reported_repo) {
+        persist(state);
+    }
 
     Some(cwd)
+}
+
+/// Whether the first word of an exec prefix names something spwn can actually launch:
+/// an existing path, or a name resolvable on `PATH`.
+fn wrapper_is_runnable(bin: &str) -> bool {
+    if bin.contains('/') {
+        return Path::new(bin).exists();
+    }
+    std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("command -v {bin}"))
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Record an environment reported by a `session-created` hook (`::spwn:set:: exec=…`)
+/// onto the session. Returns whether anything changed.
+///
+/// Absent `exec`, nothing is written — a hook that reports only `execShell` has not
+/// created an environment, and running the host shell through no prefix is correct.
+fn apply_reported_exec(
+    state: &AppState,
+    terminal_id: &str,
+    reported: &std::collections::BTreeMap<String, String>,
+) -> bool {
+    let Some(prefix) = reported.get("exec").map(|s| s.trim()).filter(|s| !s.is_empty()) else {
+        return false;
+    };
+    // Reject an unusable prefix HERE, where there's a UI to complain to, rather than
+    // persisting it and discovering it at spawn time as a pane that dies blank.
+    if crate::pty::split_exec_prefix(prefix).is_none() {
+        emit_store_error(
+            state,
+            &format!("hook reported an unparseable environment prefix: {prefix}"),
+        );
+        return false;
+    }
+    let spec = crate::store::ExecSpec {
+        prefix: prefix.to_string(),
+        headless_prefix: reported.get("execHeadless").map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
+        bin: reported.get("execBin").map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
+        shell: reported.get("execShell").map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
+    };
+    let mut store = state.store.lock();
+    match store.terminal_mut(terminal_id) {
+        Some(t) if t.exec.as_ref() != Some(&spec) => {
+            t.exec = Some(spec);
+            true
+        }
+        _ => false,
+    }
 }
 
 /// Discovered hooks + last-run results for a session's worktree, for the Hooks panel.
@@ -1552,7 +1742,15 @@ pub async fn hooks_run(
 ) -> Result<(), String> {
     let ctx = hook_ctx_by_id(&state, &terminal_id)
         .ok_or_else(|| "this session has no worktree".to_string())?;
-    fire_hooks(&state, &ctx, &event, false);
+    let reported = fire_hooks(&state, &ctx, &event, false);
+    // Re-running `session-created` by hand is the documented way to rebuild a session's
+    // environment after its container has been removed, so the fresh prefix has to
+    // land on the record. Discarding it happened to work only while the prefix was
+    // derivable from the terminal id — one change to a hook's naming and the session
+    // would keep exec'ing into something that no longer exists.
+    if apply_reported_exec(&state, &terminal_id, &reported) {
+        persist(&state);
+    }
     Ok(())
 }
 

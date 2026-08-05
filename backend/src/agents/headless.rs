@@ -49,12 +49,35 @@ pub async fn run(
         .as_ref()
         .ok_or_else(|| format!("{} cannot run non-interactively", def.name))?;
 
+    // A scheduled run uses the session's environment only if its hook reported a
+    // headless-specific prefix. This is not an oversight: the interactive prefix
+    // allocates a tty (a TUI needs one), but this path parses `--output-format
+    // stream-json` line by line in `observe`, and a tty lets the agent interleave
+    // spinner/progress bytes with that JSON — every line then fails to parse and the
+    // run reports failure having actually succeeded. Running on the host is the
+    // status quo and fails loudly if anything is missing, which is the better default.
+    let exec = state
+        .store
+        .lock()
+        .terminal(&terminal_id)
+        .and_then(|t| t.exec.clone())
+        .filter(|e| e.headless_prefix.is_some());
+
     let overrides = state.settings.lock().agent_paths.clone();
-    let bin = crate::agents::resolve_binary(def, &overrides)
-        .ok_or_else(|| format!("{} binary not found", def.name))?;
+    let bin = match &exec {
+        Some(e) => e.bin.clone().unwrap_or_else(|| def.binary.name.clone()),
+        None => crate::agents::resolve_binary(def, &overrides)
+            .ok_or_else(|| format!("{} binary not found", def.name))?
+            .to_string_lossy()
+            .into_owned(),
+    };
+    let exec_prefix = exec
+        .as_ref()
+        .and_then(|e| e.headless_prefix.as_deref())
+        .and_then(crate::pty::split_exec_prefix);
 
     let ctx: BTreeMap<&str, String> = [
-        ("bin", bin.to_string_lossy().into_owned()),
+        ("bin", bin),
         ("sessionId", session_id.clone()),
         ("prompt", prompt),
         ("cwd", cwd.to_string_lossy().into_owned()),
@@ -80,6 +103,7 @@ pub async fn run(
                 session_id: Some(session_id),
                 mode: parking_lot::Mutex::new(None),
             }),
+            exec_prefix,
         },
     )
     .await

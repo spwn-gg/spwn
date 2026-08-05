@@ -65,6 +65,11 @@ pile up in your repo. If the branch still holds commits that aren't in its base 
 uncommitted changes — the confirm dialog **names exactly what you'd lose** before you go
 through with it. **Merge first** to keep the work.
 
+**Deleting a project** deletes each of its sessions the same way, so their worktrees and
+`spwn/…` branches go too. The confirm lists every session whose work isn't merged, for the
+same reason. Your project folder stays where it is, and only the per-session branches are
+removed — never the base branch they were cut from.
+
 ## Forks mirror the conversation tree
 
 A [fork](/spwn/guides/fork-and-rewind/) starts a new session from an existing one, and

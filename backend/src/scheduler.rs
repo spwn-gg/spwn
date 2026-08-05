@@ -111,6 +111,7 @@ pub fn fire(state: &Arc<AppState>, project_id: &str, task_id: &str) {
                 base_branch: None,
                 needs_attention: false,
                 attention_reason: None,
+                exec: None,
             });
             Some((terminal_id, directory, context, task))
         })

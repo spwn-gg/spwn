@@ -54,6 +54,10 @@ base64 = "0.22"
 # rmux: programmable terminal multiplexer SDK. Backs claude sessions with
 # persistent sessions + structured snapshots/wait_for_text for rewind/branch.
 rmux-sdk = "0.6"
+# Split a hook-reported exec prefix into argv the way a shell would. Panes are
+# launched exec-style (no shell), so a worktree path containing a space has to
+# survive as ONE argument — naive whitespace splitting silently shreds it.
+shell-words = "1"
 
 [dev-dependencies]
 # The M0 rewind/branch risk-spike harness drives a real `claude` over a pty.

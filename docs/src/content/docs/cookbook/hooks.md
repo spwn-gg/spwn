@@ -22,6 +22,7 @@ in the repo.
 | [Seed a database](#seed-a-database) | `session-created` | Migrate + seed a per-session database, idempotently. |
 | [Prompt before setup](#prompt-before-setup) | `session-created` | Ask before expensive setup with `spwn prompt`, gating what runs. |
 | [Tear down on delete](#tear-down-on-delete) | `session-deleted` | Stop the preview server and drop ephemeral data before the worktree is removed. |
+| [Per-session container](#per-session-container-environment) | `session-created` | Run the agent itself inside its own Docker container. |
 
 :::note[Combining recipes]
 Each recipe below is a repo hook committed at `.spwn/hooks/<event>.sh`. To run several for
@@ -268,6 +269,77 @@ rm -rf "$run_dir" 2>/dev/null || true
 echo "[$SPWN_EVENT] teardown complete"
 ```
 
+## Per-session container environment
+
+The recipes above run things *alongside* a session. This one runs the session **inside**
+a container: the agent's TUI and any shell you open on it execute there, so its builds,
+tests and installs never touch your machine — and two sessions can want two different
+toolchains without a fight.
+
+The mechanism is one reported value. spwn prepends the prefix to every pane's argv; it
+has no Docker code of its own. See
+[Running a session somewhere else](/spwn/reference/hooks/#running-a-session-somewhere-else).
+
+```sh
+#!/usr/bin/env bash
+# .spwn/hooks/session-created.d/20-container.sh
+set -euo pipefail
+
+name="spwn-$SPWN_TERMINAL_ID"
+image="${SPWN_ENV_IMAGE:-spwn-session-env}"
+
+# Absolute path: spwn launches panes against the rmux daemon's PATH, not this script's.
+docker="$(command -v docker)" || { echo "no docker; staying on the host"; exit 0; }
+
+# Don't pull here — hooks are synchronous, so a cold pull looks like a hung session.
+"$docker" image inspect "$image" >/dev/null 2>&1 || {
+  echo "build $image first"; exit 0; }
+
+# Mount at the SAME absolute path inside and out. spwn finds the transcript by a slug
+# of the cwd, and a worktree's .git holds an absolute pointer into the main repo —
+# a different path breaks the Timeline, rewind and git, silently.
+gitdir="$(git -C "$SPWN_WORKTREE" rev-parse --path-format=absolute --git-common-dir)"
+
+if ! "$docker" inspect "$name" >/dev/null 2>&1; then
+  "$docker" run -d --name "$name" --restart unless-stopped \
+    -v "$SPWN_WORKTREE:$SPWN_WORKTREE" \
+    -v "$gitdir:$gitdir" \
+    -v "$HOME/.claude:$HOME/.claude" \
+    -e "HOME=$HOME" -w "$SPWN_WORKTREE" \
+    "$image" sleep infinity >/dev/null
+fi
+"$docker" start "$name" >/dev/null 2>&1 || true
+
+# -it for the TUI (it needs a tty to render); -i only for headless JSON parsing.
+echo "::spwn:set:: exec=$docker exec -it -w $SPWN_WORKTREE $name"
+echo "::spwn:set:: execHeadless=$docker exec -i -w $SPWN_WORKTREE $name"
+echo "::spwn:set:: execShell=/bin/bash"
+```
+
+Pair it with teardown, numbered to run before spwn's `90-worktree.sh`:
+
+```sh
+#!/usr/bin/env bash
+# .spwn/hooks/session-deleted.d/50-container.sh
+set -euo pipefail
+docker="$(command -v docker)" || exit 0
+# rm -f, not stop: --restart unless-stopped would resurrect a stopped container.
+"$docker" rm -f "spwn-$SPWN_TERMINAL_ID" >/dev/null 2>&1 || true
+```
+
+:::caution[The image needs the agent CLI]
+`{bin}` resolves against the *container's* `PATH`, and your host's macOS `claude` can't
+execute in a Linux image — so the image must install its own. It also needs `env`, `git`
+and a shell. The full example, with a Dockerfile, is in
+[`examples/hooks/docker-env/`](https://github.com/spwn-gg/spwn/tree/main/examples/hooks/docker-env).
+:::
+
+:::note[It's an environment boundary, not a sandbox]
+The container shares your `~/.claude` (that's what reuses your login and puts the
+transcript where spwn reads it) and the worktree is bind-mounted, so host-side git,
+per-turn commits and checkpoints keep working. What's isolated is the *toolchain*.
+:::
+
 ## Install a recipe
 
 Copy a recipe to `.spwn/hooks/<event>.sh` in your repo, then **commit** — hooks travel into
@@ -299,9 +371,8 @@ instead of a repo (no commit needed — it isn't tied to any repo).
 ## More ideas
 
 Notifications on `session-ready` (Slack/desktop, open a draft PR), toolchain pinning
-(`nvm use`, `asdf install`), ephemeral containers namespaced by `SPWN_TERMINAL_ID`,
-tunnels (`ngrok`/`cloudflared`) for a shareable preview URL, salvaging uncommitted work on
-delete, and deprovisioning cloud previews for the branch.
+(`nvm use`, `asdf install`), tunnels (`ngrok`/`cloudflared`) for a shareable preview URL,
+salvaging uncommitted work on delete, and deprovisioning cloud previews for the branch.
 
 ## Next
 
