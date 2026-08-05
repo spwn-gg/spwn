@@ -25,6 +25,24 @@ export interface TerminalRec {
 	needsAttention?: boolean;
 	/** Why attention is needed — 'blocked' | 'done' | 'error' — for restart rendering. */
 	attentionReason?: string | null;
+	/** The environment this session's panes run in, if a hook stood one up. */
+	exec?: ExecSpec | null;
+}
+
+/**
+ * How a session's processes reach an environment a hook created (a container, a VM,
+ * a remote host). spwn prepends `prefix` to each pane's argv and has no opinion about
+ * what the environment is.
+ */
+export interface ExecSpec {
+	/** Command prefix for interactive panes, e.g. `docker exec -it -w <wt> <name>`. */
+	prefix: string;
+	/** Prefix for headless/scheduled runs; null = those stay on the host. */
+	headlessPrefix?: string | null;
+	/** Agent binary inside the environment (null = the definition's bare name). */
+	bin?: string | null;
+	/** Shell for shell panes inside the environment (null = /bin/sh). */
+	shell?: string | null;
 }
 
 /** Live status of a session (mirrors Rust `SessionStatus`). Drives the

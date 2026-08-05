@@ -55,3 +55,16 @@ To run something for **every** project, put the same files in the shared global 
 For practical, copy-paste recipes (refresh the base branch, per-session preview
 environment, copy secrets, seed a DB, prompt before setup with `spwn prompt`, teardown on
 delete), see [`cookbook/`](cookbook/README.md).
+
+## Running a session inside a container
+
+The recipes above run things *alongside* a session, on your machine. A hook can also
+report an **environment** for the session, and spwn will run the agent's TUI and its
+shells inside it:
+
+- [`docker-env/`](docker-env/README.md) — one container per session. The starting point.
+- [`dev-env-services/`](dev-env-services/README.md) — the same, plus a database: shared
+  server, per-session data, per-session port.
+
+Both need more than a single script (an image, a create hook and a teardown hook), which
+is why they're folders rather than entries in `cookbook/`.

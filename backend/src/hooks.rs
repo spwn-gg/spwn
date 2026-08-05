@@ -23,13 +23,31 @@
 //!
 //! Injected environment (a hook reads these): `SPWN_EVENT`, `SPWN_TERMINAL_ID`,
 //! `SPWN_PROJECT_DIR`, `SPWN_WORKTREE`, `SPWN_BRANCH`, `SPWN_BASE_BRANCH`,
-//! `SPWN_SESSION_ID`, `SPWN_TURN_UUID` (all but the first four only when known).
+//! `SPWN_SESSION_ID`, `SPWN_TURN_UUID`, `SPWN_EXEC` (all but the first four only when
+//! known).
 //!
 //! Callback: a hook reports values back to spwn by printing a sentinel line
 //! `::spwn:set:: key=value` (one key per line — values may contain spaces). spwn
 //! parses these out of the stream (they never appear in captured output) — the global
 //! `session-created` script uses `worktree=`/`branch=`/`base=` to tell spwn which
 //! worktree it made.
+//!
+//! The other recognized `session-created` keys describe an *environment* the hook
+//! stood up — a container, a VM, a remote host — that the session's processes should
+//! run inside:
+//!
+//!   * `exec` — a command prefix spwn prepends to every interactive pane's argv, e.g.
+//!     `docker exec -it -w <worktree> <container>`. For a TUI agent this MUST allocate
+//!     a tty, or nothing renders and the agent's `detect` rules never match.
+//!   * `execHeadless` — the same for scheduled runs, which parse line-delimited JSON
+//!     and therefore must NOT get a tty. Absent → scheduled runs stay on the host.
+//!   * `execBin` — the agent binary inside the environment (default: the agent
+//!     definition's bare `binary.name`, resolved by the environment's own PATH).
+//!   * `execShell` — the shell for shell panes inside it (default `/bin/sh`).
+//!
+//! spwn never parses the prefix beyond splitting it into argv, and has no idea whether
+//! it names Docker or anything else — the same reason worktree creation lives in a
+//! script rather than here.
 //!
 //! Style mirrors `gitwt.rs`/the old `compose.rs`: thin `std::process::Command`
 //! shell-outs, best-effort, never fail a session.
@@ -112,6 +130,10 @@ pub struct HookCtx {
     pub session_id: Option<String>,
     /// The assistant turn id, set only when firing `session-turn`.
     pub turn_uuid: Option<String>,
+    /// The command prefix reaching this session's environment, if a hook stood one up
+    /// (`::spwn:set:: exec=…`). Surfaced as `SPWN_EXEC` so a later hook can run
+    /// commands *inside* that environment, or tear it down on delete.
+    pub exec: Option<String>,
 }
 
 /// The result of running an event's hook script.
@@ -559,6 +581,9 @@ fn run_one(
     if let Some(u) = &ctx.turn_uuid {
         cmd.env("SPWN_TURN_UUID", u);
     }
+    if let Some(x) = &ctx.exec {
+        cmd.env("SPWN_EXEC", x);
+    }
     // So `"$SPWN_BIN" prompt …` works even when spwn isn't on PATH.
     if let Ok(exe) = std::env::current_exe() {
         cmd.env(PROMPT_BIN_ENV, exe);
@@ -898,6 +923,7 @@ mod tests {
             base_branch: None,
             session_id: None,
             turn_uuid: None,
+            exec: None,
         }
     }
 

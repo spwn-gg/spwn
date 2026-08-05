@@ -124,7 +124,7 @@ intended "opt all the way out" behavior; just know it's a package deal.
 | `session-created` | When a session starts. | The **project dir** for global scripts (the worktree doesn't exist yet — this is where it gets created); the **worktree** for repo scripts (which run after it exists). |
 | `session-ready` | The first time the Claude session id is known (after the sidecar starts). | The worktree. |
 | `session-turn` | After each completed Claude turn. | The worktree. |
-| `session-deleted` | On delete. Repo scripts run **first**, inside the worktree; global scripts run **last** (that's where the worktree gets removed). | The **worktree** for repo scripts; the **project dir** for global scripts. |
+| `session-deleted` | On delete — deleting a session, or deleting the project that contains it (which deletes each of its sessions in turn). Repo scripts run **first**, inside the worktree; global scripts run **last** (that's where the worktree gets removed). | The **worktree** for repo scripts; the **project dir** for global scripts. |
 
 Hooks run only for sessions that have their own worktree. A session that falls back to the
 plain project directory doesn't fire lifecycle hooks.
@@ -156,6 +156,7 @@ Each script runs with these variables (the working directory is per the table ab
 | `SPWN_SESSION_ID` | The Claude session id — set for `session-ready` / `session-turn` / `session-deleted`; absent on `session-created` (not known yet). |
 | `SPWN_TURN_UUID` | The turn's id — set for `session-turn` only. |
 | `SPWN_BIN` | Path to the spwn binary — run `"$SPWN_BIN" prompt …` to [ask the user](#ask-the-user) or `"$SPWN_BIN" checkpoint "$SPWN_TURN_UUID"` to snapshot. |
+| `SPWN_EXEC` | The prefix reaching this session's [environment](#running-a-session-somewhere-else), if a hook made one — so a later hook can run commands inside it, or tear it down on delete. |
 
 ## Reporting values back to spwn
 
@@ -178,6 +179,48 @@ echo "::spwn:set:: base=$SPWN_BASE_BRANCH"
 Recognized keys on `session-created` are `worktree`, `branch`, and `base` — this is how
 worktree creation lives in a script instead of being hardcoded. Most hooks never need
 this.
+
+### Running a session somewhere else
+
+The other `session-created` keys point spwn at an **environment** your hook created — a
+container, a VM, a remote host — so the session's processes run *there* instead of on
+your machine:
+
+| Key | Value |
+|-----|-------|
+| `exec` | A command prefix spwn prepends to every interactive pane's argv, e.g. `docker exec -it -w "$SPWN_WORKTREE" my-container`. |
+| `execHeadless` | The same for [scheduled](/spwn/guides/scheduled-tasks/) runs. Absent ⇒ scheduled runs stay on the host. |
+| `execBin` | The agent's binary inside the environment. Default: the agent definition's bare `binary.name`, resolved by the environment's own `PATH`. |
+| `execShell` | The shell for shell panes inside it. Default `/bin/sh`. |
+
+```sh
+# .spwn/hooks/session-created.d/20-container.sh
+docker run -d --name "spwn-$SPWN_TERMINAL_ID" \
+  -v "$SPWN_WORKTREE:$SPWN_WORKTREE" -w "$SPWN_WORKTREE" my-image sleep infinity
+
+echo "::spwn:set:: exec=docker exec -it -w $SPWN_WORKTREE spwn-$SPWN_TERMINAL_ID"
+```
+
+The agent's TUI and any shell you open on that session now run inside the container.
+spwn never inspects the prefix beyond splitting it into arguments — it has no idea
+whether it names Docker or anything else.
+
+Three things to know:
+
+- **The interactive prefix must allocate a tty** (`-t` under Docker). Without one an
+  agent's TUI renders nothing, so none of its detect rules match and the session looks
+  permanently idle. Headless runs are the opposite — they parse line-delimited JSON,
+  which a tty corrupts — which is why `execHeadless` is separate.
+- **Mount the worktree at the same absolute path.** spwn locates a session's transcript
+  by a slug of its working directory, and a worktree's `.git` holds an absolute pointer
+  into the main repo. A different in-container path breaks the Timeline, rewind and git
+  with no error.
+- **Hooks always run on the host**, never inside the environment. Per-turn commits,
+  checkpoints and `spwn prompt` are unaffected. A later hook can reach into it with
+  `SPWN_EXEC`.
+
+A complete, runnable setup — image, create and teardown hooks — is in
+[`examples/hooks/docker-env/`](https://github.com/spwn-gg/spwn/tree/main/examples/hooks/docker-env).
 
 ## Ask the user
 

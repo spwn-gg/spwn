@@ -278,9 +278,32 @@
 		e.stopPropagation();
 		const n = p.terminals.length;
 		const detail = n ? ` and its ${n} session${n === 1 ? '' : 's'}/shell${n === 1 ? '' : 's'}` : '';
+		// Deleting a project deletes each of its sessions, which means their worktrees
+		// AND their git branches. Name the work that goes with them — the per-session
+		// delete has always done this, and the project-level one destroys strictly more.
+		const sessions = p.terminals.filter(isSessionTerminal);
+		const stakes = await Promise.all(sessions.map((t) => stakeRows(p, t)));
+		const atRisk = sessions
+			.map((t, i) => ({ t, s: stakes[i] }))
+			.filter(({ s }) => s.atRisk);
+		const rows: ConfirmRow[] = atRisk.map(({ t, s }) => ({
+			label: t.title,
+			// Reuse what stakeRows already worked out, minus its non-risk rows.
+			value: s.rows
+				.filter((r) => r.danger)
+				.map((r) => `${r.label.toLowerCase()}: ${r.value}`)
+				.join(', '),
+			danger: true
+		}));
 		const res = await confirmDialog({
 			title: `Delete project “${p.name}”?`,
-			body: `This removes the project${detail} from spwn and can't be undone.`,
+			body:
+				`This removes the project${detail} from spwn and deletes each session's ` +
+				`worktree and git branch. It can't be undone.` +
+				(atRisk.length
+					? ` ${atRisk.length} session${atRisk.length === 1 ? ' has' : 's have'} work that isn't merged.`
+					: ''),
+			rows,
 			confirmLabel: 'Delete'
 		});
 		if (res !== 'confirm') return;
