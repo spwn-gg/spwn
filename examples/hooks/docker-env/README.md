@@ -110,3 +110,10 @@ panel: **Run** on `session-created` re-creates the container and re-reports the 
     session-created.d/20-container.sh       # create + report the exec prefix
     session-deleted.d/50-container.sh       # remove it (before the worktree goes)
 ```
+
+## Need more than one container?
+
+[`../dev-env-services/`](../dev-env-services) builds on this with a database: the app
+container stays per-session, the database *server* is shared across sessions, and each
+session gets its own database inside it — so ten parallel sessions don't mean ten postgres
+processes.

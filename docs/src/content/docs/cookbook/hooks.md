@@ -8,9 +8,13 @@ Practical, copy-paste recipes for [project hooks](/spwn/reference/hooks/). Each 
 stack. If you haven't set up a hook before, start with the [Project Hooks](/spwn/reference/hooks/)
 guide for the mechanics.
 
-All of these also live, runnable, in
-[`examples/hooks/cookbook/`](https://github.com/spwn-gg/spwn/tree/main/examples/hooks/cookbook)
-in the repo.
+The single-script recipes live, runnable, in
+[`examples/hooks/cookbook/`](https://github.com/spwn-gg/spwn/tree/main/examples/hooks/cookbook).
+The two container recipes need more than one file — an image, a create hook and a
+teardown hook — so each has its own folder:
+[`examples/hooks/docker-env/`](https://github.com/spwn-gg/spwn/tree/main/examples/hooks/docker-env)
+and
+[`examples/hooks/dev-env-services/`](https://github.com/spwn-gg/spwn/tree/main/examples/hooks/dev-env-services).
 
 ## Recipes at a glance
 
@@ -23,6 +27,7 @@ in the repo.
 | [Prompt before setup](#prompt-before-setup) | `session-created` | Ask before expensive setup with `spwn prompt`, gating what runs. |
 | [Tear down on delete](#tear-down-on-delete) | `session-deleted` | Stop the preview server and drop ephemeral data before the worktree is removed. |
 | [Per-session container](#per-session-container-environment) | `session-created` | Run the agent itself inside its own Docker container. |
+| [Dev env with services](#per-session-dev-environment-with-services) | `session-created` | The above plus a database: per-session app, one shared server, isolated data. |
 
 :::note[Combining recipes]
 Each recipe below is a repo hook committed at `.spwn/hooks/<event>.sh`. To run several for
@@ -338,6 +343,123 @@ and a shell. The full example, with a Dockerfile, is in
 The container shares your `~/.claude` (that's what reuses your login and puts the
 transcript where spwn reads it) and the worktree is bind-mounted, so host-side git,
 per-turn commits and checkpoints keep working. What's isolated is the *toolchain*.
+:::
+
+## Per-session dev environment with services
+
+A real dev environment is rarely one container. This extends the previous recipe with a
+database, and the interesting part is what's shared and what isn't:
+
+| | Scope | Why |
+|---|---|---|
+| App container | **Per session** | It's what the agent runs in; it holds the worktree. |
+| Database *server* | **Shared** | One postgres per session is minutes of startup and gigabytes of RAM for nothing. |
+| Database *contents* | **Per session** | Sessions must not clobber each other's data. |
+
+So: one server process, a separate database inside it per session. That middle ground is
+what makes running ten sessions at once practical.
+
+```sh
+#!/usr/bin/env bash
+# .spwn/hooks/session-created.d/20-dev-env.sh
+set -euo pipefail
+
+net="spwn-shared"
+db="spwn-shared-db"
+app="spwn-$SPWN_TERMINAL_ID"
+image="${SPWN_ENV_IMAGE:-spwn-session-env}"
+docker="$(command -v docker)" || { echo "[$SPWN_EVENT] no docker; staying on host"; exit 0; }
+
+# --- Shared, created once, reused by every session ---------------------------------
+"$docker" network inspect "$net" >/dev/null 2>&1 || "$docker" network create "$net" >/dev/null
+if ! "$docker" inspect "$db" >/dev/null 2>&1; then
+  echo "[$SPWN_EVENT] starting the shared database"
+  "$docker" run -d --name "$db" --network "$net" --restart unless-stopped \
+    -e POSTGRES_USER=dev -e POSTGRES_PASSWORD=dev \
+    -v spwn-shared-db-data:/var/lib/postgresql/data \
+    postgres:16-alpine >/dev/null
+fi
+"$docker" start "$db" >/dev/null 2>&1 || true
+
+# Postgres accepts connections a beat after the container starts; createdb before that
+# fails and the session comes up pointing at a database that doesn't exist.
+for _ in $(seq 30); do
+  "$docker" exec "$db" pg_isready -U dev -q && break
+  sleep 1
+done
+
+# --- A database per session, inside that shared server -----------------------------
+# Postgres identifiers are limited and the terminal id has dashes, so sanitise it.
+dbname="session_$(printf '%s' "$SPWN_TERMINAL_ID" | tr -cd '[:alnum:]' | cut -c1-40)"
+"$docker" exec "$db" createdb -U dev "$dbname" 2>/dev/null \
+  && echo "[$SPWN_EVENT] created database $dbname" \
+  || echo "[$SPWN_EVENT] database $dbname already exists"
+
+# --- The per-session app container the agent runs in -------------------------------
+gitdir="$(git -C "$SPWN_WORKTREE" rev-parse --path-format=absolute --git-common-dir)"
+
+if ! "$docker" inspect "$app" >/dev/null 2>&1; then
+  "$docker" run -d --name "$app" --network "$net" --restart unless-stopped \
+    -p 127.0.0.1::3000 \
+    -v "$SPWN_WORKTREE:$SPWN_WORKTREE" \
+    -v "$gitdir:$gitdir" \
+    -v "$HOME/.claude:$HOME/.claude" \
+    -e "HOME=$HOME" \
+    -e "DATABASE_URL=postgres://dev:dev@$db:5432/$dbname" \
+    -w "$SPWN_WORKTREE" \
+    "$image" sleep infinity >/dev/null
+fi
+"$docker" start "$app" >/dev/null 2>&1 || true
+"$docker" exec "$app" git config --global --add safe.directory "$SPWN_WORKTREE" || true
+"$docker" exec "$app" git config --global --add safe.directory "$gitdir" || true
+
+# --- Surface the port Docker picked ------------------------------------------------
+# `-p 127.0.0.1::3000` lets Docker choose a free host port, so N sessions never collide.
+mkdir -p "$SPWN_WORKTREE/.spwn/run"
+hostport="$("$docker" port "$app" 3000/tcp | head -1 | sed 's/.*://')"
+if [ -n "${hostport:-}" ]; then
+  printf 'http://localhost:%s\n' "$hostport" > "$SPWN_WORKTREE/.spwn/run/preview.url"
+  echo "[$SPWN_EVENT] preview -> http://localhost:$hostport"
+fi
+
+echo "::spwn:set:: exec=$docker exec -it -w $SPWN_WORKTREE $app"
+echo "::spwn:set:: execHeadless=$docker exec -i -w $SPWN_WORKTREE $app"
+echo "::spwn:set:: execShell=/bin/bash"
+```
+
+Teardown removes what belongs to this session and **leaves the shared server alone**:
+
+```sh
+#!/usr/bin/env bash
+# .spwn/hooks/session-deleted.d/50-dev-env.sh
+set -euo pipefail
+docker="$(command -v docker)" || exit 0
+
+dbname="session_$(printf '%s' "$SPWN_TERMINAL_ID" | tr -cd '[:alnum:]' | cut -c1-40)"
+"$docker" exec spwn-shared-db dropdb -U dev --if-exists "$dbname" 2>/dev/null || true
+# rm -f, not stop: --restart unless-stopped resurrects a merely-stopped container.
+"$docker" rm -f "spwn-$SPWN_TERMINAL_ID" >/dev/null 2>&1 || true
+```
+
+The shared database and network are deliberately never removed — a session's teardown must
+not take down a server other live sessions are using. Ref-counting that was one of the
+things that made spwn's old built-in compose integration too complicated to keep. Clean up
+by hand when you're done for the day:
+
+```sh
+docker rm -f spwn-shared-db && docker network rm spwn-shared
+```
+
+:::note[Where the URL shows up]
+spwn has no live-URL panel — that went away with the old services integration. The port
+lands in the hook's output, visible in the session's **Hooks** tab, and in
+`.spwn/run/preview.url` for your own tooling or for the agent to read.
+:::
+
+:::tip[Already have a docker-compose.yml?]
+Drive it instead of the `docker run` calls above, namespacing per session so stacks don't
+collide — `docker compose -p "spwn-$SPWN_TERMINAL_ID" up -d`. Report the exec prefix
+pointing at the app service's container: `docker compose -p … exec -it app`.
 :::
 
 ## Install a recipe
