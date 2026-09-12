@@ -318,8 +318,11 @@ pub async fn version() -> Json<Value> {
 #[folder = "../build"]
 struct Assets;
 
-/// Serve an embedded asset by path, falling back to `index.html` for client-side
-/// routes (the app is a single-page app).
+/// Serve an embedded asset by path; `/` is the app's `index.html`.
+///
+/// Anything else that isn't an asset is a 404, not the app. The app has one route
+/// and loads its assets relative to the page, so serving it at a deeper path would
+/// render a page whose every asset and API call misses.
 pub async fn static_handler(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
     let path = if path.is_empty() { "index.html" } else { path };
@@ -328,14 +331,12 @@ pub async fn static_handler(uri: Uri) -> Response {
             let mime = mime_guess::from_path(path).first_or_octet_stream();
             asset_response(content.data.into_owned(), mime.as_ref())
         }
-        None => match Assets::get("index.html") {
-            Some(content) => asset_response(content.data.into_owned(), "text/html"),
-            None => (
-                StatusCode::NOT_FOUND,
-                "spwn UI not built — run `npm run build` first",
-            )
-                .into_response(),
-        },
+        None if path == "index.html" => (
+            StatusCode::NOT_FOUND,
+            "spwn UI not built — run `npm run build` first",
+        )
+            .into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
     }
 }
 
