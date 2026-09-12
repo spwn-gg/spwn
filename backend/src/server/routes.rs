@@ -92,6 +92,10 @@ pub async fn invoke(
             state, body, CreateProjectArgs, st, a,
             ok_result(cmd::create_project(&st, a.name, a.directory))
         ),
+        "clone_project" => {
+            let a: CloneProjectArgs = parse(&body)?;
+            ok_result(cmd::clone_project(&state, a.url, a.parent_dir).await)
+        }
         "delete_project" => {
             let a: ProjectIdArgs = parse(&body)?;
             ok_result(cmd::delete_project(&state, a.project_id).await)
@@ -367,6 +371,13 @@ struct SetSettingsArgs {
 struct CreateProjectArgs {
     name: String,
     directory: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CloneProjectArgs {
+    url: String,
+    parent_dir: String,
 }
 
 #[derive(Deserialize)]

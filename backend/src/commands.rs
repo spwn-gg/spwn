@@ -81,6 +81,31 @@ pub fn create_project(
     Ok(rec)
 }
 
+/// Clone a git repo (a URL or GitHub `owner/repo`) into `parent_dir/<repo-name>` and
+/// register the clone as a project.
+pub async fn clone_project(
+    state: &AppState,
+    url: String,
+    parent_dir: String,
+) -> Result<ProjectRec, String> {
+    let url = gitwt::normalize_repo_url(&url)?;
+    let name = gitwt::repo_name_from_url(&url)
+        .ok_or_else(|| format!("can't derive a folder name from {url}"))?;
+    let parent = PathBuf::from(parent_dir.trim());
+    if !parent.is_dir() {
+        return Err(format!("{} is not a directory", parent.display()));
+    }
+    let dest = parent.join(&name);
+    if dest.exists() {
+        return Err(format!("{} already exists", dest.display()));
+    }
+    let clone_dest = dest.clone();
+    tokio::task::spawn_blocking(move || gitwt::clone(&url, &clone_dest))
+        .await
+        .map_err(|e| format!("git task failed: {e}"))??;
+    create_project(state, name, dest.to_string_lossy().into_owned())
+}
+
 /// Open a directory in VS Code (Insiders first, then stable), via LaunchServices.
 pub fn open_in_vscode(path: String) -> Result<(), String> {
     for app in ["Visual Studio Code - Insiders", "Visual Studio Code"] {

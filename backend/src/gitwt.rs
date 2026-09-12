@@ -296,6 +296,45 @@ pub fn fetch(dir: &Path) -> Result<String, String> {
     git_net(dir, &["fetch", "--all", "--prune"])
 }
 
+/// Expand a repo reference into a clonable URL. Accepts full URLs (`https://…`,
+/// `git@host:…`, `ssh://…`), `github.com/owner/repo`, and the `owner/repo` shorthand
+/// (resolved against GitHub).
+pub fn normalize_repo_url(input: &str) -> Result<String, String> {
+    let s = input.trim().trim_end_matches('/');
+    if s.is_empty() {
+        return Err("enter a repository URL or owner/repo".to_string());
+    }
+    if s.contains("://") || s.starts_with("git@") {
+        return Ok(s.to_string());
+    }
+    let path = s.strip_prefix("github.com/").unwrap_or(s);
+    let parts: Vec<&str> = path.split('/').collect();
+    let valid = |p: &str| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c));
+    match parts.as_slice() {
+        [owner, repo] if valid(owner) && valid(repo) => {
+            Ok(format!("https://github.com/{owner}/{}.git", repo.trim_end_matches(".git")))
+        }
+        _ => Err(format!("not a repository URL or owner/repo: {s}")),
+    }
+}
+
+/// The directory name `git clone` would pick for `url` (last path segment, sans `.git`).
+pub fn repo_name_from_url(url: &str) -> Option<String> {
+    let last = url
+        .trim_end_matches('/')
+        .rsplit(|c| c == '/' || c == ':')
+        .next()?;
+    let name = last.trim_end_matches(".git");
+    (!name.is_empty() && name != "." && name != "..").then(|| name.to_string())
+}
+
+/// `git clone <url> <dest>`, run from `dest`'s parent. Non-interactive (see [`git_net`]).
+pub fn clone(url: &str, dest: &Path) -> Result<String, String> {
+    let parent = dest.parent().ok_or("clone destination has no parent")?;
+    let dest = dest.to_string_lossy();
+    git_net(parent, &["clone", "--", url, &dest])
+}
+
 /// Fast-forward-only pull. Fails (rather than creating a merge commit) if the
 /// branch has diverged — the UI surfaces git's message so the user can resolve
 /// manually.
@@ -310,5 +349,32 @@ pub fn push(dir: &Path, set_upstream: bool) -> Result<String, String> {
         git_net(dir, &["push", "-u", "origin", "HEAD"])
     } else {
         git_net(dir, &["push"])
+    }
+}
+
+#[cfg(test)]
+mod repo_url_tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_repo_references() {
+        let gh = "https://github.com/owner/repo.git";
+        assert_eq!(normalize_repo_url("owner/repo").unwrap(), gh);
+        assert_eq!(normalize_repo_url(" owner/repo.git/ ").unwrap(), gh);
+        assert_eq!(normalize_repo_url("github.com/owner/repo").unwrap(), gh);
+        assert_eq!(normalize_repo_url("https://github.com/o/r").unwrap(), "https://github.com/o/r");
+        assert_eq!(normalize_repo_url("git@github.com:o/r.git").unwrap(), "git@github.com:o/r.git");
+        assert!(normalize_repo_url("").is_err());
+        assert!(normalize_repo_url("just-a-name").is_err());
+        assert!(normalize_repo_url("a/b/c").is_err());
+        assert!(normalize_repo_url("o/--upload-pack=x;").is_err());
+    }
+
+    #[test]
+    fn derives_clone_folder_name() {
+        assert_eq!(repo_name_from_url("https://github.com/o/spwn.git").as_deref(), Some("spwn"));
+        assert_eq!(repo_name_from_url("git@github.com:o/spwn.git").as_deref(), Some("spwn"));
+        assert_eq!(repo_name_from_url("https://github.com/o/spwn/").as_deref(), Some("spwn"));
+        assert_eq!(repo_name_from_url("https://github.com/o/..").as_deref(), None);
     }
 }
