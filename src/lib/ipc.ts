@@ -4,6 +4,7 @@
 // (the backend renames them to the snake_case Rust params). `listen` subscribes to a
 // topic on one shared WebSocket that carries every `{topic, payload}` event.
 
+import { base } from '$app/paths';
 import { writable } from 'svelte/store';
 import type {
 	AgentSummary,
@@ -30,7 +31,7 @@ export type UnlistenFn = () => void;
 
 /** Call a backend command. Rejects with the backend's error text on non-2xx. */
 async function invoke<T = void>(command: string, args: Record<string, unknown> = {}): Promise<T> {
-	const res = await fetch(`/api/invoke/${command}`, {
+	const res = await fetch(`${base}/api/invoke/${command}`, {
 		method: 'POST',
 		headers: { 'content-type': 'application/json' },
 		body: JSON.stringify(args)
@@ -54,7 +55,7 @@ class WsBus {
 	private connect() {
 		if (typeof window === 'undefined') return;
 		const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-		const ws = new WebSocket(`${proto}://${location.host}/ws`);
+		const ws = new WebSocket(`${proto}://${location.host}${base}/ws`);
 		this.ws = ws;
 		ws.onopen = () => {
 			this.backoff = 500;
@@ -120,7 +121,7 @@ export async function fsList(path: string | null, includeFiles: boolean): Promis
 	const q = new URLSearchParams();
 	if (path) q.set('path', path);
 	if (includeFiles) q.set('files', 'true');
-	const res = await fetch(`/api/fs/list?${q.toString()}`);
+	const res = await fetch(`${base}/api/fs/list?${q.toString()}`);
 	if (!res.ok) throw new Error((await res.text()) || res.statusText);
 	return res.json();
 }

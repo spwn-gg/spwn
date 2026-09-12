@@ -1,0 +1,64 @@
+# spwn has NO AUTHENTICATION. Whoever reaches its HTTP port can open shells and run
+# agents in this pod, read and change everything on its home volume, and use its
+# Claude login. Put authentication in front of it before exposing it beyond a
+# network you trust.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spwn
+  labels:
+    app.kubernetes.io/name: spwn
+spec:
+  # One rmux daemon and one writer for the home volume: never run two pods at once.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: spwn
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: spwn
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: spwn
+          # Pin a tag (or override it in an overlay with `images:`) for anything
+          # you depend on; :latest follows main.
+          image: ghcr.io/spwn-gg/spwn:latest
+          ports:
+            - name: http
+              containerPort: 4317
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            # Agents, and whatever they build and run, share this container.
+            requests: {cpu: "100m", memory: "512Mi"}
+            limits:   {memory: "8Gi"}
+          startupProbe:
+            httpGet: {path: /api/version, port: http}
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet: {path: /api/version, port: http}
+            periodSeconds: 15
+          livenessProbe:
+            httpGet: {path: /api/version, port: http}
+            periodSeconds: 30
+            failureThreshold: 3
+          volumeMounts:
+            - name: home
+              mountPath: /home/spwn
+      volumes:
+        - name: home
+          persistentVolumeClaim:
+            claimName: spwn-home

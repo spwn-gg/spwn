@@ -34,6 +34,7 @@ spwn is a native **macOS** app (Apple Silicon or Intel).
 
 **Requires** an authenticated **`claude` CLI** on your `PATH` — spwn uses your existing Claude
 login, and never re-uploads or proxies anything. Prefer to build it yourself? See **[BUILD.md](BUILD.md)**.
+Running it as a server on a cluster? See **[deploy/kubernetes](deploy/kubernetes/README.md)**.
 
 Full guide: **[Installation](https://spwn-gg.github.io/spwn/getting-started/installation/)** ·
 **[Quick Start](https://spwn-gg.github.io/spwn/getting-started/quick-start/)**

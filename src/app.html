@@ -2,6 +2,13 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
+    <script>
+      // Behind a proxy that strips a path prefix, /prefix and /prefix/ reach the
+      // same page, but the relative asset URLs below only resolve from the second.
+      if (!location.pathname.endsWith('/')) {
+        location.replace(location.pathname + '/' + location.search + location.hash);
+      }
+    </script>
     <link rel="icon" href="%sveltekit.assets%/favicon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>spwn</title>

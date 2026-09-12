@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { base } from '$app/paths';
 	import {
 		getSettings,
 		setSettings,
@@ -38,7 +39,7 @@
 		defaultAgent = s.defaultAgent ?? '';
 		await loadAgents();
 		try {
-			const res = await fetch('/api/version');
+			const res = await fetch(`${base}/api/version`);
 			if (res.ok) version = (await res.json()).version ?? '';
 		} catch {
 			/* version is cosmetic */

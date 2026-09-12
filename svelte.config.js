@@ -8,9 +8,11 @@ import { vitePreprocess } from "@sveltejs/vite-plugin-svelte";
 const config = {
   preprocess: vitePreprocess(),
   kit: {
-    adapter: adapter({
-      fallback: "index.html",
-    }),
+    // The one route is prerendered as an empty shell (see src/routes/+layout.ts)
+    // instead of emitted as an SPA fallback, because fallback pages always use
+    // absolute asset paths. Prerendered pages use relative ones, so the same build
+    // works at `/` and under any path prefix a reverse proxy strips.
+    adapter: adapter(),
   },
 };
 

@@ -1,0 +1,20 @@
+# Replace the host, and set ingressClassName if the cluster has no default class.
+# The controller must pass WebSocket upgrades through (most do by default); the UI
+# streams every terminal over /ws.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: spwn
+spec:
+  # ingressClassName: nginx
+  rules:
+    - host: spwn.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: spwn
+                port:
+                  name: http
