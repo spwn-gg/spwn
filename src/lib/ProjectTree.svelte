@@ -32,6 +32,7 @@
 	import { listAgents } from './ipc';
 	import type { AgentSummary } from './types';
 	import type { ProjectRec, TerminalRec } from './types';
+	import CloneRepoDialog from './CloneRepoDialog.svelte';
 
 	let collapsed = $state(new Set<string>());
 	let openMenuId = $state<string | null>(null);
@@ -150,6 +151,8 @@
 		next.has(id) ? next.delete(id) : next.add(id);
 		collapsed = next;
 	}
+
+	let cloneOpen = $state(false);
 
 	async function newProject() {
 		const dir = await pickDirectory();
@@ -408,9 +411,20 @@
 {/snippet}
 
 <div class="tree">
-	<button class="new-project" onclick={newProject}>＋ New Project</button>
+	<div class="new-project-row">
+		<button class="new-project" onclick={newProject}>＋ New Project</button>
+		<button class="new-project clone" title="Clone a GitHub repo as a new project" onclick={() => (cloneOpen = true)}>⎇ Clone repo</button>
+	</div>
+	{#if cloneOpen}
+		<CloneRepoDialog
+			onclose={() => (cloneOpen = false)}
+			oncloned={async () => {
+				cloneOpen = false;
+				await refreshProjects();
+			}} />
+	{/if}
 	{#if $projects.length === 0}
-		<div class="empty">No projects yet. Click “New Project” to pick a folder.</div>
+		<div class="empty">No projects yet. Click “New Project” to pick a folder, or “Clone repo” to clone one from GitHub.</div>
 	{/if}
 	{#each $projects as p (p.id)}
 		<div class="project">
@@ -500,10 +514,16 @@
 		padding: 14px;
 		color: var(--text-muted);
 	}
+	.new-project-row {
+		display: flex;
+		gap: 6px;
+		margin: 8px;
+	}
 	.new-project {
 		display: block;
-		width: calc(100% - 16px);
-		margin: 8px;
+		flex: 1;
+		min-width: 0;
+		white-space: nowrap;
 		padding: 6px 8px;
 		background: var(--bg-elevated);
 		border: 1px solid var(--border-strong);

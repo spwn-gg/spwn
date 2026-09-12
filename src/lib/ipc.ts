@@ -190,6 +190,11 @@ export function createProject(name: string, directory: string): Promise<ProjectR
 	return invoke('create_project', { name, directory });
 }
 
+/** Clone a repo (URL or GitHub `owner/repo`) into `parentDir/<name>` and add it as a project. */
+export function cloneProject(url: string, parentDir: string): Promise<ProjectRec> {
+	return invoke('clone_project', { url, parentDir });
+}
+
 export function deleteProject(projectId: string): Promise<void> {
 	return invoke('delete_project', { projectId });
 }
