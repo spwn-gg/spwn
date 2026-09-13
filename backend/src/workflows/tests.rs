@@ -189,6 +189,7 @@ fn new_workflows_start_from_a_loadable_template_with_types_beside_them() {
     assert_eq!(scaffold(&e.state, PROJECT, "ask", false).unwrap(), ".spwn/workflows/ask.js");
     assert_eq!(scaffold(&e.state, PROJECT, "ask-ts", true).unwrap(), ".spwn/workflows/ask-ts.ts");
     assert!(workflows_dir(&e.dir).join("spwn.d.ts").is_file());
+    assert!(workflows_dir(&e.dir).join("AGENTS.md").is_file());
     assert!(scaffold(&e.state, PROJECT, "ask", true).unwrap_err().contains("already exists"));
     assert!(scaffold(&e.state, PROJECT, "../escape", false).is_err());
 
@@ -198,6 +199,29 @@ fn new_workflows_start_from_a_loadable_template_with_types_beside_them() {
     for w in &listing.workflows {
         assert_eq!(w.error, None, "{} should load", w.name);
     }
+}
+
+#[test]
+fn a_users_own_agents_md_is_never_overwritten() {
+    let e = env();
+    let guide = workflows_dir(&e.dir).join("AGENTS.md");
+    fs::write(&guide, "# our own notes\n").unwrap();
+    scaffold(&e.state, PROJECT, "one", false).unwrap();
+    assert_eq!(fs::read_to_string(&guide).unwrap(), "# our own notes\n");
+
+    // spwn's own copy, gone stale, is refreshed.
+    fs::write(&guide, format!("{AGENTS_MARKER} old -->\nstale")).unwrap();
+    scaffold(&e.state, PROJECT, "two", false).unwrap();
+    assert_eq!(fs::read_to_string(&guide).unwrap(), AGENTS_GUIDE);
+}
+
+#[test]
+fn the_published_agent_guide_matches_the_one_spwn_installs() {
+    assert_eq!(
+        include_str!("../../../docs/public/workflows-agents.md"),
+        AGENTS_GUIDE,
+        "copy backend/src/workflows/AGENTS.md to docs/public/workflows-agents.md"
+    );
 }
 
 #[test]

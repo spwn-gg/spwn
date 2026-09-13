@@ -25,8 +25,14 @@ export default async function main(spwn, inputs) { … }
 - **UI:** `src/lib/Workflows.svelte`; docs `docs/src/content/docs/guides/workflows.md` and
   `reference/workflows-api.md`; example `examples/workflows/github-board.ts`.
 
-**Changing the API means changing four places together:** `host.rs` (op), `prelude.js`
-(wrapper), `spwn.d.ts` (types) and `reference/workflows-api.md`. Add a test in `tests.rs`.
+**Changing the API means changing five places together:** `host.rs` (op), `prelude.js`
+(wrapper), `spwn.d.ts` (types), `reference/workflows-api.md`, and the agent guide
+`backend/src/workflows/AGENTS.md` (installed into projects by "New workflow"; copy it to
+`docs/public/workflows-agents.md` — a test fails if they differ). Add a test in `tests.rs`.
+
+**Writing a workflow inside a user's project?** Read `.spwn/workflows/AGENTS.md` and
+`spwn.d.ts` there first (or `backend/src/workflows/AGENTS.md` here): they're the
+self-contained guide.
 
 ## Run one against the dev server
 

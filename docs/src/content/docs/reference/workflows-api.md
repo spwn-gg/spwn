@@ -7,6 +7,10 @@ A [workflow](/spwn/guides/workflows/) receives `spwn` as the first argument of `
 same API, with full types, is in `spwn.d.ts` — spwn writes it next to your workflows when
 you create one from the Workflows panel.
 
+Having an AI agent write the workflow? Point it at the
+[workflow guide for AI agents](/spwn/workflows-agents.md) — the same file "New workflow" writes
+to `.spwn/workflows/AGENTS.md`.
+
 Every method that returns a promise **rejects as soon as the run is stopped**, with an
 error whose `code` is `"stopped"`. Other failures reject with a plain `Error`.
 

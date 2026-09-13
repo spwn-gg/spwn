@@ -405,6 +405,30 @@ pub fn list(state: &AppState, project_id: &str) -> Result<WorkflowListing, Strin
 /// The API's type definitions, written next to a project's workflows for editors.
 const TYPES: &str = include_str!("spwn.d.ts");
 
+/// A guide to writing workflows for AI agents, written next to a project's workflows
+/// (agents read `AGENTS.md` on their own). Also published on the docs site.
+pub(crate) const AGENTS_GUIDE: &str = include_str!("AGENTS.md");
+
+/// First-line marker of spwn's `AGENTS.md`. A file without it is the user's, and is left alone.
+const AGENTS_MARKER: &str = "<!-- spwn:workflows-agents";
+
+/// Write (or refresh) `spwn.d.ts` and `AGENTS.md` in a workflows dir.
+fn install_support_files(dir: &Path) -> Result<(), String> {
+    let types = dir.join("spwn.d.ts");
+    if std::fs::read_to_string(&types).ok().as_deref() != Some(TYPES) {
+        std::fs::write(&types, TYPES).map_err(|e| e.to_string())?;
+    }
+    let guide = dir.join("AGENTS.md");
+    let refresh = match std::fs::read_to_string(&guide) {
+        Ok(existing) => existing.starts_with(AGENTS_MARKER) && existing != AGENTS_GUIDE,
+        Err(_) => true,
+    };
+    if refresh {
+        std::fs::write(&guide, AGENTS_GUIDE).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 fn template(name: &str, typescript: bool) -> String {
     let body = r#"  const session = await spwn.sessions.create({
     title: "__NAME__",
@@ -443,7 +467,8 @@ export default async function main(spwn, inputs) {
 }
 
 /// Create `.spwn/workflows/<name>.js` (or `.ts`) from a starter template, and write the
-/// API's `spwn.d.ts` beside it. Returns the new file's path, relative to the project.
+/// API's `spwn.d.ts` and the agent guide `AGENTS.md` beside it. Returns the new file's
+/// path, relative to the project.
 pub fn scaffold(state: &AppState, project_id: &str, name: &str, typescript: bool) -> Result<String, String> {
     let name = name.trim();
     let valid = !name.is_empty()
@@ -461,10 +486,7 @@ pub fn scaffold(state: &AppState, project_id: &str, name: &str, typescript: bool
     }
     let file = dir.join(format!("{name}.{}", if typescript { "ts" } else { "js" }));
     std::fs::write(&file, template(name, typescript)).map_err(|e| e.to_string())?;
-    let types = dir.join("spwn.d.ts");
-    if std::fs::read_to_string(&types).ok().as_deref() != Some(TYPES) {
-        std::fs::write(&types, TYPES).map_err(|e| e.to_string())?;
-    }
+    install_support_files(&dir)?;
     Ok(file
         .strip_prefix(&project_dir)
         .unwrap_or(&file)

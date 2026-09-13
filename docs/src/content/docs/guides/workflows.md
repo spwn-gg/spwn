@@ -160,4 +160,7 @@ doesn't type-check, so rely on your editor and the `spwn.d.ts` next to your work
 ## Next
 
 - [Workflows API](/spwn/reference/workflows-api/) — everything `spwn` can do.
+- [Workflow guide for AI agents](/spwn/workflows-agents.md) — one self-contained file to give an
+  agent that's writing a workflow for you. "New workflow" also puts it in `.spwn/workflows/` as
+  `AGENTS.md`, where coding agents find it on their own.
 - [Hooks](/spwn/reference/hooks/) — per-session setup and teardown.

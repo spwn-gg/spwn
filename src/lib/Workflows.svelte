@@ -53,7 +53,7 @@
 		if (!name) return;
 		await act(async () => {
 			const file = await newWorkflow(projectId, name, newTs);
-			createdMsg = `Created ${file} — open it in your editor. spwn.d.ts beside it gives you completion.`;
+			createdMsg = `Created ${file}. Beside it, spwn.d.ts gives your editor completion and AGENTS.md teaches an AI agent to write workflows.`;
 			creating = false;
 			newName = '';
 		});
