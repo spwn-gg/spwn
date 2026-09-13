@@ -6,6 +6,7 @@
 		setWorkflowsEnabled,
 		setWorkflowAutostart,
 		runWorkflow,
+		newWorkflow,
 		stopWorkflow,
 		workflowLog,
 		onWorkflowRun,
@@ -39,7 +40,24 @@
 	let formFor = $state<string | null>(null);
 	let formValues = $state<Record<string, string | boolean>>({});
 
+	/** The "New workflow" form. */
+	let creating = $state(false);
+	let newName = $state('');
+	let newTs = $state(false);
+	let createdMsg = $state<string | null>(null);
+
 	let unlisten: UnlistenFn[] = [];
+
+	async function create() {
+		const name = newName.trim();
+		if (!name) return;
+		await act(async () => {
+			const file = await newWorkflow(projectId, name, newTs);
+			createdMsg = `Created ${file} — open it in your editor. spwn.d.ts beside it gives you completion.`;
+			creating = false;
+			newName = '';
+		});
+	}
 
 	const LIVE: WorkflowRunStatus[] = ['running', 'stopping', 'restarting'];
 	const isLive = (run?: WorkflowRun | null) => !!run && LIVE.includes(run.status);
@@ -205,12 +223,29 @@
 <div class="wf">
 	<div class="bar">
 		<span class="title">Workflows — {project?.name ?? ''}</span>
+		<button onclick={() => ((creating = !creating), (createdMsg = null))}>＋ New workflow</button>
 		<button onclick={load} title="Re-read .spwn/workflows">Refresh</button>
 		{#if listing?.enabled}
 			<button onclick={disable}>Turn off</button>
 		{/if}
 	</div>
 
+	{#if creating}
+		<form
+			class="create"
+			onsubmit={(e) => {
+				e.preventDefault();
+				void create();
+			}}>
+			<input bind:value={newName} placeholder="name, e.g. triage" spellcheck="false" />
+			<label class="chk"><input type="checkbox" bind:checked={newTs} /> TypeScript</label>
+			<button class="primary" type="submit" disabled={!newName.trim()}>Create</button>
+			<button type="button" onclick={() => (creating = false)}>Cancel</button>
+		</form>
+	{/if}
+	{#if createdMsg}
+		<div class="created">{createdMsg}</div>
+	{/if}
 	{#if loadError}
 		<div class="error">{loadError}</div>
 	{/if}
@@ -231,8 +266,8 @@
 	<div class="list">
 		{#if listing && listing.workflows.length === 0}
 			<div class="hint">
-				No workflows yet. Add a script to <code>{listing.dir}/</code> in this project, for example
-				<code>hello.js</code>:
+				No workflows yet. Click “＋ New workflow”, or add a script to <code>{listing.dir}/</code> in this
+				project, for example <code>hello.js</code>:
 				<pre>{`export const meta = { description: "Say hello" };
 
 export default async function main(spwn, inputs) {
@@ -393,6 +428,27 @@ export default async function main(spwn, inputs) {
 		background: var(--danger-bg);
 		font-size: 12px;
 		white-space: pre-wrap;
+	}
+	.create {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 8px 14px;
+		border-bottom: 1px solid var(--border);
+	}
+	.create input:not([type='checkbox']) {
+		background: var(--bg-input);
+		border: 1px solid var(--border-strong);
+		border-radius: var(--radius);
+		color: var(--text);
+		padding: 5px 8px;
+		font-size: 13px;
+	}
+	.created {
+		padding: 8px 14px;
+		font-size: 12px;
+		color: var(--ok);
+		border-bottom: 1px solid var(--border);
 	}
 	.trust {
 		display: flex;

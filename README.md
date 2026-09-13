@@ -151,6 +151,44 @@ echo "::spwn:set:: exec=docker exec -it -w $SPWN_WORKTREE spwn-$SPWN_TERMINAL_ID
 📖 [Running a session somewhere else](https://spwn-gg.github.io/spwn/reference/hooks/#running-a-session-somewhere-else) ·
 runnable [`docker-env/`](examples/hooks/docker-env/) and [`dev-env-services/`](examples/hooks/dev-env-services/)
 
+## ⚙ Workflows
+
+Hooks react to one session. A **workflow** runs your whole process: a script in
+`.spwn/workflows/` that starts sessions, prompts them, waits for their replies, and decides what
+happens next.
+
+```ts
+// .spwn/workflows/triage.ts — one session per issue, kept across runs
+export default async function main(spwn) {
+  for (const issue of await spwn.github.rest("GET", "/repos/me/app/issues?labels=bug")) {
+    if (await spwn.sessions.find(`issue-${issue.number}`)) continue;
+    const s = await spwn.sessions.create({
+      key: `issue-${issue.number}`, title: issue.title,
+      prompt: `Reproduce and fix this bug:\n\n${issue.title}\n\n${issue.body}`,
+    });
+    const turn = await s.waitForTurn();                  // the reply, after its commit
+    spwn.log(turn.blocked ? `${issue.title}: needs you` : turn.text);
+  }
+}
+```
+
+- **spwn has no opinion about your process.** Personas, boards, review loops, which agent gets
+  which ticket — it's all code in your script. spwn runs it (JavaScript or TypeScript, in an
+  embedded engine) and hands it an API: sessions, headless runs, state, commands, HTTP, GitHub.
+- **Sessions you can walk into.** A workflow's sessions are ordinary sessions — own worktree,
+  own branch, your hooks — so you can watch one work or take it over from the sidebar.
+- **Long-running or on demand.** Run it from the Workflows panel, or mark it `keepAlive` and
+  *Start with spwn* to keep a poller going across crashes and restarts.
+- **Hooks and workflows compose.** A hook's `spwn prompt` in a workflow session is answered by
+  the workflow; workflows can `spwn.on("session-turn", …)` for any session; and
+  `workflow-started` / `workflow-stopped` hooks run around each run.
+- **Nothing runs until you allow it**, per project — workflows are repo code.
+
+📖 [Workflows guide](https://spwn-gg.github.io/spwn/guides/workflows/) ·
+[API reference](https://spwn-gg.github.io/spwn/reference/workflows-api/) · runnable
+[`examples/workflows/github-board.ts`](examples/workflows/github-board.ts): a GitHub project
+board where each column hands the ticket's session to a different persona.
+
 ---
 
 ## More of what spwn does

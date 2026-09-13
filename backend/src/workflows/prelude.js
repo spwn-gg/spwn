@@ -95,7 +95,7 @@
     let answer = null;
     const fn = promptHandlers.get(ev.handler);
     try {
-      if (fn) answer = await fn({ ...ev.prompt, event: ev.event, sessionId: ev.terminalId });
+      if (fn) answer = await fn({ ...ev.prompt, event: ev.event, session: ev.terminalId });
     } catch (e) {
       console.error("onHookPrompt handler failed:", e);
     }
@@ -144,7 +144,8 @@
       this._update(rec);
     }
     _update(rec) {
-      const { mark, ...fields } = rec;
+      // `status` is a method (the live value), so the record's snapshot of it is dropped.
+      const { mark, status: _snapshot, ...fields } = rec;
       Object.assign(this, fields);
       if (mark !== undefined) marks.set(this, mark);
       return this;
@@ -175,7 +176,8 @@
     screen() {
       return call("session.screen", { id: this.id });
     }
-    key(key) {
+    // Not `key()`: `key` is the property the workflow filed the session under.
+    press(key) {
       return call("session.key", { id: this.id, key });
     }
     interrupt() {

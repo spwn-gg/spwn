@@ -129,6 +129,21 @@ intended "opt all the way out" behavior; just know it's a package deal.
 Hooks run only for sessions that have their own worktree. A session that falls back to the
 plain project directory doesn't fire lifecycle hooks.
 
+Two more events fire around a [workflow](/spwn/guides/workflows/) run instead of a session:
+
+| Event | When it fires | Working directory |
+|-------|---------------|-------------------|
+| `workflow-started` | When a workflow run starts (once, not on each keep-alive restart). | The **project dir**, for both scopes. |
+| `workflow-stopped` | When the run ends — finished, failed or stopped. | The **project dir**, for both scopes. |
+
+They get `SPWN_WORKFLOW`, `SPWN_WORKFLOW_RUN_ID` and, on stop, `SPWN_WORKFLOW_STATUS`
+(`ok`, `error` or `stopped`), but no session variables. Their output goes to the run's log,
+and they can't [ask the user](#ask-the-user) anything.
+
+Sessions a workflow creates fire the session events like any other session. If one of their
+hooks asks a question, the workflow answers it rather than the UI — see
+[Hooks and workflows](/spwn/guides/workflows/#hooks-and-workflows).
+
 ### Hooks are synchronous
 
 Every hook runs **synchronously** — the session waits for each script to finish before

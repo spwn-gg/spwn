@@ -402,6 +402,76 @@ pub fn list(state: &AppState, project_id: &str) -> Result<WorkflowListing, Strin
     })
 }
 
+/// The API's type definitions, written next to a project's workflows for editors.
+const TYPES: &str = include_str!("spwn.d.ts");
+
+fn template(name: &str, typescript: bool) -> String {
+    let body = r#"  const session = await spwn.sessions.create({
+    title: "__NAME__",
+    prompt: "Summarize what this repository does in three sentences.",
+  });
+  const turn = await session.waitForTurn();
+  if (turn.blocked) {
+    spwn.warn("The session is waiting for input:\n" + turn.screen);
+    return;
+  }
+  spwn.log(turn.text);
+}
+"#;
+    let head = if typescript {
+        r#"import type { Spwn, WorkflowMeta } from "./spwn";
+
+export const meta: WorkflowMeta = {
+  description: "Ask an agent about the repository",
+};
+
+export default async function main(spwn: Spwn, inputs: Record<string, unknown>) {
+"#
+    } else {
+        r#"// @ts-check
+
+/** @type {import("./spwn").WorkflowMeta} */
+export const meta = {
+  description: "Ask an agent about the repository",
+};
+
+/** @param {import("./spwn").Spwn} spwn */
+export default async function main(spwn, inputs) {
+"#
+    };
+    format!("{head}{}", body.replace("__NAME__", name))
+}
+
+/// Create `.spwn/workflows/<name>.js` (or `.ts`) from a starter template, and write the
+/// API's `spwn.d.ts` beside it. Returns the new file's path, relative to the project.
+pub fn scaffold(state: &AppState, project_id: &str, name: &str, typescript: bool) -> Result<String, String> {
+    let name = name.trim();
+    let valid = !name.is_empty()
+        && !name.starts_with('_')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if !valid {
+        return Err("name it with letters, digits, - and _ (not starting with _)".to_string());
+    }
+    let p = project(state, project_id)?;
+    let project_dir = PathBuf::from(&p.directory);
+    let dir = workflows_dir(&project_dir);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    if discover(&dir).iter().any(|(n, _)| n == name) {
+        return Err(format!("a workflow named `{name}` already exists"));
+    }
+    let file = dir.join(format!("{name}.{}", if typescript { "ts" } else { "js" }));
+    std::fs::write(&file, template(name, typescript)).map_err(|e| e.to_string())?;
+    let types = dir.join("spwn.d.ts");
+    if std::fs::read_to_string(&types).ok().as_deref() != Some(TYPES) {
+        std::fs::write(&types, TYPES).map_err(|e| e.to_string())?;
+    }
+    Ok(file
+        .strip_prefix(&project_dir)
+        .unwrap_or(&file)
+        .to_string_lossy()
+        .into_owned())
+}
+
 pub fn runs(state: &AppState, project_id: &str) -> Vec<RunInfo> {
     state
         .workflows
@@ -643,7 +713,12 @@ impl Job {
             }
         };
         self.fire_hook("workflow-started", None);
-        let (status, error) = rt.block_on(self.attempts());
+        // A crash in spwn's own code must still end the run, not leave it "running".
+        let (status, error) =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| rt.block_on(self.attempts())))
+                .unwrap_or_else(|_| {
+                    (RunStatus::Failed, Some("spwn crashed running this workflow".to_string()))
+                });
         self.finish(status, error.clone());
         let label = match status {
             RunStatus::Stopped => "stopped",

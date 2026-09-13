@@ -337,6 +337,10 @@ pub async fn invoke(
             state, body, ProjectIdArgs, st, a,
             ok(workflows::runs(&st, &a.project_id))
         ),
+        "new_workflow" => blocking!(
+            state, body, NewWorkflowArgs, st, a,
+            ok_result(workflows::scaffold(&st, &a.project_id, &a.name, a.typescript))
+        ),
         "workflow_log" => blocking!(
             state, body, RunIdArgs, st, a,
             ok_result(workflows::log(&st, &a.run_id))
@@ -689,4 +693,13 @@ struct RunWorkflowArgs {
 #[serde(rename_all = "camelCase")]
 struct RunIdArgs {
     run_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NewWorkflowArgs {
+    project_id: String,
+    name: String,
+    #[serde(default)]
+    typescript: bool,
 }

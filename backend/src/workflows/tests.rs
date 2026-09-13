@@ -156,6 +156,67 @@ fn a_run_logs_and_receives_its_inputs_with_defaults() {
 }
 
 #[test]
+fn a_typescript_workflow_runs_with_its_types_stripped() {
+    let e = env();
+    e.write(
+        "typed.ts",
+        r#"import type { Spwn } from "./spwn";
+           import { double } from "./lib/math";
+           enum Level { Low = 1, High = 2 }
+           interface Inputs { who?: string }
+           export const meta = { name: "Typed" };
+           export default async function main(spwn: Spwn, inputs: Inputs): Promise<void> {
+             const n: number = double(Level.High);
+             spwn.log(`ts ${inputs.who ?? "anyone"} ${n}`);
+           }"#,
+    );
+    e.write("lib/math.ts", "export const double = (n: number): number => n * 2;");
+    e.write("bad.ts", "export default function (: number) {}");
+
+    let listing = list(&e.state, PROJECT).unwrap();
+    let typed = listing.workflows.iter().find(|w| w.name == "typed").unwrap();
+    assert_eq!(typed.meta.as_ref().and_then(|m| m.name.as_deref()), Some("Typed"), "{:?}", typed.error);
+    assert!(listing.workflows.iter().find(|w| w.name == "bad").unwrap().error.is_some());
+
+    let run = e.start("typed", Value::Null);
+    assert_eq!(e.wait(&run.id).status, RunStatus::Finished, "{:?}", e.logs(&run.id));
+    assert!(e.logs(&run.id).contains(&"ts anyone 4".to_string()), "{:?}", e.logs(&run.id));
+}
+
+#[test]
+fn new_workflows_start_from_a_loadable_template_with_types_beside_them() {
+    let e = env();
+    assert_eq!(scaffold(&e.state, PROJECT, "ask", false).unwrap(), ".spwn/workflows/ask.js");
+    assert_eq!(scaffold(&e.state, PROJECT, "ask-ts", true).unwrap(), ".spwn/workflows/ask-ts.ts");
+    assert!(workflows_dir(&e.dir).join("spwn.d.ts").is_file());
+    assert!(scaffold(&e.state, PROJECT, "ask", true).unwrap_err().contains("already exists"));
+    assert!(scaffold(&e.state, PROJECT, "../escape", false).is_err());
+
+    let listing = list(&e.state, PROJECT).unwrap();
+    let names: Vec<&str> = listing.workflows.iter().map(|w| w.name.as_str()).collect();
+    assert_eq!(names, vec!["ask", "ask-ts"]);
+    for w in &listing.workflows {
+        assert_eq!(w.error, None, "{} should load", w.name);
+    }
+}
+
+#[test]
+fn the_github_board_example_loads() {
+    let e = env();
+    e.write(
+        "github-board.ts",
+        include_str!("../../../examples/workflows/github-board.ts"),
+    );
+    let listing = list(&e.state, PROJECT).unwrap();
+    let w = &listing.workflows[0];
+    assert_eq!(w.error, None);
+    let meta = w.meta.as_ref().unwrap();
+    assert_eq!(meta.name.as_deref(), Some("GitHub board"));
+    assert!(meta.keep_alive);
+    assert_eq!(meta.inputs["owner"]["required"], true);
+}
+
+#[test]
 fn a_required_input_must_be_given() {
     let e = env();
     e.write(
@@ -380,7 +441,8 @@ fn a_hook_prompt_is_answered_by_the_workflow_that_owns_the_session() {
              const s = await spwn.sessions.get("t1", {
                onHookPrompt: (q) => `${q.event}:${q.options[1].label}`,
              });
-             console.log(`claimed ${s.id}`);
+             // Record fields must not shadow the methods beside them.
+             console.log(`claimed ${s.id} ${await s.status()} ${s.title} ${s.key} ${typeof s.press}`);
              await spwn.untilStopped();
            }"#,
     );
@@ -388,7 +450,7 @@ fn a_hook_prompt_is_answered_by_the_workflow_that_owns_the_session() {
     assert!(matches!(prompt_mode_for(&e.state, "t1"), PromptMode::Ui));
 
     let run = e.start("answers", Value::Null);
-    e.wait_for_log(&run.id, "claimed t1");
+    e.wait_for_log(&run.id, "claimed t1 idle s null function");
     let PromptMode::Workflow(ask) = prompt_mode_for(&e.state, "t1") else {
         panic!("the owning workflow should answer");
     };

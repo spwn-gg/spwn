@@ -657,6 +657,11 @@ export function runWorkflow(
 	return invoke('run_workflow', { projectId, name, inputs });
 }
 
+/** Create `.spwn/workflows/<name>.js|ts` from a template (plus `spwn.d.ts`); resolves to its path. */
+export function newWorkflow(projectId: string, name: string, typescript: boolean): Promise<string> {
+	return invoke('new_workflow', { projectId, name, typescript });
+}
+
 export function stopWorkflow(runId: string): Promise<void> {
 	return invoke('stop_workflow', { runId });
 }

@@ -61,6 +61,8 @@ shell-words = "1"
 # Workflows (`.spwn/workflows/*.js`) run in an embedded QuickJS: small, async/await and
 # ES modules, and no V8 build to drag into every image that compiles spwn.
 rquickjs = { version = "0.13", features = ["futures", "loader"] }
+# TypeScript workflows: strip the types (no checking) before QuickJS loads the module.
+oxc = { version = "0.149", features = ["transformer", "codegen", "semantic"] }
 # `spwn.fetch` / `spwn.github` for workflows. rustls, so the binary needs no system OpenSSL.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 

@@ -249,7 +249,11 @@ fn install_host<'js>(ctx: &Ctx<'js>, rc: Arc<RunCtx>) -> rquickjs::Result<()> {
     globals.set(
         "__hostSync",
         Function::new(ctx.clone(), move |op: String, args: String| -> String {
-            host::dispatch_sync(&sync_rc, &op, &args)
+            // Called from inside QuickJS, where a panic can't unwind and would abort spwn.
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                host::dispatch_sync(&sync_rc, &op, &args)
+            }))
+            .unwrap_or_else(|_| host::crashed(&op))
         })?,
     )?;
     globals.set(

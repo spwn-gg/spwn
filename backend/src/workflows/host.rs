@@ -361,6 +361,31 @@ fn envelope(res: OpResult) -> String {
     }
 }
 
+/// The answer for an op whose handler panicked.
+pub fn crashed(op: &str) -> String {
+    envelope(Err(OpError::Msg(format!("spwn crashed handling `{op}`"))))
+}
+
+/// Polls a future inside `catch_unwind`, so a panicking op fails that call instead of
+/// unwinding through the JS runtime's scheduler.
+struct CatchPanic<F: Future>(std::pin::Pin<Box<F>>);
+
+impl<F: Future> Future for CatchPanic<F> {
+    type Output = Option<F::Output>;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let fut = self.0.as_mut();
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fut.poll(cx))) {
+            Ok(std::task::Poll::Ready(v)) => std::task::Poll::Ready(Some(v)),
+            Ok(std::task::Poll::Pending) => std::task::Poll::Pending,
+            Err(_) => std::task::Poll::Ready(None),
+        }
+    }
+}
+
 fn parse<T: DeserializeOwned>(args: Value) -> Result<T, OpError> {
     serde_json::from_value(args).map_err(|e| OpError::Msg(format!("bad arguments: {e}")))
 }
@@ -457,7 +482,9 @@ pub async fn dispatch(rc: Arc<RunCtx>, op: String, args: String) -> String {
     let res = tokio::select! {
         biased;
         _ = flags.wait() => Err(OpError::Stopped),
-        r = async_op(&rc, &op, args) => r,
+        r = CatchPanic(Box::pin(async_op(&rc, &op, args))) => {
+            r.unwrap_or_else(|| Err(OpError::Msg(format!("spwn crashed handling `{op}`"))))
+        }
     };
     envelope(res)
 }
