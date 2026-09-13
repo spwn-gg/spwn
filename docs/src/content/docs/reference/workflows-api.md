@@ -78,6 +78,7 @@ The sessions this workflow created.
 | `workflow`, `key` | The workflow that created it and the key it was filed under. |
 | `branch`, `baseBranch`, `cwd` | Its branch, the branch it merges into, and its worktree. |
 | `sessionId` | The agent's own conversation id. |
+| `awaitingTurn` | A prompt was submitted and `waitForTurn` hasn't returned its reply yet. Kept across runs and spwn restarts; always `false` for sessions no workflow created. |
 
 | Method | |
 |---|---|
@@ -102,6 +103,11 @@ The sessions this workflow created.
   Answer it with `press`/`send`, or leave it for a person.
 
 With no `timeoutMs` it waits indefinitely.
+
+A session found again with `find`/`get` in a later run — after the workflow was stopped or
+restarted mid-turn — has `awaitingTurn: true`. Calling `waitForTurn()` on it waits for the
+reply to that earlier prompt (resolving at once if it already finished), so don't send the
+prompt again.
 
 ### Hook questions
 

@@ -112,10 +112,16 @@ Workflows get re-run and restarted, so never assume a clean slate. The standard 
 let session = await spwn.sessions.find(ticket.id);    // survives restarts of spwn itself
 if (!session) {
   session = await spwn.sessions.create({ key: ticket.id, title: ticket.title, prompt });
-} else {
+} else if (!session.awaitingTurn) {
   await session.send(prompt);
 }
+const turn = await session.waitForTurn();
 ```
+
+`session.awaitingTurn` is true when a prompt was submitted but no `waitForTurn()` has returned its
+reply yet — typically because the run was stopped or restarted mid-turn. It is kept across runs and
+spwn restarts. Don't send the prompt again: `waitForTurn()` on the found session waits for the reply
+to that prompt, and returns at once if the agent already finished while the workflow was stopped.
 
 Track progress with `spwn.state` so work isn't repeated:
 

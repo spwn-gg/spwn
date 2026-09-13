@@ -624,7 +624,7 @@ async fn async_op(rc: &Arc<RunCtx>, op: &str, args: Value) -> OpResult {
             }
             let a: A = parse(args)?;
             rc.project_terminal(&a.id)?;
-            let state = rc.state.clone();
+            let (state, id, submit) = (rc.state.clone(), a.id.clone(), a.submit);
             let mark = rc
                 .on_main(async move {
                     commands::ensure_attached(&state, &a.id).await?;
@@ -633,6 +633,9 @@ async fn async_op(rc: &Arc<RunCtx>, op: &str, args: Value) -> OpResult {
                     Ok(mark)
                 })
                 .await?;
+            if submit {
+                set_awaiting(&rc.state, &id, Some(mark.clone()));
+            }
             Ok(json!(mark))
         }
         "session.waitForTurn" => wait_for_turn(rc, parse(args)?).await,
@@ -747,8 +750,28 @@ fn session_json(state: &AppState, terminal_id: &str) -> Option<Value> {
         "baseBranch": t.base_branch,
         "cwd": t.cwd,
         "sessionId": t.session_id,
+        "awaitingTurn": t.workflow.as_ref().is_some_and(|w| w.awaiting.is_some()),
         "status": status,
     }))
+}
+
+/// Record (`Some(mark)`) or clear (`None`) a workflow session's prompt awaiting its
+/// reply. Sessions no workflow created have nowhere to keep it.
+pub(super) fn set_awaiting(state: &AppState, terminal_id: &str, mark: Option<Option<String>>) {
+    let awaiting = mark.map(|since| crate::store::AwaitingTurn { since });
+    let changed = {
+        let mut store = state.store.lock();
+        match store.terminal_mut(terminal_id).and_then(|t| t.workflow.as_mut()) {
+            Some(tag) if tag.awaiting != awaiting => {
+                tag.awaiting = awaiting;
+                true
+            }
+            _ => false,
+        }
+    };
+    if changed {
+        commands::persist(state);
+    }
 }
 
 /// The uuid of the last turn in a session's transcript.
@@ -823,6 +846,7 @@ async fn sessions_create(rc: &Arc<RunCtx>, a: CreateArgs) -> OpResult {
         workflow: Some(WorkflowTag {
             name: rc.workflow.clone(),
             key: a.key,
+            awaiting: None,
         }),
         prompt_mode: hooks::PromptMode::Workflow(prompter(Arc::downgrade(rc))),
     };
@@ -830,7 +854,8 @@ async fn sessions_create(rc: &Arc<RunCtx>, a: CreateArgs) -> OpResult {
     let tid = terminal_id.clone();
     let ready_timeout = Duration::from_millis(a.ready_timeout_ms.unwrap_or(90_000));
     let prompt = a.prompt.filter(|p| !p.trim().is_empty());
-    let mark = rc
+    // Some(mark) once a prompt was submitted; None without one.
+    let sent = rc
         .on_main(async move {
             commands::open_terminal(state.clone(), spec).await?;
             state.hub.emit("projects://changed", Vec::<String>::new());
@@ -840,12 +865,15 @@ async fn sessions_create(rc: &Arc<RunCtx>, a: CreateArgs) -> OpResult {
             commands::wait_agent_ready(&state, &tid, ready_timeout).await?;
             let mark = tail_uuid(&state, &tid);
             commands::agent_send(&state, tid, prompt, true).await?;
-            Ok(mark)
+            Ok(Some(mark))
         })
         .await?;
+    if let Some(mark) = &sent {
+        set_awaiting(&rc.state, &terminal_id, Some(mark.clone()));
+    }
     let mut rec = session_json(&rc.state, &terminal_id)
         .ok_or_else(|| OpError::msg("the session disappeared while it was being created"))?;
-    rec["mark"] = json!(mark);
+    rec["mark"] = json!(sent.flatten());
     Ok(rec)
 }
 
@@ -867,7 +895,13 @@ async fn wait_for_turn(rc: &Arc<RunCtx>, a: WaitTurnArgs) -> OpResult {
         rc.on_main(async move { commands::ensure_attached(&state, &id).await })
             .await?;
     }
-    let since = a.since.or_else(|| tail_uuid(&rc.state, &a.id));
+    // A handle that didn't send the prompt itself (a run started after the one that did)
+    // waits for the reply to the prompt still on record, which may have finished already.
+    let since = match (a.since, t.workflow.and_then(|w| w.awaiting)) {
+        (Some(since), _) => Some(since),
+        (None, Some(awaiting)) => awaiting.since,
+        (None, None) => tail_uuid(&rc.state, &a.id),
+    };
     let deadline = a
         .timeout_ms
         .map(|ms| tokio::time::Instant::now() + Duration::from_millis(ms));
@@ -889,6 +923,7 @@ async fn wait_for_turn(rc: &Arc<RunCtx>, a: WaitTurnArgs) -> OpResult {
                     && status != SessionStatus::Thinking
                     && rc.state.turns.lock().completed(&a.id) == Some(uuid);
                 if finished {
+                    set_awaiting(&rc.state, &a.id, None);
                     return Ok(json!({
                         "turnUuid": uuid,
                         "text": final_text(path),
@@ -993,6 +1028,7 @@ async fn agents_run(rc: &Arc<RunCtx>, a: AgentRunArgs) -> OpResult {
             workflow: Some(WorkflowTag {
                 name: rc.workflow.clone(),
                 key: a.key,
+                awaiting: None,
             }),
         });
     }

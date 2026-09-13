@@ -71,6 +71,19 @@ pub struct WorkflowTag {
     pub name: String,
     #[serde(default)]
     pub key: Option<String>,
+    /// Set while a prompt the workflow submitted is waiting for its reply, and cleared
+    /// when `waitForTurn` returns that reply — so a run stopped mid-turn can pick the
+    /// turn up again instead of re-sending its prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub awaiting: Option<AwaitingTurn>,
+}
+
+/// A submitted prompt whose reply a workflow hasn't collected yet.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AwaitingTurn {
+    /// The transcript's last turn uuid before the prompt was sent (None: it was empty).
+    pub since: Option<String>,
 }
 
 /// A project's workflow settings.
