@@ -18,6 +18,7 @@ mod settings;
 mod state;
 mod store;
 mod transcript;
+mod workflows;
 
 pub use server::{serve, ServeOpts};
 

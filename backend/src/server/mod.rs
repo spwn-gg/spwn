@@ -11,7 +11,7 @@ pub mod routes;
 pub mod ws;
 
 use crate::state::AppState;
-use crate::{agents, checkpoints, hooks, projects, scheduler, settings, store};
+use crate::{agents, checkpoints, hooks, projects, scheduler, settings, store, workflows};
 use axum::routing::{get, post};
 use axum::Router;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -91,6 +91,10 @@ pub async fn serve(opts: ServeOpts) -> anyhow::Result<()> {
 
     // Start the per-project scheduled-task loop (the running server keeps it alive).
     scheduler::start_scheduler(state.clone());
+
+    // Workflows drive sessions on this runtime; then start the ones set to autostart.
+    state.workflows.init(tokio::runtime::Handle::current());
+    workflows::autostart_all(&state);
 
     let app = router(state.clone());
 

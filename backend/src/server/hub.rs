@@ -15,6 +15,10 @@ use tokio::sync::broadcast;
 #[derive(Clone)]
 pub struct EventHub {
     tx: broadcast::Sender<Arc<str>>,
+    /// Every frame except the pty byte stream, for listeners inside the backend
+    /// (workflows). The pty stream is nearly all of the traffic, so sharing its channel
+    /// would let a slow listener lag past — and silently lose — the rare events it wants.
+    internal: broadcast::Sender<Arc<str>>,
 }
 
 impl Default for EventHub {
@@ -23,6 +27,7 @@ impl Default for EventHub {
         // frames rather than stalling the producer (rmux replays its recent buffer).
         Self {
             tx: broadcast::channel(4096).0,
+            internal: broadcast::channel(1024).0,
         }
     }
 }
@@ -39,7 +44,11 @@ impl EventHub {
         }
         match serde_json::to_string(&Wire { topic, payload }) {
             Ok(json) => {
-                let _ = self.tx.send(Arc::from(json.as_str()));
+                let frame: Arc<str> = Arc::from(json.as_str());
+                if !topic.starts_with("pty://") {
+                    let _ = self.internal.send(frame.clone());
+                }
+                let _ = self.tx.send(frame);
             }
             Err(e) => eprintln!("event serialize failed for {topic}: {e}"),
         }
@@ -48,5 +57,10 @@ impl EventHub {
     /// A new per-client receiver for the WebSocket forward loop.
     pub fn subscribe(&self) -> broadcast::Receiver<Arc<str>> {
         self.tx.subscribe()
+    }
+
+    /// A receiver for everything but pty output, for in-process listeners.
+    pub fn subscribe_internal(&self) -> broadcast::Receiver<Arc<str>> {
+        self.internal.subscribe()
     }
 }

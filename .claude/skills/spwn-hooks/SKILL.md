@@ -17,7 +17,10 @@ runs it. This skill scaffolds, inspects, tests, and removes those hooks.
 
 - **Discovery:** one file per event at `<worktree>/.spwn/hooks/<event>.sh`.
 - **Events:** `session-created` (worktree ready), `session-ready` (Claude session id
-  bound), `session-deleted` (just before the worktree is removed).
+  bound), `session-deleted` (just before the worktree is removed). Around each workflow
+  run (not a session): `workflow-started` / `workflow-stopped` — cwd is the project dir,
+  env `SPWN_WORKFLOW`, `SPWN_WORKFLOW_RUN_ID`, and `SPWN_WORKFLOW_STATUS`
+  (`ok`|`error`|`stopped`) on stop; no session variables, and they never prompt.
 - **Execution:** the file runs **directly if executable** (honoring its shebang),
   otherwise via `sh <file>`. Working directory is the **worktree**.
 - **Synchronous:** the session waits for the script to finish. Background long-running
@@ -96,6 +99,8 @@ if [ "$("$SPWN_BIN" prompt 'Seed the database?')" = Yes ]; then ./scripts/seed.s
   which is how a `session-created` hook gates per-session setup.
 - **Headless:** scheduled/headless runs have no window, so prompts auto-decline (exit 2)
   immediately — always handle that branch.
+- **Workflow sessions:** in a session a workflow owns, the workflow's `onHookPrompt`
+  handler answers instead of the UI; without a handler the prompt is declined (exit 2).
 
 ## Gotchas
 
@@ -105,7 +110,8 @@ if [ "$("$SPWN_BIN" prompt 'Seed the database?')" = Yes ]; then ./scripts/seed.s
   session blocks until the script returns.
 - **`session-created` has no `SPWN_SESSION_ID`** — use `session-ready` for anything that
   needs the Claude session id.
-- **Only the three known events run** — a file named anything else is never fired.
+- **Only known events run** — the session events above plus `workflow-started` /
+  `workflow-stopped`; a file named anything else is never fired.
 - **Failures are non-fatal**: a non-zero exit surfaces a one-line notice and shows red
   in the session's **▸ Hooks** panel; the session still opens. Check output there or via
   `test`.

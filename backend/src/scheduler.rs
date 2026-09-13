@@ -112,6 +112,7 @@ pub fn fire(state: &Arc<AppState>, project_id: &str, task_id: &str) {
                 needs_attention: false,
                 attention_reason: None,
                 exec: None,
+                workflow: None,
             });
             Some((terminal_id, directory, context, task))
         })
@@ -132,9 +133,14 @@ pub fn fire(state: &Arc<AppState>, project_id: &str, task_id: &str) {
         if let Some(base) = gitwt::current_branch(&repo) {
             // Create the worktree via the `session-created` hooks (native fallback
             // inside). Headless run → no UI window, so hook prompts auto-decline.
-            if let Some(new_cwd) =
-                setup_session_worktree(state, &terminal_id, &directory, &repo, base, true)
-            {
+            if let Some(new_cwd) = setup_session_worktree(
+                state,
+                &terminal_id,
+                &directory,
+                &repo,
+                base,
+                &crate::hooks::PromptMode::Decline,
+            ) {
                 run_dir = new_cwd;
             }
         }

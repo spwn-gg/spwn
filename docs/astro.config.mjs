@@ -36,6 +36,7 @@ export default defineConfig({
 						{ label: 'Fork & Timeline', slug: 'guides/fork-and-rewind' },
 						{ label: 'Merge Tray', slug: 'guides/context-composer' },
 						{ label: 'Scheduled Tasks', slug: 'guides/scheduled-tasks' },
+						{ label: 'Workflows', slug: 'guides/workflows' },
 					],
 				},
 				{
@@ -49,6 +50,7 @@ export default defineConfig({
 					items: [
 						{ label: 'How it works & your data', slug: 'reference/architecture' },
 						{ label: 'Hooks', slug: 'reference/hooks' },
+						{ label: 'Workflows API', slug: 'reference/workflows-api' },
 						{ label: 'Settings', slug: 'reference/settings' },
 						{ label: 'Glossary', slug: 'reference/glossary' },
 						{ label: 'Troubleshooting', slug: 'reference/troubleshooting' },

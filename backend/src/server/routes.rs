@@ -9,6 +9,7 @@
 use crate::commands::{self as cmd, OpenTerminalSpec};
 use crate::settings::Settings;
 use crate::state::AppState;
+use crate::workflows;
 use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::{header, HeaderValue, StatusCode, Uri};
@@ -310,6 +311,40 @@ pub async fn invoke(
             let a: ProjectIdArgs = parse(&body)?;
             ok_result(cmd::git_sync(&state, a.project_id).await)
         }
+
+        // --- Workflows ---
+        "list_workflows" => blocking!(
+            state, body, ProjectIdArgs, st, a,
+            ok_result(workflows::list(&st, &a.project_id))
+        ),
+        "set_workflows_enabled" => blocking!(
+            state, body, SetWorkflowsEnabledArgs, st, a,
+            ok_result(workflows::set_enabled(&st, &a.project_id, a.enabled))
+        ),
+        "set_workflow_autostart" => blocking!(
+            state, body, SetWorkflowAutostartArgs, st, a,
+            ok_result(workflows::set_autostart(&st, &a.project_id, &a.name, a.autostart))
+        ),
+        "run_workflow" => blocking!(
+            state, body, RunWorkflowArgs, st, a,
+            ok_result(workflows::start(&st, &a.project_id, &a.name, a.inputs, "manual"))
+        ),
+        "stop_workflow" => blocking!(
+            state, body, RunIdArgs, st, a,
+            ok_result(workflows::stop(&st, &a.run_id))
+        ),
+        "workflow_runs" => blocking!(
+            state, body, ProjectIdArgs, st, a,
+            ok(workflows::runs(&st, &a.project_id))
+        ),
+        "new_workflow" => blocking!(
+            state, body, NewWorkflowArgs, st, a,
+            ok_result(workflows::scaffold(&st, &a.project_id, &a.name, a.typescript))
+        ),
+        "workflow_log" => blocking!(
+            state, body, RunIdArgs, st, a,
+            ok_result(workflows::log(&st, &a.run_id))
+        ),
 
         other => Err((StatusCode::NOT_FOUND, format!("unknown command: {other}"))),
     }
@@ -628,4 +663,43 @@ struct GitCheckoutArgs {
 struct GitCreateBranchArgs {
     project_id: String,
     name: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetWorkflowsEnabledArgs {
+    project_id: String,
+    enabled: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetWorkflowAutostartArgs {
+    project_id: String,
+    name: String,
+    autostart: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RunWorkflowArgs {
+    project_id: String,
+    name: String,
+    #[serde(default)]
+    inputs: Value,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RunIdArgs {
+    run_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NewWorkflowArgs {
+    project_id: String,
+    name: String,
+    #[serde(default)]
+    typescript: bool,
 }
