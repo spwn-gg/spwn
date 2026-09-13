@@ -148,6 +148,20 @@ export function setSettings(settings: Settings): Promise<void> {
 	return invoke('set_settings', { settings });
 }
 
+export interface GithubAuthStatus {
+	tokenSaved: boolean;
+}
+
+/** Whether a GitHub token is saved (the token itself is never sent back). */
+export function githubAuthStatus(): Promise<GithubAuthStatus> {
+	return invoke('github_auth_status');
+}
+
+/** Save the GitHub token git uses for private repos; an empty string removes it. */
+export function setGithubToken(token: string): Promise<GithubAuthStatus> {
+	return invoke('set_github_token', { token });
+}
+
 /** Reveal the shared global hooks folder (~/.spwn/hooks) in Finder (creates it if needed). */
 export function openGlobalHooksDir(): Promise<void> {
 	return invoke('open_global_hooks_dir');

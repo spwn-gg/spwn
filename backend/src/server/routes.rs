@@ -69,6 +69,11 @@ pub async fn invoke(
         "set_settings" => {
             blocking!(state, body, SetSettingsArgs, st, a, ok_result(cmd::set_settings(&st, a.settings)))
         }
+        "github_auth_status" => ok(cmd::github_auth_status()),
+        "set_github_token" => blocking!(
+            state, body, SetGithubTokenArgs, _st, a,
+            ok_result(cmd::set_github_token(a.token))
+        ),
         "open_global_hooks_dir" => ok_result(
             tokio::task::spawn_blocking(cmd::open_global_hooks_dir)
                 .await
@@ -364,6 +369,12 @@ struct NoArgs {}
 #[serde(rename_all = "camelCase")]
 struct SetSettingsArgs {
     settings: Settings,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetGithubTokenArgs {
+    token: String,
 }
 
 #[derive(Deserialize)]

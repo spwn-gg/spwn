@@ -85,7 +85,8 @@ pub async fn run(
     .into_iter()
     .collect();
     let argv = crate::agents::def::render_argv(template, &ctx);
-    let env: Vec<String> = def.env.iter().map(|(k, v)| format!("{k}={v}")).collect();
+    let mut env: Vec<String> = def.env.iter().map(|(k, v)| format!("{k}={v}")).collect();
+    env.extend(crate::gitauth::pane_env());
 
     let session = spawn_pane(
         rmux,

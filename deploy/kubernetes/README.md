@@ -63,8 +63,10 @@ kubectl -n spwn exec -it deploy/spwn -- claude
 ```
 
 Then open spwn, start a shell pane, and clone what you want to work on (for example
-into `~/code`). For private repos, add an SSH key or a credential helper under
-`~/.ssh` / `~/.gitconfig` on the volume.
+into `~/code`). For private GitHub repos, paste a personal access token in
+**Settings → GitHub**: spwn's own clone/fetch/pull/push and git in its panes use it
+over HTTPS, and it is kept on the volume. Other hosts, or SSH remotes, still need a
+key or credential helper under `~/.ssh` / `~/.gitconfig` on the volume.
 
 ## Serving under a path prefix
 

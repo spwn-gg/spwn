@@ -53,7 +53,11 @@ fn git_net(dir: &Path, args: &[&str]) -> Result<String, String> {
         let combined = format!("{}\n{}", stdout.trim(), stderr.trim());
         Ok(combined.trim().to_string())
     } else {
-        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        Err(match crate::gitauth::auth_hint(&err) {
+            Some(hint) => format!("{err}\n\n{hint}"),
+            None => err,
+        })
     }
 }
 
