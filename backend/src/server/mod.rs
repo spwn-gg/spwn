@@ -62,6 +62,9 @@ pub async fn serve(opts: ServeOpts) -> anyhow::Result<()> {
         let settings_path = settings::settings_path(&data_dir);
         *state.settings.lock() = settings::Settings::load(&settings_path);
         *state.settings_path.lock() = Some(settings_path);
+
+        // Before anything spawns git: children inherit the GitHub credential helper.
+        crate::gitauth::install(&data_dir);
     } else {
         eprintln!("warning: could not resolve the app data dir; state won't persist");
     }

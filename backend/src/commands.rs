@@ -591,6 +591,10 @@ pub async fn open_terminal(
         }
     };
 
+    // So git in the pane (the user's, or the agent's) can use the saved GitHub token.
+    let mut env = env;
+    env.extend(crate::gitauth::pane_env());
+
     let rmux = connect(&state).await?;
     let session_name = rmux_session_name(&terminal_id);
     let session = spawn_pane(
@@ -2201,6 +2205,23 @@ pub fn set_settings(state: &AppState, mut settings: Settings) -> Result<(), Stri
             .map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubAuthStatus {
+    pub token_saved: bool,
+}
+
+/// Whether a GitHub token is saved. The token itself never leaves the backend.
+pub fn github_auth_status() -> GithubAuthStatus {
+    GithubAuthStatus { token_saved: crate::gitauth::has_token() }
+}
+
+/// Save the GitHub token git uses for private repos; a blank token removes it.
+pub fn set_github_token(token: String) -> Result<GithubAuthStatus, String> {
+    crate::gitauth::set_token(&token)?;
+    Ok(github_auth_status())
 }
 
 /// Reveal the shared global hooks folder (`~/.spwn/hooks`) in Finder, creating it first

@@ -7,6 +7,7 @@
 mod agents;
 mod checkpoints;
 mod commands;
+mod gitauth;
 mod gitwt;
 mod hooks;
 mod projects;
