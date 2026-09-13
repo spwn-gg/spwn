@@ -56,6 +56,35 @@ pub struct TerminalRec {
     /// is every session that has no such hook.
     #[serde(default)]
     pub exec: Option<ExecSpec>,
+    /// The workflow that created this session, if one did. Lets a workflow find its
+    /// sessions again after a restart, and the sidebar badge them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<WorkflowTag>,
+}
+
+/// Which workflow owns a session, and under what key the workflow filed it (e.g. the
+/// ticket id), so `spwn.sessions.find(key)` survives a restart.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowTag {
+    /// The workflow's name (its file stem under `.spwn/workflows`).
+    pub name: String,
+    #[serde(default)]
+    pub key: Option<String>,
+}
+
+/// A project's workflow settings.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowSettings {
+    /// Whether the user has allowed this project's workflows to run. Workflows are code
+    /// from the repo — and repos can be cloned from anywhere — so nothing runs,
+    /// autostart included, until this is turned on.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Workflows started when spwn starts (and kept running).
+    #[serde(default)]
+    pub autostart: Vec<String>,
 }
 
 /// How to run a session's processes somewhere other than the host — a container, a
@@ -149,6 +178,9 @@ pub struct ProjectRec {
     /// Scheduled tasks that fire headless Claude runs on a cadence.
     #[serde(default)]
     pub scheduled_tasks: Vec<ScheduledTask>,
+    /// Trust + autostart for the scripts in `.spwn/workflows`.
+    #[serde(default)]
+    pub workflows: WorkflowSettings,
 }
 
 #[derive(Serialize, Deserialize, Default, Clone, Debug)]
@@ -251,7 +283,36 @@ mod tests {
             needs_attention: false,
             attention_reason: None,
             exec: None,
+            workflow: None,
         }
+    }
+
+    #[test]
+    fn a_store_written_before_workflows_existed_still_loads() {
+        let store = migrated(
+            r#"{"projects":[{"id":"p","name":"P","directory":"/tmp","terminals":[
+                {"id":"t","title":"s","kind":"agent","agent":"claude","cwd":"/tmp"}]}]}"#,
+        );
+        assert_eq!(store.projects[0].terminals[0].workflow, None);
+        // Untrusted by default: an existing project must not start running repo code.
+        assert!(!store.projects[0].workflows.enabled);
+        assert!(store.projects[0].workflows.autostart.is_empty());
+    }
+
+    #[test]
+    fn a_workflow_tag_round_trips_through_the_store() {
+        let store = migrated(
+            r#"{"projects":[{"id":"p","name":"P","directory":"/tmp",
+                "workflows":{"enabled":true,"autostart":["board"]},
+                "terminals":[{"id":"t","title":"s","kind":"agent","cwd":"/tmp",
+                 "workflow":{"name":"board","key":"PVTI_1"}}]}]}"#,
+        );
+        let p = &store.projects[0];
+        assert!(p.workflows.enabled);
+        assert_eq!(p.workflows.autostart, vec!["board".to_string()]);
+        let tag = p.terminals[0].workflow.as_ref().unwrap();
+        assert_eq!(tag.name, "board");
+        assert_eq!(tag.key.as_deref(), Some("PVTI_1"));
     }
 
     #[test]

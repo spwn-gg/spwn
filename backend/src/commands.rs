@@ -75,6 +75,7 @@ pub fn create_project(
         terminals: Vec::new(),
         context: Vec::new(),
         scheduled_tasks: Vec::new(),
+        workflows: Default::default(),
     };
     state.store.lock().projects.push(rec.clone());
     persist(&state);
@@ -298,6 +299,16 @@ pub struct OpenTerminalSpec {
     /// Initial permission/execution mode, applied at launch so the first turn can't
     /// run under the wrong one (a race a post-spawn change would lose).
     pub permission_mode: Option<String>,
+    /// Title for a new session's record. None → the agent's id.
+    #[serde(default)]
+    pub title: Option<String>,
+    /// The workflow creating this session. In-process only.
+    #[serde(skip)]
+    pub workflow: Option<crate::store::WorkflowTag>,
+    /// Who answers a new session's `session-created` hook prompts: the UI, unless a
+    /// workflow is opening it. In-process only.
+    #[serde(skip)]
+    pub prompt_mode: hooks::PromptMode,
 }
 
 pub async fn open_terminal(
@@ -395,9 +406,10 @@ pub async fn open_terminal(
             });
             // The direct parent in the branch tree (the terminal we forked from).
             let parent_id = spec.parent_terminal_id.clone();
-            let title = match kind.as_str() {
-                "claude" => "claude".to_string(),
-                "agent" => agent_id.clone().unwrap_or_else(|| "agent".to_string()),
+            let title = match (spec.title.as_deref().map(str::trim), kind.as_str()) {
+                (Some(t), _) if !t.is_empty() => t.to_string(),
+                (_, "claude") => "claude".to_string(),
+                (_, "agent") => agent_id.clone().unwrap_or_else(|| "agent".to_string()),
                 _ => "shell".to_string(),
             };
             if let Some(p) = store.project_mut(&spec.project_id) {
@@ -417,6 +429,7 @@ pub async fn open_terminal(
                     // A shell inherits its session's environment; an agent session
                     // gets its own below, from `setup_session_worktree`.
                     exec: inherited_exec,
+                    workflow: spec.workflow.clone(),
                 });
             }
         }
@@ -444,10 +457,15 @@ pub async fn open_terminal(
         if let Some(repo) = gitwt::repo_root(Path::new(&project_dir)) {
             if let Some(base) = fork_base.or_else(|| gitwt::current_branch(&repo)) {
                 // Create the worktree via the `session-created` hooks (native fallback
-                // inside). Interactive → hooks may raise UI prompts (headless = false).
-                if let Some(new_cwd) =
-                    setup_session_worktree(&state, &terminal_id, &project_dir, &repo, base, false)
-                {
+                // inside). Hook prompts go to the UI, or to the workflow opening this.
+                if let Some(new_cwd) = setup_session_worktree(
+                    &state,
+                    &terminal_id,
+                    &project_dir,
+                    &repo,
+                    base,
+                    &spec.prompt_mode,
+                ) {
                     cwd = new_cwd;
                 }
             }
@@ -690,6 +708,22 @@ pub async fn delete_terminal(
             t.map(|t| t.cwd.clone()),
         )
     };
+    // Read before the record goes: who answers this session's hook prompts, and what a
+    // workflow listening for `session-deleted` is told about it.
+    let prompt_mode = crate::workflows::prompt_mode_for(state, &terminal_id);
+    let fired = {
+        let store = state.store.lock();
+        let t = store.terminal(&terminal_id);
+        serde_json::json!({
+            "event": "session-deleted",
+            "projectId": project_id,
+            "terminalId": terminal_id,
+            "sessionId": session_id,
+            "branch": t.and_then(|t| t.branch.clone()),
+            "worktree": cwd,
+            "workflow": t.and_then(|t| t.workflow.clone()),
+        })
+    };
     {
         let mut store = state.store.lock();
         if let Some(p) = store.project_mut(&project_id) {
@@ -714,8 +748,9 @@ pub async fn delete_terminal(
                 session_id: session_id.clone(),
                 turn_uuid: None,
                 exec: Some(e.prefix.clone()),
+                extra_env: Vec::new(),
             };
-            fire_hooks_scope(&state, &ctx, "session-deleted", hooks::Scope::Repo, false);
+            fire_hooks_scope(&state, &ctx, "session-deleted", hooks::Scope::Repo, &prompt_mode);
         }
     }
     if let Some((proj_dir, wt_path, branch)) = worktree {
@@ -728,18 +763,21 @@ pub async fn delete_terminal(
             session_id: session_id.clone(),
             turn_uuid: None,
             exec: exec.map(|e| e.prefix),
+            extra_env: Vec::new(),
         };
         // Repo `session-deleted` hook runs FIRST, inside the worktree (user cleanup that
         // must happen before the tree disappears) — synchronously, like all hooks.
-        fire_hooks_scope(&state, &ctx, "session-deleted", hooks::Scope::Repo, false);
+        fire_hooks_scope(&state, &ctx, "session-deleted", hooks::Scope::Repo, &prompt_mode);
         // Then the GLOBAL `session-deleted` script (runs in the project dir) removes the
         // worktree + branch. Worktree removal lives entirely in the hook — if global
         // hooks are disabled or the script was deleted, the worktree/branch is left in
         // place (spwn no longer manages it); the user can prune it with git.
-        fire_hooks_scope(&state, &ctx, "session-deleted", hooks::Scope::Global, false);
+        fire_hooks_scope(&state, &ctx, "session-deleted", hooks::Scope::Global, &prompt_mode);
     }
     state.hook_runs.lock().remove(&terminal_id);
     state.hooks_running.lock().remove(&terminal_id);
+    state.workflows.forget_terminal(&terminal_id);
+    state.hub.emit("hooks://fired", fired);
     if let (Some(sid), Some(app_data)) = (session_id, app_data_dir(&state)) {
         checkpoints::remove_session(&app_data, &sid);
     }
@@ -1027,8 +1065,10 @@ pub(crate) fn bind_session(state: &AppState, terminal_id: &str, session_id: &str
     if newly_bound {
         if let Some(ctx) = hook_ctx_by_id(state, terminal_id) {
             if ctx.branch.is_some() {
-                fire_hooks(state, &ctx, "session-ready", false);
+                let mode = crate::workflows::prompt_mode_for(state, terminal_id);
+                fire_hooks(state, &ctx, "session-ready", &mode);
             }
+            emit_hooks_fired(state, "session-ready", &ctx);
         }
     }
 }
@@ -1223,7 +1263,7 @@ pub(crate) fn session_worktree_path(
 // ---------------------------------------------------------------------------
 
 /// Emit an advisory error toast to the UI (non-fatal; the session continues).
-fn emit_store_error(state: &AppState, msg: &str) {
+pub(crate) fn emit_store_error(state: &AppState, msg: &str) {
     state.hub.emit("store://error", msg.to_string());
 }
 
@@ -1256,7 +1296,40 @@ fn hook_ctx(
         session_id,
         turn_uuid: None,
         exec: exec.map(|e| e.prefix),
+        extra_env: Vec::new(),
     }
+}
+
+/// Announce that a session lifecycle event happened (after its hooks, if any, ran) on
+/// `hooks://fired`. Emitted whether or not any hook scripts exist: it is how listeners
+/// inside the backend — a workflow's `spwn.on(...)` — learn about sessions.
+fn emit_hooks_fired(state: &AppState, event: &str, ctx: &hooks::HookCtx) {
+    let (project_id, workflow) = {
+        let store = state.store.lock();
+        (
+            store
+                .projects
+                .iter()
+                .find(|p| p.terminals.iter().any(|t| t.id == ctx.terminal_id))
+                .map(|p| p.id.clone()),
+            store
+                .terminal(&ctx.terminal_id)
+                .and_then(|t| t.workflow.clone()),
+        )
+    };
+    state.hub.emit(
+        "hooks://fired",
+        serde_json::json!({
+            "event": event,
+            "projectId": project_id,
+            "terminalId": ctx.terminal_id,
+            "sessionId": ctx.session_id,
+            "turnUuid": ctx.turn_uuid,
+            "branch": ctx.branch,
+            "worktree": ctx.worktree,
+            "workflow": workflow,
+        }),
+    );
 }
 
 /// Resolve a hook context for a session by terminal id (worktree cwd + owning
@@ -1278,7 +1351,7 @@ fn hook_ctx_by_id(state: &AppState, terminal_id: &str) -> Option<hooks::HookCtx>
 /// The shared global hooks dir (`~/.spwn/hooks`), or None when global hooks are
 /// disabled in settings — in which case hook discovery uses the repo scope only and
 /// worktree create/remove fall back to spwn's native behavior.
-fn enabled_global_hooks_dir(state: &AppState) -> Option<PathBuf> {
+pub(crate) fn enabled_global_hooks_dir(state: &AppState) -> Option<PathBuf> {
     if !state.settings.lock().global_hooks_enabled {
         return None;
     }
@@ -1421,6 +1494,125 @@ pub(crate) fn clear_agent_status(state: &AppState, terminal_id: &str) {
     );
 }
 
+/// A session's live status; `Idle` when nothing has been observed.
+pub(crate) fn agent_status_of(state: &AppState, terminal_id: &str) -> crate::agents::SessionStatus {
+    state
+        .agent_status
+        .lock()
+        .get(terminal_id)
+        .copied()
+        .unwrap_or(crate::agents::SessionStatus::Idle)
+}
+
+/// Make sure a session's pane is attached to this process, reattaching it the way
+/// opening its tab would. Workflows drive sessions nobody has open — including ones
+/// from before a restart, alive in rmux but unknown to this process.
+pub(crate) async fn ensure_attached(state: &Arc<AppState>, terminal_id: &str) -> Result<(), String> {
+    if state.sessions.lock().contains_key(terminal_id) {
+        return Ok(());
+    }
+    let (project_id, kind) = {
+        let store = state.store.lock();
+        let project = store
+            .projects
+            .iter()
+            .find(|p| p.terminals.iter().any(|t| t.id == terminal_id))
+            .ok_or_else(|| "no such session".to_string())?;
+        let kind = store
+            .terminal(terminal_id)
+            .map(|t| t.kind.clone())
+            .unwrap_or_default();
+        (project.id.clone(), kind)
+    };
+    open_terminal(
+        Arc::clone(state),
+        OpenTerminalSpec {
+            project_id,
+            terminal_id: Some(terminal_id.to_string()),
+            kind,
+            agent: None,
+            cols: 120,
+            rows: 40,
+            claude_resume: None,
+            claude_fork: None,
+            parent_terminal_id: None,
+            permission_mode: None,
+            title: None,
+            workflow: None,
+            prompt_mode: hooks::PromptMode::Decline,
+        },
+    )
+    .await
+    .map(|_| ())
+}
+
+/// Wait until an agent's TUI is up and settled enough to take a prompt: its
+/// definition's `detect.ready` text is on screen and output has gone quiet.
+///
+/// Fails if the session stops to ask something first — a folder-trust gate, say —
+/// because a prompt pasted into that menu would be taken as the answer.
+pub(crate) async fn wait_agent_ready(
+    state: &Arc<AppState>,
+    terminal_id: &str,
+    timeout: Duration,
+) -> Result<(), String> {
+    use crate::agents::SessionStatus as S;
+    let (pane, activity, agent_id) = {
+        let sessions = state.sessions.lock();
+        let s = sessions
+            .get(terminal_id)
+            .ok_or_else(|| "no such terminal".to_string())?;
+        let id = s
+            .agent_id()
+            .ok_or_else(|| "not an agent session".to_string())?
+            .to_string();
+        (s.pane.clone(), Arc::clone(&s.activity), id)
+    };
+    let markers = state
+        .agents
+        .lock()
+        .get(&agent_id)
+        .map(|d| d.detect.ready.clone())
+        .unwrap_or_default();
+    let deadline = tokio::time::Instant::now() + timeout;
+    // Several consecutive settled observations, which also gives the status watcher
+    // time to publish a blocked state for a menu that shares the ready text.
+    let mut streak = 0u8;
+    loop {
+        let text = pane
+            .snapshot()
+            .await
+            .map(|s| s.visible_text())
+            .unwrap_or_default();
+        if matches!(
+            agent_status_of(state, terminal_id),
+            S::BlockedPermission | S::BlockedQuestion
+        ) {
+            return Err(format!(
+                "the session is waiting on a question before it can take a prompt:\n{}",
+                text.trim_end()
+            ));
+        }
+        let marked = if markers.is_empty() {
+            !text.trim().is_empty()
+        } else {
+            markers.iter().any(|m| text.contains(m.as_str()))
+        };
+        streak = if marked && activity.quiet_ms() >= 600 {
+            streak + 1
+        } else {
+            0
+        };
+        if streak >= 3 {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err("timed out waiting for the agent to start".to_string());
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
 /// Fire the `session-turn` hooks for a finished turn (commit + checkpoint).
 ///
 /// Backend-driven, unlike the old frontend-triggered path: a session with no open
@@ -1429,12 +1621,13 @@ pub(crate) fn fire_turn_hooks(state: &AppState, terminal_id: &str, turn_uuid: &s
     let Some(mut ctx) = hook_ctx_by_id(state, terminal_id) else {
         return;
     };
-    // Only sessions with their own worktree branch get per-turn commit/checkpoint.
-    if ctx.branch.is_none() {
-        return;
-    }
     ctx.turn_uuid = Some(turn_uuid.to_string());
-    fire_hooks(state, &ctx, "session-turn", false);
+    // Only sessions with their own worktree branch get per-turn commit/checkpoint.
+    if ctx.branch.is_some() {
+        let mode = crate::workflows::prompt_mode_for(state, terminal_id);
+        fire_hooks(state, &ctx, "session-turn", &mode);
+    }
+    emit_hooks_fired(state, "session-turn", &ctx);
 }
 
 
@@ -1519,8 +1712,9 @@ pub async fn hooks_prompt_answer(
 ///
 /// A hook may raise a blocking multiple-choice prompt (a `SPWN_PROMPT` stdout line):
 /// spwn shows a picker and waits (up to [`HOOK_PROMPT_TIMEOUT`]) for the user's answer,
-/// which is written back to the script's stdin. When `headless` (no UI window, e.g. a
-/// scheduled run) prompts auto-decline immediately so the run can't deadlock.
+/// which is written back to the script's stdin. `mode` says who answers: the UI, a
+/// workflow that owns the session, or nobody (a scheduled run — prompts auto-decline
+/// immediately so the run can't deadlock).
 /// Run a set of already-discovered `(scope, script)` entries for an event, streaming
 /// output to the panel and recording each run. Returns the union of values the scripts
 /// reported via `::spwn:set::` (repo overrides global on key collision, since entries
@@ -1530,7 +1724,7 @@ fn run_hook_entries(
     ctx: &hooks::HookCtx,
     event: &str,
     entries: Vec<(hooks::Scope, PathBuf)>,
-    headless: bool,
+    mode: &hooks::PromptMode,
 ) -> std::collections::BTreeMap<String, String> {
     let mut reported = std::collections::BTreeMap::new();
     if entries.is_empty() {
@@ -1541,9 +1735,11 @@ fn run_hook_entries(
     let runs = {
         let mut on_line = |line: &str| emit_hook_output(state, &terminal_id, event, line);
         let mut on_prompt = |req: hooks::HookPromptRequest| -> String {
-            // No window to answer → decline at once (don't emit/leak a pending prompt).
-            if headless {
-                return hooks::PROMPT_DECLINED.to_string();
+            match mode {
+                // No window to answer → decline at once (don't emit/leak a pending prompt).
+                hooks::PromptMode::Decline => return hooks::PROMPT_DECLINED.to_string(),
+                hooks::PromptMode::Workflow(ask) => return ask(event, &terminal_id, req),
+                hooks::PromptMode::Ui => {}
             }
             let id = Uuid::new_v4().to_string();
             let (tx, rx) = std::sync::mpsc::channel::<String>();
@@ -1574,11 +1770,11 @@ fn fire_hooks(
     state: &AppState,
     ctx: &hooks::HookCtx,
     event: &str,
-    headless: bool,
+    mode: &hooks::PromptMode,
 ) -> std::collections::BTreeMap<String, String> {
     let entries =
         hooks::discover_all(enabled_global_hooks_dir(state).as_deref(), &ctx.worktree, event);
-    run_hook_entries(state, ctx, event, entries, headless)
+    run_hook_entries(state, ctx, event, entries, mode)
 }
 
 /// Fire only ONE scope's hook for an event. Used where scope ordering matters relative
@@ -1590,7 +1786,7 @@ fn fire_hooks_scope(
     ctx: &hooks::HookCtx,
     event: &str,
     scope: hooks::Scope,
-    headless: bool,
+    mode: &hooks::PromptMode,
 ) -> std::collections::BTreeMap<String, String> {
     let entries = hooks::discover_scope(
         enabled_global_hooks_dir(state).as_deref(),
@@ -1601,7 +1797,7 @@ fn fire_hooks_scope(
     .into_iter()
     .map(|p| (scope, p))
     .collect();
-    run_hook_entries(state, ctx, event, entries, headless)
+    run_hook_entries(state, ctx, event, entries, mode)
 }
 
 /// Create a fresh Claude session's worktree via the `session-created` hooks (with a
@@ -1621,7 +1817,7 @@ pub(crate) fn setup_session_worktree(
     project_dir: &str,
     repo: &Path,
     base: String,
-    headless: bool,
+    mode: &hooks::PromptMode,
 ) -> Option<String> {
     let wt_path = session_worktree_path(state, repo, terminal_id)?;
     let short = terminal_id.split('-').next().unwrap_or(terminal_id);
@@ -1638,13 +1834,14 @@ pub(crate) fn setup_session_worktree(
         session_id: None,
         turn_uuid: None,
         exec: None,
+        extra_env: Vec::new(),
     };
 
     // Worktree creation lives ENTIRELY in the hook: the global `session-created` script
     // (runs in the project dir) creates the worktree and reports it back. If no hook
     // creates one — the script was deleted, global hooks are disabled, or it failed —
     // the session simply runs in the project dir with no isolated worktree/branch.
-    let reported = fire_hooks_scope(state, &ctx, "session-created", hooks::Scope::Global, headless);
+    let reported = fire_hooks_scope(state, &ctx, "session-created", hooks::Scope::Global, mode);
 
     // Resolve the worktree from what the hook reported (or the intended path if a custom
     // hook created it there without reporting). None → no worktree; stay in project dir.
@@ -1679,10 +1876,11 @@ pub(crate) fn setup_session_worktree(
     //    an environment hook belongs — it can only bind-mount a worktree that exists —
     //    so its report is captured too rather than discarded.
     let ctx2 = hook_ctx(state, terminal_id, project_dir, &wt);
-    let reported_repo = fire_hooks_scope(state, &ctx2, "session-created", hooks::Scope::Repo, headless);
+    let reported_repo = fire_hooks_scope(state, &ctx2, "session-created", hooks::Scope::Repo, mode);
     if apply_reported_exec(state, terminal_id, &reported_repo) {
         persist(state);
     }
+    emit_hooks_fired(state, "session-created", &ctx2);
 
     Some(cwd)
 }
@@ -1771,7 +1969,7 @@ pub async fn hooks_run(
 ) -> Result<(), String> {
     let ctx = hook_ctx_by_id(&state, &terminal_id)
         .ok_or_else(|| "this session has no worktree".to_string())?;
-    let reported = fire_hooks(&state, &ctx, &event, false);
+    let reported = fire_hooks(&state, &ctx, &event, &hooks::PromptMode::Ui);
     // Re-running `session-created` by hand is the documented way to rebuild a session's
     // environment after its container has been removed, so the fresh prefix has to
     // land on the record. Discarding it happened to work only while the prefix was
@@ -1800,7 +1998,7 @@ pub async fn hooks_run_turn(
         return Ok(());
     }
     ctx.turn_uuid = Some(turn_uuid);
-    fire_hooks(&state, &ctx, "session-turn", false);
+    fire_hooks(&state, &ctx, "session-turn", &hooks::PromptMode::Ui);
     Ok(())
 }
 

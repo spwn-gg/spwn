@@ -3,6 +3,7 @@
 	import AgentPane from './AgentPane.svelte';
 	import ContextComposer from './ContextComposer.svelte';
 	import ScheduledTasks from './ScheduledTasks.svelte';
+	import Workflows from './Workflows.svelte';
 	import { openTabs, activeTabKey, closeTab, hookRunning, agentStatus } from './stores';
 	import type { OpenTab } from './stores';
 	import { GLYPHS } from './labels';
@@ -15,7 +16,9 @@
 				? GLYPHS.mergeTray
 				: kind === 'schedule'
 					? GLYPHS.schedule
-					: GLYPHS.shell;
+					: kind === 'workflow'
+						? GLYPHS.workflow
+						: GLYPHS.shell;
 	}
 
 	function close(key: string, e: Event) {
@@ -52,7 +55,7 @@
 					{#if tab.terminalId && $hookRunning.has(tab.terminalId)}<span class="hook-spin" title="Running {$hookRunning.get(tab.terminalId)} hook…"></span>{/if}
 					<span class="tab-icon">{tabIcon(tab.kind)}</span>
 					<span class="tab-title">{tab.title}</span>
-					{#if tab.projectName && tab.kind !== 'context' && tab.kind !== 'schedule'}
+					{#if tab.projectName && tab.kind !== 'context' && tab.kind !== 'schedule' && tab.kind !== 'workflow'}
 						<span class="tab-proj">· {tab.projectName}</span>
 					{/if}
 				</button>
@@ -71,6 +74,8 @@
 					<ContextComposer projectId={tab.projectId} />
 				{:else if tab.kind === 'schedule'}
 					<ScheduledTasks projectId={tab.projectId} />
+				{:else if tab.kind === 'workflow'}
+					<Workflows projectId={tab.projectId} />
 				{:else if tab.kind === 'agent'}
 					<AgentPane
 						tabKey={tab.key}

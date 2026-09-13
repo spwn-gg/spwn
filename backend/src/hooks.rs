@@ -72,6 +72,28 @@ pub const EVENTS: &[&str] = &[
     "session-deleted",
 ];
 
+/// Events fired around a workflow run rather than a session. Kept apart from
+/// [`EVENTS`], which is the per-session list the Hooks panel shows. Both scopes run, in
+/// the project dir, with `SPWN_WORKFLOW`, `SPWN_WORKFLOW_RUN_ID` and (on stop)
+/// `SPWN_WORKFLOW_STATUS` set; they never prompt.
+pub const WORKFLOW_EVENTS: &[&str] = &["workflow-started", "workflow-stopped"];
+
+/// Answers a hook's `spwn prompt` on a workflow's behalf: `(event, terminal id,
+/// request)` → the chosen label(s), or [`PROMPT_DECLINED`].
+pub type Prompter = Arc<dyn Fn(&str, &str, HookPromptRequest) -> String + Send + Sync>;
+
+/// Who answers a hook's `spwn prompt` question.
+#[derive(Clone, Default)]
+pub enum PromptMode {
+    /// A person, through a picker in the UI (auto-declines after a timeout).
+    #[default]
+    Ui,
+    /// Nobody — decline at once, so a run with no one watching can't deadlock.
+    Decline,
+    /// The workflow that owns the session.
+    Workflow(Prompter),
+}
+
 /// Prefix of a callback line a hook prints to report a value back to spwn:
 /// `::spwn:set:: key=value` (one key per line). Parsed out of the stream, so these
 /// lines never appear in the captured/streamed output.
@@ -134,6 +156,8 @@ pub struct HookCtx {
     /// (`::spwn:set:: exec=…`). Surfaced as `SPWN_EXEC` so a later hook can run
     /// commands *inside* that environment, or tear it down on delete.
     pub exec: Option<String>,
+    /// Extra variables for events that carry more than a session (the workflow events).
+    pub extra_env: Vec<(String, String)>,
 }
 
 /// The result of running an event's hook script.
@@ -561,7 +585,6 @@ fn run_one(
     };
     cmd.current_dir(run_dir)
         .env("SPWN_EVENT", event)
-        .env("SPWN_TERMINAL_ID", &ctx.terminal_id)
         .env("SPWN_PROJECT_DIR", &ctx.project_dir)
         .env("SPWN_WORKTREE", ctx.worktree.to_string_lossy().as_ref())
         // No stdin: a hook prompts via the `spwn prompt` helper (a socket), never by
@@ -569,6 +592,13 @@ fn run_one(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // Workflow events have no session, so no terminal id to report.
+    if !ctx.terminal_id.is_empty() {
+        cmd.env("SPWN_TERMINAL_ID", &ctx.terminal_id);
+    }
+    for (k, v) in &ctx.extra_env {
+        cmd.env(k, v);
+    }
     if let Some(b) = &ctx.branch {
         cmd.env("SPWN_BRANCH", b);
     }
@@ -924,7 +954,36 @@ mod tests {
             session_id: None,
             turn_uuid: None,
             exec: None,
+            extra_env: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_workflow_event_gets_its_extra_env_and_no_terminal_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let wt = dir.path();
+        write(
+            &hook_file(wt, "workflow-stopped"),
+            "echo \"wf=$SPWN_WORKFLOW status=$SPWN_WORKFLOW_STATUS tid=${SPWN_TERMINAL_ID-unset}\"\n",
+            false,
+        );
+        let mut c = ctx(wt);
+        c.terminal_id = String::new();
+        c.branch = None;
+        c.extra_env = vec![
+            ("SPWN_WORKFLOW".into(), "board".into()),
+            ("SPWN_WORKFLOW_STATUS".into(), "stopped".into()),
+        ];
+        let runs = run_event_sync(
+            &c,
+            "workflow-stopped",
+            None,
+            &mut |_| {},
+            &mut |_| PROMPT_DECLINED.to_string(),
+        );
+        assert_eq!(runs.len(), 1);
+        assert!(runs[0].ok, "{}", runs[0].output);
+        assert_eq!(runs[0].output, "wf=board status=stopped tid=unset");
     }
 
     #[test]

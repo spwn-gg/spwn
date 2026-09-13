@@ -52,10 +52,16 @@ pub fn pane_env() -> Vec<String> {
 
 /// Whether a token is saved.
 pub fn has_token() -> bool {
+    token().is_some()
+}
+
+/// The saved token, for spwn's own GitHub API calls (workflows' `spwn.github`).
+pub fn token() -> Option<String> {
     TOKEN_PATH
         .get()
         .and_then(|p| std::fs::read_to_string(p).ok())
-        .is_some_and(|s| !s.trim().is_empty())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// Save `token`, or remove the saved one when it's blank.

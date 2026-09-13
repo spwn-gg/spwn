@@ -20,6 +20,10 @@ use std::sync::Arc;
 #[derive(Default)]
 pub struct TurnTracker {
     last_fired: HashMap<String, String>,
+    /// The last turn per terminal whose `session-turn` hooks have FINISHED. A workflow
+    /// waiting on a turn waits for this rather than `last_fired`, so the turn's commit
+    /// has landed by the time the workflow acts on it.
+    completed: HashMap<String, String>,
 }
 
 impl TurnTracker {
@@ -38,6 +42,17 @@ impl TurnTracker {
 
     pub fn forget(&mut self, terminal_id: &str) {
         self.last_fired.remove(terminal_id);
+        self.completed.remove(terminal_id);
+    }
+
+    fn mark_completed(&mut self, terminal_id: &str, turn_uuid: &str) {
+        self.completed
+            .insert(terminal_id.to_string(), turn_uuid.to_string());
+    }
+
+    /// The last turn whose `session-turn` hooks have finished running.
+    pub fn completed(&self, terminal_id: &str) -> Option<&str> {
+        self.completed.get(terminal_id).map(String::as_str)
     }
 
     /// Seed the tracker without firing.
@@ -127,6 +142,7 @@ fn check(state: &Arc<AppState>, terminal_id: &str, session_id: &str) {
     let sid = session_id.to_string();
     std::thread::spawn(move || {
         crate::commands::fire_turn_hooks(&state, &tid, &uuid);
+        state.turns.lock().mark_completed(&tid, &uuid);
         state.hub.emit(
             "agent://turn",
             serde_json::json!({

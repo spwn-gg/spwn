@@ -192,6 +192,16 @@
 		});
 	}
 
+	function openWorkflows(p: ProjectRec, e: Event) {
+		e.stopPropagation();
+		openTab({
+			projectId: p.id,
+			kind: 'workflow',
+			title: `Workflows · ${p.name}`,
+			projectName: p.name
+		});
+	}
+
 	function openExisting(p: ProjectRec, t: TerminalRec) {
 		// Viewing a session clears its attention. Drop the live "needs you" status now
 		// so the dot clears immediately rather than waiting for the pane's next
@@ -366,6 +376,8 @@
 		$activeTab?.kind === 'context' && $activeTab?.projectId === p.id;
 	const isActiveSchedule = (p: ProjectRec) =>
 		$activeTab?.kind === 'schedule' && $activeTab?.projectId === p.id;
+	const isActiveWorkflows = (p: ProjectRec) =>
+		$activeTab?.kind === 'workflow' && $activeTab?.projectId === p.id;
 </script>
 
 {#snippet termRow(p: ProjectRec, t: TerminalRec, nested: boolean)}
@@ -392,6 +404,7 @@
 			<span class="t-icon" class:branch={depth > 0}>{depth > 0 ? '↳' : '✦'}</span>
 			<span class="t-title" class:attn={status === 'blocked' || status === 'done'} class:err={status === 'error'}>{t.title}</span>
 			{#if $hookRunning.has(t.id)}<span class="hook-spin" title="Running {$hookRunning.get(t.id)} hook…"></span>{/if}
+			{#if t.workflow}<span class="wf-chip" title="Created by the {t.workflow.name} workflow{t.workflow.key ? ` (${t.workflow.key})` : ''}">⚙</span>{/if}
 			{#if t.branch}<span class="wt-chip" title="git branch (this session's worktree): {t.branch}">⎇ {t.branch.replace(/^cm\//, '')}</span>{/if}
 			{#if status === 'thinking'}<span class="think-spin" title="Working…"></span>
 			{:else if status === 'blocked'}<span class="attn-dot blocked" title="Waiting for you"></span>
@@ -450,6 +463,12 @@
 							<span class="t-icon ctx">◷</span>
 							<span class="t-title">Scheduled Tasks</span>
 							{#if p.scheduledTasks?.length}<span class="count">{p.scheduledTasks.length}</span>{/if}
+						</button>
+					</div>
+					<div class="row ctx-row" class:active={isActiveWorkflows(p)}>
+						<button class="row-main" onclick={(e) => openWorkflows(p, e)} title="Scripts in .spwn/workflows that orchestrate sessions">
+							<span class="t-icon ctx">⚙</span>
+							<span class="t-title">Workflows</span>
 						</button>
 					</div>
 					{#if repoIsGit[p.id]}
@@ -782,6 +801,12 @@
 	.count {
 		color: #777;
 		font-size: 11px;
+	}
+	.wf-chip {
+		flex: 0 0 auto;
+		font-size: 11px;
+		color: var(--accent-text);
+		opacity: 0.8;
 	}
 	.wt-chip {
 		flex: 0 0 auto;

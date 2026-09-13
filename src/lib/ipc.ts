@@ -20,7 +20,10 @@ import type {
 	SessionStatus,
 	Settings,
 	TerminalKind,
-	Turn
+	Turn,
+	WorkflowListing,
+	WorkflowLogLine,
+	WorkflowRun
 } from './types';
 
 // ---------------------------------------------------------------------------
@@ -627,6 +630,53 @@ export interface ScheduleFired {
 }
 export function onScheduledTaskFired(cb: (e: ScheduleFired) => void): Promise<UnlistenFn> {
 	return listen<ScheduleFired>('schedule://fired', (e) => cb(e.payload));
+}
+
+// --- Workflows (.spwn/workflows scripts that orchestrate sessions) ---
+
+/** The project's workflows, with their meta, autostart flag and latest run. */
+export function listWorkflows(projectId: string): Promise<WorkflowListing> {
+	return invoke('list_workflows', { projectId });
+}
+
+/** Allow (or stop) this project's workflows. Disabling stops any that are running. */
+export function setWorkflowsEnabled(projectId: string, enabled: boolean): Promise<void> {
+	return invoke('set_workflows_enabled', { projectId, enabled });
+}
+
+/** Start a workflow when spwn starts (and, if enabled, start it now). */
+export function setWorkflowAutostart(projectId: string, name: string, autostart: boolean): Promise<void> {
+	return invoke('set_workflow_autostart', { projectId, name, autostart });
+}
+
+export function runWorkflow(
+	projectId: string,
+	name: string,
+	inputs: Record<string, unknown> = {}
+): Promise<WorkflowRun> {
+	return invoke('run_workflow', { projectId, name, inputs });
+}
+
+export function stopWorkflow(runId: string): Promise<void> {
+	return invoke('stop_workflow', { runId });
+}
+
+export function workflowRuns(projectId: string): Promise<WorkflowRun[]> {
+	return invoke('workflow_runs', { projectId });
+}
+
+export function workflowLog(runId: string): Promise<WorkflowLogLine[]> {
+	return invoke('workflow_log', { runId });
+}
+
+/** Fires whenever any workflow run starts, changes status, or claims a session. */
+export function onWorkflowRun(cb: (run: WorkflowRun) => void): Promise<UnlistenFn> {
+	return listen<WorkflowRun>('workflow://runs', (e) => cb(e.payload));
+}
+
+/** Streams one run's log lines as they're written. */
+export function onWorkflowLog(runId: string, cb: (line: WorkflowLogLine) => void): Promise<UnlistenFn> {
+	return listen<WorkflowLogLine>(`workflow://log/${runId}`, (e) => cb(e.payload));
 }
 
 function base64ToBytes(b64: string): Uint8Array {

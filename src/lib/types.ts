@@ -27,6 +27,8 @@ export interface TerminalRec {
 	attentionReason?: string | null;
 	/** The environment this session's panes run in, if a hook stood one up. */
 	exec?: ExecSpec | null;
+	/** The workflow that created this session, if one did. */
+	workflow?: WorkflowTag | null;
 }
 
 /**
@@ -176,6 +178,82 @@ export interface ProjectRec {
 	terminals: TerminalRec[];
 	context: ContextBlock[];
 	scheduledTasks: ScheduledTask[];
+	/** Whether this project's workflows may run, and which start with spwn. */
+	workflows?: WorkflowSettings;
+}
+
+/** Which workflow owns a session, and the key it filed it under (mirrors store::WorkflowTag). */
+export interface WorkflowTag {
+	name: string;
+	key?: string | null;
+}
+
+/** A project's workflow trust + autostart (mirrors store::WorkflowSettings). */
+export interface WorkflowSettings {
+	enabled: boolean;
+	autostart: string[];
+}
+
+/** One entry of a workflow's `meta.inputs`. */
+export interface WorkflowInput {
+	type?: 'string' | 'number' | 'boolean';
+	default?: unknown;
+	description?: string;
+	required?: boolean;
+}
+
+/** A workflow's `export const meta` (mirrors workflows::Meta). */
+export interface WorkflowMeta {
+	name?: string | null;
+	description?: string | null;
+	inputs: Record<string, WorkflowInput>;
+	keepAlive: boolean;
+}
+
+export type WorkflowRunStatus = 'running' | 'stopping' | 'restarting' | 'finished' | 'failed' | 'stopped';
+
+/** A run of a workflow, across keep-alive restarts (mirrors workflows::RunInfo). */
+export interface WorkflowRun {
+	id: string;
+	projectId: string;
+	workflow: string;
+	status: WorkflowRunStatus;
+	/** 'manual' | 'autostart'. */
+	trigger: string;
+	inputs: Record<string, unknown> | null;
+	/** Epoch ms. */
+	startedAt: number;
+	endedAt?: number | null;
+	error?: string | null;
+	restarts: number;
+	/** Sessions the run created or claimed. */
+	sessions: string[];
+}
+
+/** One discovered workflow (mirrors workflows::WorkflowInfo). */
+export interface WorkflowInfo {
+	/** File stem — how runs and autostart refer to it. */
+	name: string;
+	/** Path relative to the project dir. */
+	file: string;
+	meta?: WorkflowMeta | null;
+	/** Why the file couldn't be loaded. */
+	error?: string | null;
+	autostart: boolean;
+	run?: WorkflowRun | null;
+}
+
+export interface WorkflowListing {
+	enabled: boolean;
+	dir: string;
+	workflows: WorkflowInfo[];
+}
+
+export interface WorkflowLogLine {
+	/** Epoch ms. */
+	at: number;
+	level: 'debug' | 'info' | 'warn' | 'error' | 'hook';
+	msg: string;
 }
 
 export type WorktreeLocation = 'sibling' | 'internal' | 'appData';

@@ -64,4 +64,6 @@ pub struct AppState {
     pub agent_status: Mutex<HashMap<String, crate::agents::SessionStatus>>,
     /// Which turn each session last fired `session-turn` hooks for.
     pub turns: Mutex<crate::agents::turns::TurnTracker>,
+    /// Running project workflows (`.spwn/workflows`) and what they own.
+    pub workflows: crate::workflows::Manager,
 }

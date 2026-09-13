@@ -18,7 +18,9 @@ export const TERMS = {
 	/** A git branch — always shown as a property of a session, never an action. */
 	branch: 'branch',
 	/** Renamed from "Context" to avoid collision with the model's context window. */
-	mergeTray: 'Merge tray'
+	mergeTray: 'Merge tray',
+	/** A script in the project's `.spwn/workflows` that orchestrates sessions. */
+	workflow: 'Workflow'
 } as const;
 
 /** Icons/glyphs, kept 1:1 with concepts. */
@@ -31,7 +33,8 @@ export const GLYPHS = {
 	/** The git branch property chip. */
 	branch: '⎇',
 	mergeTray: '▦',
-	schedule: '◷'
+	schedule: '◷',
+	workflow: '⚙'
 } as const;
 
 /** Common action labels, so buttons/menus/tooltips read identically across views. */
