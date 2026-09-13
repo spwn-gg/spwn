@@ -356,7 +356,7 @@ export default async function main(spwn, inputs) {
 			</div>
 			{#if shownRun.sessions.length}
 				<div class="sessions">
-					Sessions:
+					<span>Sessions:</span>
 					{#each shownRun.sessions as sid (sid)}
 						<button class="link" onclick={() => openSession(sid)}>✦ {sessionTitle(sid)}</button>
 					{/each}
@@ -608,6 +608,22 @@ export default async function main(spwn, inputs) {
 		padding: 6px 14px;
 		font-size: 12px;
 		color: var(--text-dim);
+	}
+	.sessions {
+		flex-direction: column;
+		flex-wrap: nowrap;
+		align-items: flex-start;
+		gap: 2px;
+		flex-shrink: 0;
+		max-height: 30%;
+		overflow-y: auto;
+	}
+	.sessions .link {
+		max-width: 100%;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		text-align: left;
 	}
 	.log-panel .werr {
 		margin: 0 14px 6px;
