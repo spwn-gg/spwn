@@ -499,6 +499,56 @@ fn a_hook_prompt_is_answered_by_the_workflow_that_owns_the_session() {
 }
 
 #[test]
+fn a_prompt_awaiting_its_reply_is_found_again_by_the_next_run() {
+    let e = env();
+    let session = |id: &str, key: &str, awaiting: Option<crate::store::AwaitingTurn>| TerminalRec {
+        id: id.into(),
+        title: "s".into(),
+        kind: "agent".into(),
+        agent: Some("claude".into()),
+        cwd: e.dir.to_string_lossy().into_owned(),
+        session_id: None,
+        group_id: None,
+        parent_id: None,
+        branch: None,
+        base_branch: None,
+        needs_attention: false,
+        attention_reason: None,
+        exec: None,
+        workflow: Some(crate::store::WorkflowTag {
+            name: "resumes".into(),
+            key: Some(key.into()),
+            awaiting,
+        }),
+    };
+    let waiting = session("t1", "A", Some(crate::store::AwaitingTurn { since: Some("u1".into()) }));
+    // Saved and loaded again, as across a spwn restart.
+    let saved: TerminalRec = serde_json::from_str(&serde_json::to_string(&waiting).unwrap()).unwrap();
+    assert_eq!(saved.workflow, waiting.workflow);
+    {
+        let mut store = e.state.store.lock();
+        store.projects[0].terminals.push(saved);
+        store.projects[0].terminals.push(session("t2", "B", None));
+    }
+    e.write(
+        "resumes.js",
+        r#"export default async (spwn) => {
+             const a = await spwn.sessions.find("A");
+             const b = await spwn.sessions.find("B");
+             console.log(`A ${a.awaitingTurn} B ${b.awaitingTurn}`);
+           }"#,
+    );
+    let run = e.start("resumes", Value::Null);
+    e.wait(&run.id);
+    assert!(e.logs(&run.id).contains(&"A true B false".to_string()), "{:?}", e.logs(&run.id));
+
+    // Collecting the reply clears it.
+    super::host::set_awaiting(&e.state, "t1", None);
+    let tag = e.state.store.lock().terminal("t1").unwrap().workflow.clone().unwrap();
+    assert_eq!(tag.awaiting, None);
+}
+
+#[test]
 fn spwn_on_hears_its_projects_session_events() {
     let e = env();
     e.write(

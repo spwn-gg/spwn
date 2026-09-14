@@ -160,10 +160,16 @@
     }
     async send(text, { submit = true } = {}) {
       marks.set(this, await call("session.send", { id: this.id, text: String(text), submit }));
+      if (submit && this.workflow) this.awaitingTurn = true;
     }
     async waitForTurn({ timeoutMs } = {}) {
+      // No mark of our own (a session found after a restart): spwn waits for the reply
+      // to the prompt it has on record, if any.
       const r = await call("session.waitForTurn", { id: this.id, since: marks.get(this) ?? null, timeoutMs });
-      if (r.turnUuid) marks.set(this, r.turnUuid);
+      if (r.turnUuid) {
+        marks.set(this, r.turnUuid);
+        this.awaitingTurn = false;
+      }
       return r;
     }
     async prompt(text, opts = {}) {

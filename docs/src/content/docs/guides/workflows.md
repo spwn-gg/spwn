@@ -85,6 +85,16 @@ if (turn.blocked) {
 - **`key`** files the session under your own id. `spwn.sessions.find(key)` gets it back —
   across runs, restarts, and spwn restarts — so a workflow can keep **one session per
   ticket** instead of starting a new one each time.
+- **Stopping mid-turn is safe.** If a run stops while a prompt is out, the session found
+  in the next run has `awaitingTurn: true`; call `waitForTurn()` to collect the reply
+  instead of sending the prompt again:
+
+  ```js
+  let session = await spwn.sessions.find(ticket.id);
+  if (!session) session = await spwn.sessions.create({ key: ticket.id, prompt });
+  else if (!session.awaitingTurn) await session.send(prompt);
+  const turn = await session.waitForTurn();
+  ```
 - You can watch or take over any workflow session: it's an ordinary session in the
   sidebar, marked ⚙.
 

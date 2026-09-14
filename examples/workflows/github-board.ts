@@ -205,7 +205,10 @@ async function work(spwn: Spwn, board: Board, ticket: Ticket, column: Column) {
   const prompt = `${persona.preamble}\n\n${column.prompt(ticket)}`;
 
   let session: Session | null = await spwn.sessions.find(ticket.itemId);
-  if (session) {
+  if (session?.awaitingTurn) {
+    // A run stopped while this prompt was out: collect its reply rather than send it twice.
+    spwn.log(`"${ticket.title}" is in ${ticket.column}: resuming ${persona.name}'s turn`);
+  } else if (session) {
     spwn.log(`"${ticket.title}" is in ${ticket.column}: prompting its session as ${persona.name}`);
     await session.send(prompt);
   } else {

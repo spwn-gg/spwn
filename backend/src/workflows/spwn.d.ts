@@ -148,6 +148,12 @@ export interface Session {
   readonly cwd: string;
   /** The agent's own conversation id. */
   readonly sessionId: string | null;
+  /**
+   * A prompt was submitted and `waitForTurn` hasn't returned its reply yet — kept across
+   * runs, so after a stop or restart call `waitForTurn()` instead of sending it again.
+   * Always false for sessions no workflow created.
+   */
+  readonly awaitingTurn: boolean;
 
   status(): Promise<SessionStatus>;
   /** Type `text` into the agent and submit it (unless `submit: false`). */
