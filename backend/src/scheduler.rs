@@ -192,7 +192,7 @@ pub fn fire(state: &Arc<AppState>, project_id: &str, task_id: &str) {
         };
         let res = crate::agents::headless::run(
             state_spawn.clone(),
-            rmux,
+            &rmux,
             &def,
             terminal_cb.clone(),
             session_id,

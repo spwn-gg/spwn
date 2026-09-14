@@ -1018,7 +1018,7 @@ async fn agents_run(rc: &Arc<RunCtx>, a: AgentRunArgs) -> OpResult {
         commands::bind_session(&state, &tid, &session_id);
         state.hub.emit("projects://changed", Vec::<String>::new());
         let rmux = commands::connect(&state).await?;
-        crate::agents::headless::run(state.clone(), rmux, &def, tid, session_id, &cwd, prompt, move |o| {
+        crate::agents::headless::run(state.clone(), &rmux, &def, tid, session_id, &cwd, prompt, move |o| {
             let _ = done_tx.send(o);
         })
         .await

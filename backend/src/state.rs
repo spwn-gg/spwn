@@ -11,16 +11,17 @@ use parking_lot::Mutex;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use std::time::SystemTime;
-use tokio::sync::OnceCell;
 
 /// Live in-memory state plus the persisted spwn project store.
 #[derive(Default)]
 pub struct AppState {
     /// Event bus to connected browsers (WebSocket fan-out of backend events).
     pub hub: EventHub,
-    /// Lazily-connected rmux daemon handle.
-    pub rmux: OnceCell<Rmux>,
+    /// Lazily-connected rmux daemon handle. Replaceable, not a `OnceCell`: if the
+    /// daemon goes away, `commands::connect` drops the dead handle and starts over.
+    pub rmux: tokio::sync::Mutex<Option<Arc<Rmux>>>,
     /// Live rmux panes, keyed by terminal id — shells AND agent TUIs. One map, so
     /// write/resize/close/kill have a single code path regardless of what's running
     /// inside.
