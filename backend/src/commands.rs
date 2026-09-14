@@ -13,7 +13,10 @@ use crate::settings::{Settings, WorktreeLocation};
 use crate::state::AppState;
 use crate::store::{rmux_session_name, ContextBlock, ProjectRec, ScheduledTask, TerminalRec};
 use crate::transcript::{read_transcript as parse_transcript, Turn};
-use rmux_sdk::{EnsureSession, EnsureSessionPolicy, Rmux, RmuxBuilder, SessionName, TerminalSizeSpec};
+use rmux_sdk::{
+    EnsureSession, EnsureSessionPolicy, ProcessSpec, Rmux, RmuxBuilder, RmuxError, SessionName,
+    TerminalSizeSpec,
+};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -616,7 +619,7 @@ pub async fn open_terminal(
     let rmux = connect(&state).await?;
     let session_name = rmux_session_name(&terminal_id);
     let session = spawn_pane(
-        rmux,
+        &rmux,
         state.hub.clone(),
         crate::pty::SpawnSpec {
             id: &terminal_id,
@@ -2479,17 +2482,55 @@ pub fn read_transcript(session_id: String) -> Vec<Turn> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-pub(crate) async fn connect(state: &AppState) -> Result<&Rmux, String> {
-    state
-        .rmux
-        .get_or_try_init(|| async {
-            RmuxBuilder::new()
-                .default_timeout(Duration::from_secs(20))
-                .connect_or_start()
-                .await
-        })
+/// rmux session that holds nothing but a sleeping process. The daemon exits once its
+/// last session is gone (tmux's `exit-empty`), so without this, deleting the last
+/// pane would take the daemon down with it.
+const KEEPALIVE_SESSION: &str = "spwn-keepalive";
+
+/// Connect to the rmux daemon, starting one if needed.
+///
+/// Every call re-ensures the keepalive session, which doubles as a liveness check:
+/// if the daemon went away anyway (killed, crashed), the cached handle's transport
+/// is dead, so drop it and connect (or start) afresh rather than failing forever.
+pub(crate) async fn connect(state: &AppState) -> Result<Arc<Rmux>, String> {
+    let mut slot = state.rmux.lock().await;
+    if let Some(rmux) = slot.as_ref() {
+        match ensure_keepalive(rmux).await {
+            Ok(()) => return Ok(Arc::clone(rmux)),
+            Err(e @ RmuxError::Transport { .. }) => {
+                eprintln!("rmux daemon connection lost, reconnecting: {e}");
+                *slot = None;
+            }
+            Err(e) => {
+                eprintln!("rmux keepalive session: {e}");
+                return Ok(Arc::clone(rmux));
+            }
+        }
+    }
+    let rmux = RmuxBuilder::new()
+        .default_timeout(Duration::from_secs(20))
+        .connect_or_start()
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    if let Err(e) = ensure_keepalive(&rmux).await {
+        eprintln!("rmux keepalive session: {e}");
+    }
+    let rmux = Arc::new(rmux);
+    *slot = Some(Arc::clone(&rmux));
+    Ok(rmux)
+}
+
+async fn ensure_keepalive(rmux: &Rmux) -> Result<(), RmuxError> {
+    let name = SessionName::new(KEEPALIVE_SESSION).expect("valid session name");
+    rmux.ensure_session(
+        EnsureSession::named(name)
+            .policy(EnsureSessionPolicy::CreateOrReuse)
+            .detached(true)
+            .size(TerminalSizeSpec::new(20, 5))
+            .process(ProcessSpec::argv(["sh", "-c", "while :; do sleep 86400; done"])),
+    )
+    .await
+    .map(|_| ())
 }
 
 /// Permanently kill the given terminals (their rmux panes) by id.
@@ -2508,7 +2549,7 @@ async fn kill_terminals(state: &AppState, terminal_ids: &[String]) {
                 if let Ok(name) = SessionName::new(rmux_session_name(&tid)) {
                     if let Ok(session) = EnsureSession::named(name)
                         .policy(EnsureSessionPolicy::ReuseOnly)
-                        .ensure(rmux)
+                        .ensure(&rmux)
                         .await
                     {
                         let _ = session.kill().await;
