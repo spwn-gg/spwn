@@ -21,6 +21,9 @@ spec:
       labels:
         app.kubernetes.io/name: spwn
     spec:
+      # Named rather than `default`, so a cluster can grant spwn rights without
+      # granting them to everything else in the namespace (../components/session-pods).
+      serviceAccountName: spwn
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000

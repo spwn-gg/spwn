@@ -8,3 +8,8 @@ resources:
   - namespace.yaml
   - ../../base
   - ingressroute.yaml
+# Repo hooks here create a container per session and hand it back to spwn as an
+# `exec` prefix, which needs the Kubernetes API. Drop this line to deploy spwn
+# with no cluster permissions at all.
+components:
+  - ../../components/session-pods

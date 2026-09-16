@@ -39,6 +39,20 @@ RUN (curl -fsSL https://claude.ai/install.sh | bash) \
     && cp -L /root/.local/bin/claude /usr/local/bin/claude \
     && rm -rf /root/.local /root/.claude /root/.claude.json
 
+# kubectl, so a hook running in this pod can build the session an environment in
+# the cluster and hand it back as an `exec` prefix (see the Hooks reference,
+# "Running a session somewhere else"). Without it a hook that needs the Kubernetes
+# API has no way to reach it: this pod has no Docker socket and no kubelet.
+#
+# Pinned rather than `stable.txt`: kubectl supports one minor either side of the
+# API server, so this tracks the cluster you deploy to, not whatever is newest.
+# Override at build time with --build-arg KUBECTL_VERSION=vX.Y.Z.
+ARG KUBECTL_VERSION=v1.36.4
+RUN curl -fsSLo /usr/local/bin/kubectl \
+      "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/$(dpkg --print-architecture)/kubectl" \
+    && chmod 0755 /usr/local/bin/kubectl \
+    && kubectl version --client >/dev/null
+
 COPY --from=backend /usr/local/cargo/bin/rmux /usr/local/bin/rmux
 COPY --from=backend /src/backend/target/release/spwn /usr/local/bin/spwn
 
