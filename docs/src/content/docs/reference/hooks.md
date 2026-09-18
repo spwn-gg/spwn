@@ -236,7 +236,7 @@ Three things to know:
   itself deployed to a server or a cluster: the hook runs *there*, so whatever it needs to
   build the environment — a CLI, credentials, permissions — has to be present there, not on
   your laptop. On Kubernetes that means spwn's own image and ServiceAccount; see
-  [`deploy/kubernetes/README.md`](https://github.com/spwn-gg/spwn/tree/main/deploy/kubernetes).
+  [Kubernetes](/spwn/deploy/kubernetes/).
 
 A complete, runnable setup — image, create and teardown hooks — is in
 [`examples/hooks/docker-env/`](https://github.com/spwn-gg/spwn/tree/main/examples/hooks/docker-env).

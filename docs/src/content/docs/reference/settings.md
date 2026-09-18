@@ -12,8 +12,9 @@ spwn uses your own authenticated `claude` command. It **auto-detects** it in the
 locations and shows the path it found. If your `claude` lives somewhere unusual, set the
 **Claude CLI path** here to point spwn at it.
 
-Because spwn uses your existing Claude login, there's nothing else to sign in to — and
-nothing is re-uploaded or proxied. See
+spwn doesn't handle Claude authentication itself and nothing is re-uploaded or proxied —
+but it can open a terminal for you to sign in from, which is what its setup screen does
+on a machine where `claude` has never run. See
 [How it works & your data](/spwn/reference/architecture/) for what spwn touches.
 
 ## Session worktree location

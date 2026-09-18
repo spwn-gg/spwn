@@ -11,7 +11,7 @@ export default defineConfig({
 		starlight({
 			title: 'spwn',
 			description:
-				'A desktop app that gives Claude Code a per-project context space, persistent sessions, and scheduled runs.',
+				'Run Claude Code in parallel: every session its own conversation, its own git branch, its own live preview.',
 			social: [
 				{ icon: 'github', label: 'GitHub', href: 'https://github.com/spwn-gg/spwn' },
 			],
@@ -26,6 +26,10 @@ export default defineConfig({
 						{ label: 'Installation', slug: 'getting-started/installation' },
 						{ label: 'Quick Start', slug: 'getting-started/quick-start' },
 					],
+				},
+				{
+					label: 'Deploy',
+					items: [{ label: 'Kubernetes', slug: 'deploy/kubernetes' }],
 				},
 				{
 					label: 'Features',

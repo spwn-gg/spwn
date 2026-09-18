@@ -57,6 +57,18 @@ Agent binaries (`claude`, …) are resolved separately, from the agent definitio
 Homebrew-style install (rmux as a formula dep on `$PATH`) needs no bundling at all.
 Self-update is dropped — reinstall to upgrade.
 
+## Deploying
+
+The Kubernetes deployment is a Helm chart in
+[`deploy/charts/spwn`](deploy/charts/spwn/README.md), published to
+`oci://ghcr.io/spwn-gg/charts/spwn` alongside the server image built from
+`deploy/Dockerfile`. Lint and render it with `helm lint deploy/charts/spwn --strict` and
+`helm template spwn deploy/charts/spwn -n spwn`.
+
+The version in `backend/Cargo.toml` is the one number: bumping it means bumping
+`package.json` and the chart's `version` and `appVersion` in the same commit, because the
+`v*` tag `scripts/release.sh` pushes is what CI stamps the chart and image from.
+
 ## Development (Docker)
 
 Development can run **inside Docker**. The container compiles the Rust backend and
