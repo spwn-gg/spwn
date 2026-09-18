@@ -1,0 +1,33 @@
+{{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) }}
+# spwn's whole home dir. Provisioned from the cluster's default StorageClass -- nothing
+# needs to exist before install, and nothing is seeded onto it.
+#
+# Check the StorageClass's reclaim policy: with Delete, removing this claim removes the
+# workspace and the Claude login with it.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "spwn.claimName" . }}
+  labels:
+    {{- include "spwn.labels" . | nindent 4 }}
+  {{- if or .Values.persistence.annotations .Values.persistence.retain }}
+  annotations:
+    {{- with .Values.persistence.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- if .Values.persistence.retain }}
+    # `helm uninstall` leaves this claim, and the Claude login on it, behind.
+    # Reinstalling then needs persistence.existingClaim -- see the chart README.
+    helm.sh/resource-policy: keep
+    {{- end }}
+  {{- end }}
+spec:
+  accessModes:
+    {{- toYaml .Values.persistence.accessModes | nindent 4 }}
+  {{- with .Values.persistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size | quote }}
+{{- end }}

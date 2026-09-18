@@ -1,0 +1,115 @@
+{{- include "spwn.guards" . -}}
+# spwn has NO AUTHENTICATION. Whoever reaches its HTTP port can open shells and run
+# agents in this pod, read and change everything on its home volume, and use its Claude
+# login. Put authentication in front of it before exposing it beyond a network you trust.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "spwn.fullname" . }}
+  labels:
+    {{- include "spwn.labels" . | nindent 4 }}
+spec:
+  # One rmux daemon and one writer for the home volume: never run two pods at once.
+  # Not configurable -- see the guard in _helpers.tpl.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "spwn.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "spwn.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      # Named rather than `default`, so a cluster can grant spwn rights without granting
+      # them to everything else in the namespace (see sessionPods.enabled).
+      serviceAccountName: {{ include "spwn.serviceAccountName" . }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- range . }}
+        - name: {{ . }}
+        {{- end }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: spwn
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 4317
+              protocol: TCP
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          {{- with .Values.envFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.extraEnv }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          # /api/version is the only endpoint cheap enough to poll: it answers from a
+          # compiled-in constant, needs no Claude login, and is up as soon as the server
+          # binds.
+          startupProbe:
+            httpGet: {path: /api/version, port: http}
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+          readinessProbe:
+            httpGet: {path: /api/version, port: http}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+          {{- if .Values.probes.liveness.enabled }}
+          # A liveness restart takes the rmux daemon with it: every shell and every
+          # running process in every pane is gone, and only agent sessions can be
+          # resumed, from their transcripts. Slow and forgiving on purpose.
+          livenessProbe:
+            httpGet: {path: /api/version, port: http}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          {{- end }}
+          volumeMounts:
+            - name: home
+              mountPath: /home/spwn
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: home
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "spwn.claimName" . }}
+          {{- else }}
+          # No persistence: every restart is a fresh, logged-out spwn.
+          emptyDir: {}
+          {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}

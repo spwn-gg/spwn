@@ -1,0 +1,58 @@
+# Every optional branch at once, so `helm template` actually executes them.
+image:
+  tag: sha-abc1234
+  pullSecrets: [ghcr-pull]
+persistence:
+  existingClaim: spwn-home
+sessionPods:
+  enabled: true
+serviceAccount:
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/spwn
+envFrom:
+  - secretRef:
+      name: spwn-env
+extraEnv:
+  - name: HTTPS_PROXY
+    value: http://proxy.example.com:3128
+ingress:
+  enabled: true
+  className: nginx
+  host: tools.example.com
+  path: /spwn(/|$)(.*)
+  pathType: ImplementationSpecific
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+probes:
+  liveness:
+    enabled: false
+podAnnotations:
+  prometheus.io/scrape: "false"
+podLabels:
+  team: platform
+nodeSelector:
+  kubernetes.io/hostname: game-pc
+tolerations:
+  - key: node-role.kubernetes.io/control-plane
+    operator: Exists
+    effect: NoSchedule
+priorityClassName: high
+extraVolumes:
+  - name: ca
+    configMap:
+      name: corporate-ca
+extraVolumeMounts:
+  - name: ca
+    mountPath: /usr/local/share/ca-certificates/corp.crt
+    subPath: corp.crt
+    readOnly: true
+extraObjects:
+  - apiVersion: networking.k8s.io/v1
+    kind: NetworkPolicy
+    metadata:
+      name: '{{ include "spwn.fullname" . }}-default-deny-ingress'
+    spec:
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: spwn
+      policyTypes: [Ingress]

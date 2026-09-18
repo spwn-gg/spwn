@@ -1,0 +1,165 @@
+# spwn has NO AUTHENTICATION. Anyone who can reach its HTTP port can open shells and
+# run agents in the pod, read and change everything on its home volume, and use its
+# Claude login. Put an auth proxy or your ingress controller's forward-auth in front
+# of it before exposing it beyond a network you trust. There is no value in this file
+# that turns authentication on, because there is none to turn on.
+
+image:
+  repository: ghcr.io/spwn-gg/spwn
+  # Defaults to the chart's appVersion, which CI stamps to the image it just pushed.
+  # Set it to pin a different build -- "sha-abc1234", or "latest" to follow main (the
+  # chart deliberately never defaults to a floating tag).
+  tag: ""
+  pullPolicy: IfNotPresent
+  # Names of pre-created pull Secrets, for a private rebuild of the image.
+  pullSecrets: []
+
+# Object names are `<release>-<chart>`, collapsed to `<release>` when the release is
+# named "spwn". `helm install spwn` therefore produces exactly the names the old
+# kustomize base used -- spwn, spwn-home -- so an existing volume is adopted rather
+# than orphaned. Override only if you must.
+nameOverride: ""
+fullnameOverride: ""
+
+persistence:
+  # spwn's whole $HOME: repos you clone, the Claude login (~/.claude, ~/.claude.json),
+  # agent and hook definitions (~/.spwn), and the project store
+  # (~/.local/share/com.markbarta.spwn -- settings, projects, the GitHub token at 0600,
+  # checkpoints, workflow state).
+  #
+  # The chart provisions this itself, from the cluster's default StorageClass. Nothing
+  # needs to exist before you install and nothing is seeded onto it: a fresh volume
+  # gets you spwn's first-run screen, which is where you sign in and clone. Turn this
+  # off and you get an emptyDir -- every restart is a fresh, logged-out spwn. Demos only.
+  enabled: true
+  # Adopt a volume you already have instead of letting the chart create one -- an
+  # escape hatch (a kept claim after `helm uninstall`, a release under another name),
+  # not the usual path. When set, every other key here is ignored.
+  existingClaim: ""
+  # "" = the cluster's default StorageClass. Check its reclaim policy: with Delete,
+  # removing this claim removes the workspace and the Claude login with it.
+  storageClass: ""
+  size: 20Gi
+  # One rmux daemon, one writer. ReadWriteOnce is assumed everywhere, including by
+  # hooks that pin a session pod to spwn's node.
+  accessModes: [ReadWriteOnce]
+  annotations: {}
+  # Adds helm.sh/resource-policy: keep, so `helm uninstall` leaves the volume behind.
+  # Reinstalling over a kept claim then needs persistence.existingClaim -- see the
+  # chart README, "Uninstall and reinstall".
+  retain: true
+
+# Agents, and whatever they build, test and run, all share this container. A CPU limit
+# throttles compiles, so there deliberately isn't one.
+resources:
+  requests:
+    cpu: 100m
+    memory: 512Mi
+  limits:
+    memory: 8Gi
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000 # the `spwn` user baked into the image
+  runAsGroup: 1000
+  fsGroup: 1000 # makes the volume writable with no init chown
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+  # Deliberately not readOnlyRootFilesystem: agents write to /tmp, and cargo/npm/pip
+  # caches land outside $HOME often enough to break real work.
+
+# Optional. spwn's own first-run screen is the documented way to sign in, and it needs
+# none of this -- but an unattended pod can be handed ANTHROPIC_API_KEY (or
+# CLAUDE_CODE_OAUTH_TOKEN) from a Secret YOU manage, and spwn will report itself signed
+# in rather than prompting. This chart never creates, templates or holds a Secret.
+#
+#   kubectl -n spwn create secret generic spwn-env --from-literal=ANTHROPIC_API_KEY=...
+#   envFrom: [{secretRef: {name: spwn-env}}]
+#
+# Editing the Secret does not restart the pod: `kubectl -n spwn rollout restart deploy/spwn`.
+envFrom: []
+# Raw env entries (name/value or name/valueFrom), appended as written.
+extraEnv: []
+
+# Lets a repo's `session-created` hook give each session a pod of its own. Grants pods,
+# pods/exec, pods/log and pods/status in spwn's OWN namespace and nothing else. Off by
+# default, so a default install can do nothing at all to the cluster. Read the chart
+# README before enabling it in a namespace that holds anything else.
+sessionPods:
+  enabled: false
+
+serviceAccount:
+  create: true
+  name: ""
+  # For cloud identity (IRSA, GKE Workload Identity), if a hook needs it.
+  annotations: {}
+
+service:
+  type: ClusterIP
+  port: 80
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: ""
+  # WebSockets: every terminal streams over /ws. Most controllers pass upgrades through
+  # untouched; nginx closes idle upgrades at 60s unless you raise its read timeout:
+  #   nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+  #   nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+  annotations: {}
+  host: spwn.example.com
+  # spwn's server always routes at "/". To serve it under a prefix the PROXY must strip
+  # the prefix -- see "Serving under a path prefix" in the chart README. The UI needs no
+  # build flag: it loads assets relative to the page and derives /api and /ws from where
+  # it was served.
+  path: /
+  pathType: Prefix
+  tls:
+    enabled: false
+    secretName: ""
+
+# There is no replicaCount, and no way to change the Recreate strategy: one rmux daemon,
+# one ReadWriteOnce writer. A second pod would corrupt the home volume, not scale
+# anything. Setting `replicaCount` is rejected with an explanation.
+
+# SIGTERM is handled; this is how long an in-flight turn has to wind down.
+terminationGracePeriodSeconds: 30
+
+probes:
+  startup:
+    periodSeconds: 2
+    failureThreshold: 30 # 60s for a cold volume to attach and the server to bind
+  readiness:
+    periodSeconds: 15
+  liveness:
+    enabled: true
+    periodSeconds: 30
+    # 90s. A liveness restart takes the rmux daemon with it -- every shell and every
+    # running process in every pane is gone, and only agent sessions can be resumed.
+    # Don't tighten this.
+    failureThreshold: 3
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+priorityClassName: ""
+
+# Mounted alongside the home volume -- a CA bundle, a tmpfs, an extra dataset. Anything
+# mounted UNDER /home/spwn shadows that path on the home volume and is usually
+# read-only, which breaks claude and git: put credentials on the volume instead
+# (Settings -> GitHub for a token, ~/.ssh for keys).
+extraVolumes: []
+extraVolumeMounts: []
+
+# Extra manifests, rendered with the release's context (strings go through `tpl`). This
+# is the chart's escape hatch, and the reason it has no networkPolicy,
+# podDisruptionBudget or Traefik Middleware values of its own. The chart README has a
+# ready-made NetworkPolicy and a Traefik strip-prefix recipe.
+extraObjects: []

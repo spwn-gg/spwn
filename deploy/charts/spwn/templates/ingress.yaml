@@ -1,0 +1,40 @@
+{{- if .Values.ingress.enabled }}
+# spwn has NO AUTHENTICATION, and an Ingress puts it on the network. Terminate that with
+# an auth proxy, or your controller's forward-auth / basic-auth annotations.
+#
+# WebSockets: every terminal streams over /ws. Most controllers upgrade by default;
+# nginx closes idle upgrades at 60s unless you raise proxy-read-timeout.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "spwn.fullname" . }}
+  labels:
+    {{- include "spwn.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host | quote }}
+      {{- with .Values.ingress.tls.secretName }}
+      secretName: {{ . }}
+      {{- end }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: {{ .Values.ingress.path }}
+            pathType: {{ .Values.ingress.pathType }}
+            backend:
+              service:
+                name: {{ include "spwn.fullname" . }}
+                port:
+                  number: {{ .Values.service.port }}
+{{- end }}
