@@ -82,8 +82,12 @@ pub async fn serve(opts: ServeOpts) -> anyhow::Result<()> {
     }
     *state.agents.lock() = registry;
 
-    // Watch ~/.claude/projects so the transcript panel refreshes live.
+    // Watch ~/.claude/projects so the transcript panel refreshes live. Create it
+    // first: on a home that has never run claude the directory is missing, the watch
+    // fails with ENOENT, and nothing retries -- so the transcript panel would stay
+    // stale for the whole life of the process, including after claude creates it.
     let root = projects::projects_root();
+    let _ = std::fs::create_dir_all(&root);
     match projects::start_watcher(state.clone(), &root) {
         Ok(w) => *state.watcher.lock() = Some(w),
         Err(e) => eprintln!("failed to start projects watcher: {e}"),

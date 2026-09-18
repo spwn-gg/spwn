@@ -96,6 +96,12 @@ pub async fn clone_project(
     let name = gitwt::repo_name_from_url(&url)
         .ok_or_else(|| format!("can't derive a folder name from {url}"))?;
     let parent = PathBuf::from(parent_dir.trim());
+    // Create it rather than rejecting it: on a fresh home the obvious destination
+    // (~/code) doesn't exist yet, and the picker has no way to make one.
+    if !parent.exists() {
+        std::fs::create_dir_all(&parent)
+            .map_err(|e| format!("can't create {}: {e}", parent.display()))?;
+    }
     if !parent.is_dir() {
         return Err(format!("{} is not a directory", parent.display()));
     }

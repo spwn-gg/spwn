@@ -12,6 +12,48 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// The identity spwn commits under when the repo has none of its own.
+const FALLBACK_IDENTITY: [(&str, &str); 4] = [
+    ("GIT_AUTHOR_NAME", "spwn session"),
+    ("GIT_AUTHOR_EMAIL", "spwn@localhost"),
+    ("GIT_COMMITTER_NAME", "spwn session"),
+    ("GIT_COMMITTER_EMAIL", "spwn@localhost"),
+];
+
+/// Whether `dir` has both `user.name` and `user.email` resolvable (local, global or
+/// system config). A fresh home -- a container's mounted volume, say -- has no
+/// `~/.gitconfig`, and git then refuses to write any commit at all.
+fn has_git_identity(dir: &Path) -> bool {
+    ["user.name", "user.email"].iter().all(|key| {
+        Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["config", "--get", key])
+            .output()
+            .map(|o| o.status.success() && !o.stdout.trim_ascii().is_empty())
+            .unwrap_or(false)
+    })
+}
+
+/// Like [`git`], for a command that can write a commit. Falls back to spwn's own
+/// identity only when the repo has none -- the user's own, when they have one, is
+/// what should land on a merge commit they asked for.
+fn git_committing(dir: &Path, args: &[&str]) -> Result<String, String> {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(dir).args(args);
+    if !has_git_identity(dir) {
+        cmd.envs(FALLBACK_IDENTITY);
+    }
+    let out = cmd
+        .output()
+        .map_err(|e| format!("failed to run git: {e}"))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}
+
 /// Prefix for the git branch each Claude session works on (e.g. `spwn/<short>`).
 /// Single source of truth — both interactive and scheduled session creation use it.
 /// (Historically this was `cm/`; existing branches keep their stored name.)
@@ -143,10 +185,7 @@ pub fn commit_all(dir: &Path, message: &str) -> Result<bool, String> {
         .arg("-C")
         .arg(dir)
         .args(["commit", "--no-verify", "-m", message])
-        .env("GIT_AUTHOR_NAME", "spwn session")
-        .env("GIT_AUTHOR_EMAIL", "spwn@localhost")
-        .env("GIT_COMMITTER_NAME", "spwn session")
-        .env("GIT_COMMITTER_EMAIL", "spwn@localhost")
+        .envs(FALLBACK_IDENTITY)
         .output()
         .map_err(|e| format!("failed to run git commit: {e}"))?;
     if out.status.success() {
@@ -208,7 +247,7 @@ pub fn merge_into_base(repo: &Path, base: &str, branch: &str) -> Result<String, 
             "The checkout of '{base}' has uncommitted changes — commit or stash them first."
         ));
     }
-    match git(&base_wt, &["merge", "--no-edit", branch]) {
+    match git_committing(&base_wt, &["merge", "--no-edit", branch]) {
         Ok(msg) => {
             let head = msg.lines().next().unwrap_or("").trim();
             Ok(if head.is_empty() {
