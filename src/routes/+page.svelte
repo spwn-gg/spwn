@@ -6,8 +6,11 @@
 	import FileBrowser from '$lib/FileBrowser.svelte';
 	import QuestionPicker from '$lib/QuestionPicker.svelte';
 	import ConfirmDialog from '$lib/ConfirmDialog.svelte';
+	import FirstRun from '$lib/FirstRun.svelte';
 	import {
 		showSettings,
+		projects,
+		projectsLoaded,
 		openTabs,
 		activeTabKey,
 		activeTab,
@@ -62,8 +65,25 @@
 	// States that "need you" — suppressed for the session you're already looking at.
 	const NEEDS_YOU: SessionStatus[] = ['done', 'blockedPermission', 'blockedQuestion', 'error'];
 
+	// The setup screen, for a spwn with nothing in it yet. Gated on the project list
+	// having actually loaded: it arrives asynchronously, so without that the screen
+	// would flash on every boot. Dismissal is remembered, so skipping it is permanent
+	// until someone clears it — the sidebar's empty state covers the rest.
+	let setupDismissed = $state(true);
+	const showFirstRun = $derived(!setupDismissed && $projectsLoaded && $projects.length === 0);
+
+	function dismissSetup() {
+		setupDismissed = true;
+		try {
+			localStorage.setItem('cm.setupDone', '1');
+		} catch {
+			/* private mode; it just shows again next time */
+		}
+	}
+
 	// Restore persisted sidebar layout.
 	onMount(async () => {
+		setupDismissed = localStorage.getItem('cm.setupDone') === '1';
 		const w = Number(localStorage.getItem('cm.sidebarWidth'));
 		if (w >= MIN_W && w <= MAX_W) sidebarWidth = w;
 		collapsed = localStorage.getItem('cm.sidebarCollapsed') === '1';
@@ -201,6 +221,10 @@
 		</div>
 	{/if}
 </div>
+
+{#if showFirstRun}
+	<FirstRun ondone={dismissSetup} />
+{/if}
 
 {#if $showSettings}
 	<Settings />

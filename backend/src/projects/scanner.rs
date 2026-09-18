@@ -6,17 +6,34 @@ use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
 
-/// The Claude Code projects directory: `$CLAUDE_CONFIG_DIR/projects` if set, else
-/// `$HOME/.claude/projects`.
-pub fn projects_root() -> PathBuf {
+/// Claude Code's own config directory: `$CLAUDE_CONFIG_DIR` if set, else `~/.claude`.
+pub fn config_root() -> PathBuf {
     if let Ok(dir) = std::env::var("CLAUDE_CONFIG_DIR") {
         if !dir.is_empty() {
-            return PathBuf::from(dir).join("projects");
+            return PathBuf::from(dir);
         }
     }
     directories::BaseDirs::new()
-        .map(|b| b.home_dir().join(".claude").join("projects"))
-        .unwrap_or_else(|| PathBuf::from(".claude/projects"))
+        .map(|b| b.home_dir().join(".claude"))
+        .unwrap_or_else(|| PathBuf::from(".claude"))
+}
+
+/// The Claude Code projects directory: `<config root>/projects`.
+pub fn projects_root() -> PathBuf {
+    config_root().join("projects")
+}
+
+/// Claude Code's `.claude.json`: beside the config dir when `CLAUDE_CONFIG_DIR` points
+/// somewhere custom, else `~/.claude.json`. spwn only ever reads this file.
+pub fn config_file() -> PathBuf {
+    if let Ok(dir) = std::env::var("CLAUDE_CONFIG_DIR") {
+        if !dir.is_empty() {
+            return PathBuf::from(dir).join(".claude.json");
+        }
+    }
+    directories::BaseDirs::new()
+        .map(|b| b.home_dir().join(".claude.json"))
+        .unwrap_or_else(|| PathBuf::from(".claude.json"))
 }
 
 /// Claude's human-readable name for a session: the latest `ai-title` (it evolves),

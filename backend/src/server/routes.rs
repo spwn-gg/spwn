@@ -71,6 +71,9 @@ pub async fn invoke(
             blocking!(state, body, SetSettingsArgs, st, a, ok_result(cmd::set_settings(&st, a.settings)))
         }
         "github_auth_status" => ok(cmd::github_auth_status()),
+        "claude_auth_status" => {
+            blocking!(state, body, NoArgs, st, _a, ok(cmd::claude_auth_status(&st)))
+        }
         "set_github_token" => blocking!(
             state, body, SetGithubTokenArgs, _st, a,
             ok_result(cmd::set_github_token(a.token))

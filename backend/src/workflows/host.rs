@@ -832,7 +832,7 @@ async fn sessions_create(rc: &Arc<RunCtx>, a: CreateArgs) -> OpResult {
     // their prompts must already reach this run.
     rc.claim(&terminal_id, a.prompt_handler);
     let spec = OpenTerminalSpec {
-        project_id: rc.project_id.clone(),
+        project_id: Some(rc.project_id.clone()),
         terminal_id: Some(terminal_id.clone()),
         kind: "agent".to_string(),
         agent: a.agent,

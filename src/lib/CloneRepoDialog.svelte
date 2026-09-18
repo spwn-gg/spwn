@@ -12,10 +12,11 @@
 	let busy = $state(false);
 	let error = $state('');
 
-	// Default the destination to the home dir (what the folder browser opens on).
+	// Default to ~/code rather than the bare home dir: it's where repos belong, and
+	// the backend creates it if it isn't there yet. Browse… still opens on home.
 	fsList(null, false)
 		.then((l) => {
-			if (!parentDir) parentDir = l.path;
+			if (!parentDir) parentDir = `${l.path.replace(/\/+$/, '')}/code`;
 		})
 		.catch(() => {});
 

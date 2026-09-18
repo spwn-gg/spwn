@@ -4,5 +4,5 @@
 mod scanner;
 mod watcher;
 
-pub use scanner::{locate_session, projects_root, session_title};
+pub use scanner::{config_file, locate_session, projects_root, session_title};
 pub use watcher::{start as start_watcher, ProjectsWatcher};
