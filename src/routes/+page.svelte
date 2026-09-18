@@ -2,13 +2,12 @@
 	import { onMount, onDestroy } from 'svelte';
 	import ProjectTree from '$lib/ProjectTree.svelte';
 	import PaneManager from '$lib/PaneManager.svelte';
-	import Settings from '$lib/Settings.svelte';
 	import FileBrowser from '$lib/FileBrowser.svelte';
 	import QuestionPicker from '$lib/QuestionPicker.svelte';
 	import ConfirmDialog from '$lib/ConfirmDialog.svelte';
 	import FirstRun from '$lib/FirstRun.svelte';
 	import {
-		showSettings,
+		openSettings,
 		projects,
 		projectsLoaded,
 		openTabs,
@@ -147,10 +146,6 @@
 	// Global keyboard shortcuts.
 	function onKey(e: KeyboardEvent) {
 		const mod = e.metaKey || e.ctrlKey;
-		if (e.key === 'Escape' && get(showSettings)) {
-			showSettings.set(false);
-			return;
-		}
 		if (!mod) return;
 		if (e.key === 'b') {
 			e.preventDefault();
@@ -185,7 +180,7 @@
 			<aside class="sidebar" style="width: {sidebarWidth}px">
 				<div class="sidebar-header">
 					<span>Projects</span>
-					<button class="gear" title="Settings" onclick={() => showSettings.set(true)}>⚙</button>
+					<button class="gear" title="Settings" onclick={openSettings}>⚙</button>
 				</div>
 				<ProjectTree />
 			</aside>
@@ -224,10 +219,6 @@
 
 {#if showFirstRun}
 	<FirstRun ondone={dismissSetup} />
-{/if}
-
-{#if $showSettings}
-	<Settings />
 {/if}
 
 <ConfirmDialog />

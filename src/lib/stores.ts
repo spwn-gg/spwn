@@ -4,9 +4,9 @@ import { writable, derived, get } from 'svelte/store';
 import { listProjects } from './ipc';
 import type { ProjectRec, SessionStatus, TerminalKind } from './types';
 
-/** A pane is a terminal (shell/claude), the context composer, the scheduler, or the
- * project's workflows. */
-export type PaneKind = TerminalKind | 'context' | 'schedule' | 'workflow';
+/** A pane is a terminal (shell/claude), the context composer, the scheduler, the
+ * project's workflows, or the app-wide settings page. */
+export type PaneKind = TerminalKind | 'context' | 'schedule' | 'workflow' | 'settings';
 
 export const projects = writable<ProjectRec[]>([]);
 
@@ -113,9 +113,6 @@ agentMode.subscribe((m) => {
 	if (typeof localStorage !== 'undefined') localStorage.setItem(AGENT_MODE_KEY, m);
 });
 
-/** Whether the settings panel is shown. */
-export const showSettings = writable(false);
-
 /** Which sessions have their Inspector drawer open (by terminal id). */
 export const inspectorOpen = writable<Set<string>>(new Set());
 export function toggleInspector(terminalId: string, force?: boolean) {
@@ -188,6 +185,14 @@ export function openTab(spec: Omit<OpenTab, 'key'>) {
 			return;
 		}
 	}
+	// Settings is app-wide — one tab, whatever project you opened it from.
+	if (spec.kind === 'settings') {
+		const existing = get(openTabs).find((t) => t.kind === 'settings');
+		if (existing) {
+			activeTabKey.set(existing.key);
+			return;
+		}
+	}
 	// One context composer / scheduler / workflows panel per project — focus it if already open.
 	if (spec.kind === 'context' || spec.kind === 'schedule' || spec.kind === 'workflow') {
 		const existing = get(openTabs).find(
@@ -201,6 +206,12 @@ export function openTab(spec: Omit<OpenTab, 'key'>) {
 	const key = tabKey();
 	openTabs.update((ts) => [...ts, { key, ...spec }]);
 	activeTabKey.set(key);
+}
+
+/** Open (or focus) the app-wide Settings pane. Not tied to a project, so it carries
+ * the empty sentinel id — `openTab` dedupes it on kind alone. */
+export function openSettings() {
+	openTab({ kind: 'settings', projectId: '', title: 'Settings' });
 }
 
 export function closeTab(key: string) {
