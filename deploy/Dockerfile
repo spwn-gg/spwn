@@ -29,8 +29,10 @@ RUN cargo build --release --manifest-path backend/Cargo.toml
 
 # --- Runtime ---
 FROM debian:bookworm-slim
+# rsync is not optional: checkpoints restore files with /usr/bin/rsync by absolute
+# path, so without it the Timeline's "restore" fails at the point of use.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        bash ca-certificates curl git openssh-client less procps tini \
+        bash ca-certificates curl git openssh-client less procps rsync tini \
     && rm -rf /var/lib/apt/lists/*
 
 # Claude Code, installed outside $HOME: deployments mount a volume over the home dir,
@@ -60,6 +62,11 @@ RUN useradd --uid 1000 --create-home --home-dir /home/spwn --shell /bin/bash spw
 USER spwn
 # Shell panes run $SHELL, falling back to /bin/zsh, which this image doesn't have.
 ENV HOME=/home/spwn SHELL=/bin/bash
+# Point agents at claude explicitly. Resolution would otherwise fall through to
+# `command -v claude` on whatever PATH the container happens to get -- and its
+# home-relative candidates (~/.local/bin/claude etc.) are all on the mounted
+# volume, which is empty.
+ENV CLAUDE_BIN=/usr/local/bin/claude
 WORKDIR /home/spwn
 
 EXPOSE 4317

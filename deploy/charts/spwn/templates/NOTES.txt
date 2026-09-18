@@ -1,0 +1,44 @@
+spwn {{ .Chart.AppVersion }} is installed as release {{ .Release.Name }} in namespace {{ .Release.Namespace }}.
+
+  !! spwn has NO AUTHENTICATION. Anyone who can reach its port can open shells and
+     run agents in this pod, read and change everything on its home volume, and use
+     its Claude login. Do not expose it beyond a network you trust without putting
+     an auth proxy in front of it.
+
+Open it:
+{{- if .Values.ingress.enabled }}
+
+  http{{ if .Values.ingress.tls.enabled }}s{{ end }}://{{ .Values.ingress.host }}{{ .Values.ingress.path }}
+{{- else }}
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "spwn.fullname" . }} 4317:{{ .Values.service.port }}
+
+  then open http://localhost:4317
+{{- end }}
+
+Everything else happens in the browser. On a fresh volume spwn opens its setup screen:
+sign in to Claude in the terminal it gives you, add a GitHub token if you want private
+repos, and clone your first repository. There is nothing to exec into and nothing to
+put on the volume by hand.
+{{- if or .Values.envFrom .Values.extraEnv }}
+
+Extra environment is being passed in. If it carries ANTHROPIC_API_KEY or
+CLAUDE_CODE_OAUTH_TOKEN, spwn reports itself signed in and skips that step.
+{{- end }}
+{{- if .Values.persistence.enabled }}
+
+Home volume: {{ include "spwn.claimName" . }} ({{ .Values.persistence.size }}{{ if .Values.persistence.existingClaim }}, adopted{{ end }}).
+{{- if .Values.persistence.retain }}
+  Kept on `helm uninstall`. Reinstalling over it needs
+  --set persistence.existingClaim={{ include "spwn.claimName" . }}
+{{- end }}
+{{- else }}
+
+  !! persistence is DISABLED. The Claude login, your clones, checkpoints and every
+     setting are lost on the next restart.
+{{- end }}
+{{- if .Values.sessionPods.enabled }}
+
+Session pods: enabled. spwn can create, exec into and read logs from pods in
+{{ .Release.Namespace }} -- and nothing else, in this namespace or any other.
+{{- end }}

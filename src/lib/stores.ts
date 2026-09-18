@@ -10,11 +10,16 @@ export type PaneKind = TerminalKind | 'context' | 'schedule' | 'workflow';
 
 export const projects = writable<ProjectRec[]>([]);
 
+/** False until the first load lands. An empty list means nothing before that, and the
+ *  setup screen must not flash on every boot while it's in flight. */
+export const projectsLoaded = writable(false);
+
 /** Reload the project list from the backend store, and sync open tab titles to
  * the (possibly Claude-renamed) terminal records. */
 export async function refreshProjects() {
 	const ps = await listProjects();
 	projects.set(ps);
+	projectsLoaded.set(true);
 	const titleById = new Map<string, string>();
 	for (const p of ps) for (const t of p.terminals) titleById.set(t.id, t.title);
 	openTabs.update((tabs) =>

@@ -24,6 +24,7 @@
 		agentStatus,
 		setAgentStatus,
 		confirmDialog,
+		showSettings,
 		type ConfirmRow
 	} from './stores';
 	import { get } from 'svelte/store';
@@ -115,6 +116,13 @@
 			title: def?.name ?? 'session',
 			projectName: p.name
 		});
+	}
+
+	// With no agent installed, "New session" opens a pane that dies immediately with
+	// "binary not found" -- point at the fix instead of offering the dead end.
+	function openAgentSettings() {
+		openMenuId = null;
+		showSettings.set(true);
 	}
 
 	function menuShell(p: ProjectRec, e: Event) {
@@ -512,8 +520,11 @@
 						New {a.name} session{a.untested ? ' (experimental)' : ''}
 					</button>
 				{/each}
-			{:else}
+			{:else if installedAgents.length === 1}
 				<button onclick={(e) => menuClaude(p, e)}>New session</button>
+			{:else}
+				<!-- Offering it would open a pane that dies with "binary not found". -->
+				<button onclick={openAgentSettings}>No agent installed — open Settings…</button>
 			{/if}
 			<button onclick={(e) => menuShell(p, e)}>New shell</button>
 			<button onclick={(e) => menuVscode(p, e)}>Open in VS Code</button>

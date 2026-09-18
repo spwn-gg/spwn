@@ -7,7 +7,7 @@
 Fork a coding session the moment an idea splits: spwn branches the *AI conversation* **and** the *code* together, so you can explore three approaches at once instead of babysitting one linear chat.
 
 [![Latest release](https://img.shields.io/github/v/release/spwn-gg/spwn?color=success)](https://github.com/spwn-gg/spwn/releases/latest)
-[![Platform: macOS](https://img.shields.io/badge/platform-macOS-black?logo=apple)](#download)
+[![Platform: macOS | Linux](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-black)](#install)
 [![License: Apache-2.0](https://img.shields.io/github/license/spwn-gg/spwn)](LICENSE)
 [![Docs](https://img.shields.io/badge/docs-spwn--gg.github.io-blue)](https://spwn-gg.github.io/spwn/)
 
@@ -22,19 +22,29 @@ they lead below.
 
 ---
 
-## Download
+## Install
 
-spwn is a native **macOS** app (Apple Silicon or Intel).
+spwn is a CLI that runs a web server and opens its UI in your browser — on your own
+machine, or on a cluster you open from anywhere.
 
-1. Grab **`spwn.app.tar.gz`** from the **[latest release](https://github.com/spwn-gg/spwn/releases/latest)**, unpack it, and drag `spwn.app` into `/Applications`.
-2. First launch: releases are ad-hoc signed but not notarized, so macOS quarantines the
-   download once. Double-click, then **System Settings → Privacy & Security → Open Anyway** —
-   or run `xattr -dr com.apple.quarantine "/Applications/spwn.app"`. The in-app auto-updater
-   never trips this again.
+**Locally:** grab `spwn-<version>-<os>-<arch>.tar.gz` from the
+**[latest release](https://github.com/spwn-gg/spwn/releases/latest)**, unpack it, and put
+both binaries (`spwn` and `rmux`) in one directory on your `PATH`. Then run `spwn`.
+Prefer to build it yourself? See **[BUILD.md](BUILD.md)**.
 
-**Requires** an authenticated **`claude` CLI** on your `PATH` — spwn uses your existing Claude
-login, and never re-uploads or proxies anything. Prefer to build it yourself? See **[BUILD.md](BUILD.md)**.
-Running it as a server on a cluster? See **[deploy/kubernetes](deploy/kubernetes/README.md)**.
+**On a cluster:**
+
+```sh
+helm install spwn oci://ghcr.io/spwn-gg/charts/spwn -n spwn --create-namespace
+```
+
+Either way, spwn opens a setup screen the first time and walks you through signing in to
+Claude, an optional GitHub token and your first repo — all in the browser. spwn runs the
+**`claude` CLI** for you and never re-uploads or proxies anything.
+
+> **spwn has no authentication.** Anyone who can reach its port can run commands on that
+> machine and use its Claude login. It binds to `127.0.0.1` by default; put an auth proxy
+> in front of it before exposing it. See **[deploy/charts/spwn](deploy/charts/spwn/README.md)**.
 
 Full guide: **[Installation](https://spwn-gg.github.io/spwn/getting-started/installation/)** ·
 **[Quick Start](https://spwn-gg.github.io/spwn/getting-started/quick-start/)**
@@ -223,9 +233,10 @@ Agents run as **TUIs in rmux panes** — the same `claude` you'd run in a termin
 watched by spwn. It only **reads/watches** (never writes) `~/.claude/projects/` and
 `~/.claude.json`.
 
-**On disk** (`~/Library/Application Support/com.markbarta.spwn/`): `projects.json`,
-`settings.json`, `checkpoints/<session_id>/` (APFS copy-on-write code-undo snapshots), and — for
-the *App data* worktree layout — `worktrees/`.
+**On disk** (`~/Library/Application Support/com.markbarta.spwn/` on macOS,
+`~/.local/share/com.markbarta.spwn/` on Linux): `projects.json`, `settings.json`,
+`checkpoints/<session_id>/` (copy-on-write code-undo snapshots), and — for the *App data*
+worktree layout — `worktrees/`.
 
 ---
 

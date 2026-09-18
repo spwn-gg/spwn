@@ -9,6 +9,10 @@
 #
 # There is no self-updater and no code signing — users reinstall to upgrade.
 #
+# The version lives in backend/Cargo.toml. Bumping it means bumping package.json and
+# deploy/charts/spwn/Chart.yaml (both `version` and `appVersion`) in the same commit:
+# the v* tag this script pushes is what CI stamps the chart and the image from.
+#
 # Usage:
 #   scripts/release.sh                 # version from backend/Cargo.toml
 #   scripts/release.sh --notes "..."   # set release notes

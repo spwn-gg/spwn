@@ -1,0 +1,25 @@
+apiVersion: v2
+name: spwn
+description: Run Claude Code sessions in a browser, from a pod with a home volume of its own. No authentication -- put an auth proxy in front of it.
+type: application
+
+# CI stamps both of these at package time (.github/workflows/chart.yml): a `v*` tag
+# publishes <version>, a push to main publishes 0.0.0-main.sha-<short>. What is
+# committed here is what `helm install ./deploy/charts/spwn` from a clone gets, and it
+# is bumped alongside backend/Cargo.toml and package.json.
+version: 0.1.1
+appVersion: "0.1.1"
+
+home: https://spwn-gg.github.io/spwn/
+# `helm push` maps sources[0] to org.opencontainers.image.source, which is what links
+# the GHCR package back to this repository.
+sources:
+  - https://github.com/spwn-gg/spwn
+keywords:
+  - claude
+  - claude-code
+  - agents
+  - terminal
+maintainers:
+  - name: spwn-gg
+    url: https://github.com/spwn-gg

@@ -160,6 +160,23 @@ export function githubAuthStatus(): Promise<GithubAuthStatus> {
 	return invoke('github_auth_status');
 }
 
+export interface ClaudeAuthStatus {
+	/** Resolved path to the claude binary, or null if it isn't installed. */
+	binary: string | null;
+	/** null means "can't tell" -- never render that as signed out. */
+	loggedIn: boolean | null;
+	account: string | null;
+}
+
+/**
+ * Whether the Claude CLI is installed and signed in. Read from the config file
+ * Claude Code owns; anything unrecognised comes back as `loggedIn: null` rather
+ * than a false negative that would strand the user on the setup screen.
+ */
+export function claudeAuthStatus(): Promise<ClaudeAuthStatus> {
+	return invoke('claude_auth_status');
+}
+
 /** Save the GitHub token git uses for private repos; an empty string removes it. */
 export function setGithubToken(token: string): Promise<GithubAuthStatus> {
 	return invoke('set_github_token', { token });
@@ -315,7 +332,8 @@ export function pickDirectory(): Promise<string | null> {
 // --- Terminals ---
 
 export interface OpenTerminalArgs {
-	projectId: string;
+	/** Omit for a scratch pane that belongs to no project (the setup screen's shell). */
+	projectId?: string;
 	terminalId?: string;
 	kind: TerminalKind;
 	/** Which agent definition to run, when kind === 'agent'. */
@@ -332,7 +350,8 @@ export interface OpenTerminalArgs {
 	permissionMode?: string;
 }
 
-/** Open or reattach a terminal; resolves to its terminal id. */
+/** Open or reattach a terminal; resolves to its terminal id. Omitting `projectId`
+ *  opens a scratch pane in the home directory that belongs to no project. */
 export function openTerminal(spec: OpenTerminalArgs): Promise<string> {
 	return invoke('open_terminal', { spec });
 }

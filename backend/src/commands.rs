@@ -96,6 +96,12 @@ pub async fn clone_project(
     let name = gitwt::repo_name_from_url(&url)
         .ok_or_else(|| format!("can't derive a folder name from {url}"))?;
     let parent = PathBuf::from(parent_dir.trim());
+    // Create it rather than rejecting it: on a fresh home the obvious destination
+    // (~/code) doesn't exist yet, and the picker has no way to make one.
+    if !parent.exists() {
+        std::fs::create_dir_all(&parent)
+            .map_err(|e| format!("can't create {}: {e}", parent.display()))?;
+    }
     if !parent.is_dir() {
         return Err(format!("{} is not a directory", parent.display()));
     }
@@ -280,10 +286,24 @@ fn push_block(state: &AppState, project_id: &str, block: ContextBlock) -> Result
 // Terminals
 // ---------------------------------------------------------------------------
 
+/// The user's home directory, as a string. Where a pane that belongs to no project
+/// starts -- the setup screen's shell, before there is a project to start it in.
+fn home_dir_string() -> String {
+    directories::BaseDirs::new()
+        .map(|b| b.home_dir().to_string_lossy().into_owned())
+        .unwrap_or_else(|| ".".to_string())
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenTerminalSpec {
-    pub project_id: String,
+    /// The project this pane belongs to. `None` opens a scratch pane in the user's
+    /// home directory that belongs to no project -- how the setup screen gives you a
+    /// shell to sign in from before any project exists. Such a pane is deliberately
+    /// not persisted: there is no project record to persist it into, and nothing
+    /// should outlive setup.
+    #[serde(default)]
+    pub project_id: Option<String>,
     pub terminal_id: Option<String>,
     /// `"shell"` | `"agent"` | `"claude"` (legacy sidecar), for new terminals.
     pub kind: String,
@@ -320,10 +340,15 @@ pub async fn open_terminal(
 ) -> Result<String, String> {
     let (terminal_id, kind, agent_id, cwd, resume_src, fork, is_new, project_dir, fork_base) = {
         let mut store = state.store.lock();
-        let project = store
-            .project(&spec.project_id)
-            .ok_or_else(|| "no such project".to_string())?
-            .clone();
+        let project = match &spec.project_id {
+            Some(id) => Some(
+                store
+                    .project(id)
+                    .ok_or_else(|| "no such project".to_string())?
+                    .clone(),
+            ),
+            None => None,
+        };
 
         let existing = spec
             .terminal_id
@@ -380,7 +405,8 @@ pub async fn open_terminal(
         let cwd = existing
             .as_ref()
             .map(|t| t.cwd.clone())
-            .unwrap_or_else(|| project.directory.clone());
+            .or_else(|| project.as_ref().map(|p| p.directory.clone()))
+            .unwrap_or_else(|| home_dir_string());
         let saved_session = existing.as_ref().and_then(|t| t.session_id.clone());
 
         // Claude resume/fork resolution. Fork resumes its source then branches; a
@@ -415,7 +441,11 @@ pub async fn open_terminal(
                 (_, "agent") => agent_id.clone().unwrap_or_else(|| "agent".to_string()),
                 _ => "shell".to_string(),
             };
-            if let Some(p) = store.project_mut(&spec.project_id) {
+            if let Some(p) = spec
+                .project_id
+                .as_ref()
+                .and_then(|id| store.project_mut(id))
+            {
                 p.terminals.push(TerminalRec {
                     id: terminal_id.clone(),
                     title,
@@ -445,7 +475,7 @@ pub async fn open_terminal(
             resume_src,
             fork,
             is_new,
-            project.directory.clone(),
+            project.as_ref().map(|p| p.directory.clone()).unwrap_or_default(),
             fork_base,
         )
     };
@@ -456,7 +486,7 @@ pub async fn open_terminal(
     // gitignored build dirs are COW-cloned in so the agent can build immediately.
     // Falls back to the project dir if it's not a git repo or the worktree fails.
     let mut cwd = cwd;
-    if is_new && (kind == "claude" || kind == "agent") {
+    if is_new && !project_dir.is_empty() && (kind == "claude" || kind == "agent") {
         if let Some(repo) = gitwt::repo_root(Path::new(&project_dir)) {
             if let Some(base) = fork_base.or_else(|| gitwt::current_branch(&repo)) {
                 // Create the worktree via the `session-created` hooks (native fallback
@@ -1530,7 +1560,7 @@ pub(crate) async fn ensure_attached(state: &Arc<AppState>, terminal_id: &str) ->
     open_terminal(
         Arc::clone(state),
         OpenTerminalSpec {
-            project_id,
+            project_id: Some(project_id),
             terminal_id: Some(terminal_id.to_string()),
             kind,
             agent: None,
@@ -2417,6 +2447,57 @@ pub struct GithubAuthStatus {
 /// Whether a GitHub token is saved. The token itself never leaves the backend.
 pub fn github_auth_status() -> GithubAuthStatus {
     GithubAuthStatus { token_saved: crate::gitauth::has_token() }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeAuthStatus {
+    /// Resolved path to the agent's binary, or None if it isn't installed.
+    pub binary: Option<String>,
+    /// False only when we are sure: a readable config with no account in it, and no
+    /// key in the environment. An unreadable or unparseable config reads as None.
+    pub logged_in: Option<bool>,
+    /// Who, when we can tell -- an email or display name to show back to the user.
+    pub account: Option<String>,
+}
+
+/// Whether the Claude CLI is installed and signed in, for the setup screen.
+///
+/// spwn does not own Claude's login and never writes it: this reads `~/.claude.json`,
+/// which Claude Code owns, and treats anything it doesn't understand as "don't know"
+/// rather than "signed out" -- an undocumented field changing shape must not strand a
+/// user behind a setup step they've already completed.
+pub fn claude_auth_status(state: &AppState) -> ClaudeAuthStatus {
+    let binary = list_agents(state)
+        .into_iter()
+        .find(|a| a.id == "claude")
+        .and_then(|a| a.binary);
+
+    // An API key in the environment is how an unattended deployment signs in. spwn
+    // never reads these itself -- claude does -- but a pod configured that way must
+    // not be told to go and sign in.
+    for key in ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] {
+        if std::env::var(key).map(|v| !v.is_empty()).unwrap_or(false) {
+            return ClaudeAuthStatus { binary, logged_in: Some(true), account: None };
+        }
+    }
+
+    let Ok(text) = std::fs::read_to_string(crate::projects::config_file()) else {
+        // No file at all is the one honest "signed out": claude writes it on first run.
+        return ClaudeAuthStatus { binary, logged_in: Some(false), account: None };
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return ClaudeAuthStatus { binary, logged_in: None, account: None };
+    };
+    let account = json.get("oauthAccount");
+    ClaudeAuthStatus {
+        binary,
+        logged_in: Some(account.is_some()),
+        account: account
+            .and_then(|a| a.get("emailAddress").or_else(|| a.get("displayName")))
+            .and_then(|v| v.as_str())
+            .map(String::from),
+    }
 }
 
 /// Save the GitHub token git uses for private repos; a blank token removes it.

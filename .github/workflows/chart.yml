@@ -1,0 +1,117 @@
+name: Chart
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths:
+      - 'deploy/charts/**'
+      - '.github/workflows/chart.yml'
+  pull_request:
+    paths:
+      - 'deploy/charts/**'
+      - '.github/workflows/chart.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chart-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+
+      - name: Lint
+        run: helm lint deploy/charts/spwn --strict
+
+      # Render every shape the chart supports. `lint` on its own never executes the
+      # ingress or rbac templates, which is exactly where the mistakes are.
+      - name: Render
+        run: |
+          mkdir -p rendered
+          for v in deploy/charts/spwn/ci/*-values.yaml; do
+            name="$(basename "$v" .yaml)"
+            echo "::group::$name"
+            helm template spwn deploy/charts/spwn -n spwn -f "$v" | tee "rendered/$name.yaml"
+            echo "::endgroup::"
+          done
+
+      # Server-side schema validation with no cluster: catches the class of typo helm
+      # lint cannot (wrong apiVersion, misspelled field, string where an int belongs).
+      - name: Validate against the Kubernetes API schema
+        run: |
+          curl -fsSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
+            | sudo tar -xz -C /usr/local/bin kubeconform
+          kubeconform -strict -summary -kubernetes-version 1.31.0 \
+            -schema-location default rendered/*.yaml
+
+      # The chart's contract with anyone migrating off the old kustomize deploy is that
+      # these two names stay put. Assert it rather than trusting review.
+      - name: Names an existing install already has must not change
+        run: |
+          out="$(helm template spwn deploy/charts/spwn -n spwn)"
+          grep -q "name: spwn-home" <<<"$out" || { echo "PVC is no longer spwn-home"; exit 1; }
+          grep -qE "^  name: spwn$"  <<<"$out" || { echo "objects are no longer named spwn"; exit 1; }
+
+  publish:
+    needs: lint
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+
+      - name: Derive chart and app versions
+        id: ver
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            # scripts/release.sh tags v<backend/Cargo.toml version>, and image.yml
+            # publishes ghcr.io/spwn-gg/spwn:<version> from that same tag.
+            v="${GITHUB_REF_NAME#v}"
+            app="$v"
+          else
+            # A prerelease, so it never satisfies a stable --version constraint. The
+            # `sha-` prefix keeps the identifier alphanumeric (an all-digit short SHA
+            # would be a numeric SemVer identifier, and one with a leading zero is
+            # invalid SemVer outright) and matches image.yml's `type=sha,prefix=sha-`
+            # tag exactly, so the chart's default image is pinned to this commit.
+            short="${GITHUB_SHA::7}"
+            v="0.0.0-main.sha-${short}"
+            app="sha-${short}"
+          fi
+          echo "chart=$v" >> "$GITHUB_OUTPUT"
+          echo "app=$app" >> "$GITHUB_OUTPUT"
+
+      - name: Package
+        run: |
+          helm package deploy/charts/spwn \
+            --version "${{ steps.ver.outputs.chart }}" \
+            --app-version "${{ steps.ver.outputs.app }}" \
+            --destination dist
+
+      - name: Log in to GHCR
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$TOKEN" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      # Pushing to oci://ghcr.io/<owner>/charts publishes at
+      # ghcr.io/<owner>/charts/spwn:<version> -- helm appends the chart's own name.
+      - name: Push
+        run: helm push "dist/spwn-${{ steps.ver.outputs.chart }}.tgz" oci://ghcr.io/${{ github.repository_owner }}/charts
+
+      - name: Summary
+        run: |
+          echo '`helm install spwn oci://ghcr.io/${{ github.repository_owner }}/charts/spwn --version ${{ steps.ver.outputs.chart }}`' >> "$GITHUB_STEP_SUMMARY"

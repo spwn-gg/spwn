@@ -26,10 +26,12 @@
 		parentTerminalId = undefined,
 		initialPrompt = undefined,
 		permissionMode = undefined,
-		onOpened = undefined
+		onOpened = undefined,
+		runOnOpen = undefined
 	}: {
 		tabKey: string;
-		projectId: string;
+		/** Omit for a scratch pane in the home directory, belonging to no project. */
+		projectId?: string;
 		kind?: TerminalKind;
 		/** Which agent definition to run, when kind === 'agent'. */
 		agent?: string;
@@ -41,6 +43,9 @@
 		permissionMode?: string;
 		/** Called with the backend terminal id once the pane is live. */
 		onOpened?: (id: string) => void;
+		/** A command to type into a fresh shell pane, so the user doesn't have to.
+		 *  They can still see it, edit it, or run something else. */
+		runOnOpen?: string;
 	} = $props();
 
 	let container: HTMLDivElement;
@@ -97,6 +102,8 @@
 		term.onData((d) => {
 			if (id) writeToPty(id, d);
 		});
+
+		if (runOnOpen) writeToPty(id, `${runOnOpen}\n`).catch(() => {});
 
 		resizeObserver = new ResizeObserver(() => {
 			fit?.fit();

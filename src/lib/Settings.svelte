@@ -8,10 +8,9 @@
 		openGlobalHooksDir,
 		listAgents,
 		reloadAgents,
-		openAgentsDir,
-		githubAuthStatus,
-		setGithubToken
+		openAgentsDir
 	} from './ipc';
+	import GitHubTokenField from './GitHubTokenField.svelte';
 	import { showSettings } from './stores';
 	import type { WorktreeLocation, AgentSummary } from './types';
 
@@ -20,29 +19,9 @@
 	let saved = $state(false);
 	let version = $state('');
 
-	// --- GitHub token (saved and removed on its own, not with the Save button) ---
+	// The field saves and removes on its own, not with the Save button; this only
+	// tracks the result so the header can show the "token saved" chip.
 	let tokenSaved = $state(false);
-	let tokenInput = $state('');
-	let tokenMsg = $state('');
-	let tokenBusy = $state(false);
-
-	onMount(async () => {
-		tokenSaved = (await githubAuthStatus()).tokenSaved;
-	});
-
-	async function saveToken(token: string) {
-		tokenBusy = true;
-		tokenMsg = '';
-		try {
-			tokenSaved = (await setGithubToken(token)).tokenSaved;
-			tokenInput = '';
-			tokenMsg = tokenSaved ? 'Token saved.' : 'Token removed.';
-		} catch (e) {
-			tokenMsg = e instanceof Error ? e.message : String(e);
-		} finally {
-			tokenBusy = false;
-		}
-	}
 
 	// --- Agents ---
 	let agents = $state<AgentSummary[]>([]);
@@ -264,28 +243,7 @@
 					GitHub
 					{#if tokenSaved}<span class="chip ok">token saved</span>{/if}
 				</div>
-				<div class="row">
-					<input
-						type="password"
-						bind:value={tokenInput}
-						placeholder={tokenSaved ? 'Paste a new token to replace the saved one' : 'ghp_… or github_pat_…'}
-						spellcheck="false"
-						autocomplete="off"
-						disabled={tokenBusy} />
-					<button class="browse" onclick={() => saveToken(tokenInput)} disabled={tokenBusy || !tokenInput.trim()}>
-						Save token
-					</button>
-					{#if tokenSaved}
-						<button class="browse" onclick={() => saveToken('')} disabled={tokenBusy}>Remove</button>
-					{/if}
-				</div>
-				<div class="hint">
-					A personal access token lets spwn clone, fetch, pull and push private GitHub repos
-					over HTTPS, and lets git in your shells and agents do the same. Use a classic token
-					with the <code>repo</code> scope, or a fine-grained one with read and write access to
-					Contents. It's saved on its own in spwn's data folder, readable only by you.
-				</div>
-				{#if tokenMsg}<div class="hint">{tokenMsg}</div>{/if}
+				<GitHubTokenField onchange={(saved) => (tokenSaved = saved)} />
 			</div>
 
 			<div class="field">
