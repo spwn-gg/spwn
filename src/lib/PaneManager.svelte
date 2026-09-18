@@ -4,6 +4,7 @@
 	import ContextComposer from './ContextComposer.svelte';
 	import ScheduledTasks from './ScheduledTasks.svelte';
 	import Workflows from './Workflows.svelte';
+	import Settings from './Settings.svelte';
 	import { openTabs, activeTabKey, closeTab, hookRunning, agentStatus } from './stores';
 	import type { OpenTab } from './stores';
 	import { GLYPHS } from './labels';
@@ -18,7 +19,9 @@
 					? GLYPHS.schedule
 					: kind === 'workflow'
 						? GLYPHS.workflow
-						: GLYPHS.shell;
+						: kind === 'settings'
+							? GLYPHS.settings
+							: GLYPHS.shell;
 	}
 
 	function close(key: string, e: Event) {
@@ -76,6 +79,8 @@
 					<ScheduledTasks projectId={tab.projectId} />
 				{:else if tab.kind === 'workflow'}
 					<Workflows projectId={tab.projectId} />
+				{:else if tab.kind === 'settings'}
+					<Settings tabKey={tab.key} />
 				{:else if tab.kind === 'agent'}
 					<AgentPane
 						tabKey={tab.key}

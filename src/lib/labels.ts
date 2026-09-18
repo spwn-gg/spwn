@@ -34,7 +34,8 @@ export const GLYPHS = {
 	branch: '⎇',
 	mergeTray: '▦',
 	schedule: '◷',
-	workflow: '⚙'
+	workflow: '⇄',
+	settings: '⚙'
 } as const;
 
 /** Common action labels, so buttons/menus/tooltips read identically across views. */

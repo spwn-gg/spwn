@@ -24,7 +24,7 @@
 		agentStatus,
 		setAgentStatus,
 		confirmDialog,
-		showSettings,
+		openSettings,
 		type ConfirmRow
 	} from './stores';
 	import { get } from 'svelte/store';
@@ -122,7 +122,7 @@
 	// "binary not found" -- point at the fix instead of offering the dead end.
 	function openAgentSettings() {
 		openMenuId = null;
-		showSettings.set(true);
+		openSettings();
 	}
 
 	function menuShell(p: ProjectRec, e: Event) {
@@ -412,7 +412,7 @@
 			<span class="t-icon" class:branch={depth > 0}>{depth > 0 ? '↳' : '✦'}</span>
 			<span class="t-title" class:attn={status === 'blocked' || status === 'done'} class:err={status === 'error'}>{t.title}</span>
 			{#if $hookRunning.has(t.id)}<span class="hook-spin" title="Running {$hookRunning.get(t.id)} hook…"></span>{/if}
-			{#if t.workflow}<span class="wf-chip" title="Created by the {t.workflow.name} workflow{t.workflow.key ? ` (${t.workflow.key})` : ''}">⚙</span>{/if}
+			{#if t.workflow}<span class="wf-chip" title="Created by the {t.workflow.name} workflow{t.workflow.key ? ` (${t.workflow.key})` : ''}">⇄</span>{/if}
 			{#if t.branch}<span class="wt-chip" title="git branch (this session's worktree): {t.branch}">⎇ {t.branch.replace(/^cm\//, '')}</span>{/if}
 			{#if status === 'thinking'}<span class="think-spin" title="Working…"></span>
 			{:else if status === 'blocked'}<span class="attn-dot blocked" title="Waiting for you"></span>
@@ -475,7 +475,7 @@
 					</div>
 					<div class="row ctx-row" class:active={isActiveWorkflows(p)}>
 						<button class="row-main" onclick={(e) => openWorkflows(p, e)} title="Scripts in .spwn/workflows that orchestrate sessions">
-							<span class="t-icon ctx">⚙</span>
+							<span class="t-icon ctx">⇄</span>
 							<span class="t-title">Workflows</span>
 						</button>
 					</div>
