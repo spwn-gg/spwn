@@ -182,52 +182,17 @@ extraObjects:
 
 ## Migrating from the kustomize deploy
 
-Earlier versions of spwn shipped a kustomize base under `deploy/kubernetes/`. The chart
-renders the **same object names** — `spwn` and `spwn-home` — when the release is named
-`spwn`, so your existing volume is adopted rather than orphaned.
+Earlier versions shipped a kustomize base under `deploy/kubernetes/`. The chart renders
+the **same object names** — `spwn` and `spwn-home` — when the release is named `spwn`, so
+`helm install spwn -n <your namespace>` adopts your existing volume rather than orphaning
+it. Helm 3.17+ needs `--take-ownership`; older versions need the objects annotated with
+`meta.helm.sh/release-name` and labelled `app.kubernetes.io/managed-by=Helm` first.
 
-```sh
-NS=spwn
-
-# 1. Note the size you actually have. A claim can grow but never shrink: if the chart
-#    renders 20Gi over a 100Gi claim, the install fails on an immutable-field error.
-kubectl -n $NS get pvc spwn-home -o jsonpath='{.spec.resources.requests.storage}{"\n"}'
-
-# 2. Hand the existing objects to Helm. (Helm 3.17+: skip this and pass
-#    `--take-ownership` to `helm install` instead.)
-for r in serviceaccount/spwn service/spwn pvc/spwn-home; do
-  kubectl -n $NS annotate --overwrite "$r" \
-    meta.helm.sh/release-name=spwn meta.helm.sh/release-namespace=$NS
-  kubectl -n $NS label --overwrite "$r" app.kubernetes.io/managed-by=Helm
-done
-# Only if you used components/session-pods:
-for r in role/spwn-session-pods rolebinding/spwn-session-pods; do
-  kubectl -n $NS annotate --overwrite "$r" \
-    meta.helm.sh/release-name=spwn meta.helm.sh/release-namespace=$NS
-  kubectl -n $NS label --overwrite "$r" app.kubernetes.io/managed-by=Helm
-done
-# And only if you used examples/ingress (a plain Ingress). A Traefik IngressRoute is not
-# managed by this chart: leave it alone, it keeps pointing at the unchanged Service.
-kubectl -n $NS annotate --overwrite ingress/spwn \
-  meta.helm.sh/release-name=spwn meta.helm.sh/release-namespace=$NS
-kubectl -n $NS label --overwrite ingress/spwn app.kubernetes.io/managed-by=Helm
-
-# 3. The Deployment's pod selector is immutable and the chart's differs (it adds
-#    app.kubernetes.io/instance), so it has to be recreated. Safe: nothing lives in the
-#    pod — repos, the Claude login and every setting are on the volume, and panes never
-#    survive a restart anyway.
-kubectl -n $NS delete deployment spwn
-
-# 4. Install. The release MUST be named spwn in this namespace, or the generated names
-#    stop matching what you just annotated.
-helm install spwn oci://ghcr.io/spwn-gg/charts/spwn -n $NS \
-  --set persistence.size=20Gi \
-  --set ingress.enabled=true --set ingress.host=spwn.example.com \
-  --set sessionPods.enabled=true   # only if you used the component
-
-# 5. Confirm you kept the volume, not a fresh one.
-kubectl -n $NS get pvc spwn-home -o jsonpath='{.spec.volumeName}{"\n"}'
-```
+Two things to know before you run it. Pass `--set persistence.size=` the size you
+actually have — a claim can grow but never shrink, and the chart's 20Gi default over a
+larger claim fails on an immutable field. And delete the Deployment first: its pod
+selector is immutable and the chart's adds `app.kubernetes.io/instance`. That is safe —
+every byte of state is on the volume, and panes never survive a restart anyway.
 
 ## Limits
 
