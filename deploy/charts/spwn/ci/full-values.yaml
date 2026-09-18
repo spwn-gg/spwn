@@ -31,7 +31,7 @@ podAnnotations:
 podLabels:
   team: platform
 nodeSelector:
-  kubernetes.io/hostname: game-pc
+  kubernetes.io/hostname: node-1
 tolerations:
   - key: node-role.kubernetes.io/control-plane
     operator: Exists
