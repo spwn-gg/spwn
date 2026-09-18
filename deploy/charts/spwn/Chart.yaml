@@ -7,8 +7,8 @@ type: application
 # publishes <version>, a push to main publishes 0.0.0-main.sha-<short>. What is
 # committed here is what `helm install ./deploy/charts/spwn` from a clone gets, and it
 # is bumped alongside backend/Cargo.toml and package.json.
-version: 0.1.1
-appVersion: "0.1.1"
+version: 0.1.3
+appVersion: "0.1.3"
 
 home: https://spwn-gg.github.io/spwn/
 # `helm push` maps sources[0] to org.opencontainers.image.source, which is what links
