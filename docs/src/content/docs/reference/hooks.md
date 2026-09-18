@@ -230,9 +230,13 @@ Three things to know:
   by a slug of its working directory, and a worktree's `.git` holds an absolute pointer
   into the main repo. A different in-container path breaks the Timeline, rewind and git
   with no error.
-- **Hooks always run on the host**, never inside the environment. Per-turn commits,
-  checkpoints and `spwn prompt` are unaffected. A later hook can reach into it with
-  `SPWN_EXEC`.
+- **Hooks always run where spwn runs**, never inside the environment they create. Per-turn
+  commits, checkpoints and `spwn prompt` are unaffected. A later hook can reach into it with
+  `SPWN_EXEC`. Note what "where spwn runs" means when spwn is
+  itself deployed to a server or a cluster: the hook runs *there*, so whatever it needs to
+  build the environment — a CLI, credentials, permissions — has to be present there, not on
+  your laptop. On Kubernetes that means spwn's own image and ServiceAccount; see
+  [`deploy/kubernetes/README.md`](https://github.com/spwn-gg/spwn/tree/main/deploy/kubernetes).
 
 A complete, runnable setup — image, create and teardown hooks — is in
 [`examples/hooks/docker-env/`](https://github.com/spwn-gg/spwn/tree/main/examples/hooks/docker-env).
