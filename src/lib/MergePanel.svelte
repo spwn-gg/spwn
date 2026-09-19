@@ -1,6 +1,12 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { sessionMergeStatus, mergeSession, deleteTerminal } from './ipc';
+	import {
+		sessionMergeStatus,
+		mergeSession,
+		deleteTerminal,
+		syncSessionFromBase,
+		abortSessionSync
+	} from './ipc';
 	import { refreshProjects } from './stores';
 	import type { MergeStatus } from './types';
 
@@ -16,6 +22,8 @@
 	let merging = $state(false);
 	let deleteAfter = $state(false);
 	let commitFirst = $state(true);
+	let syncing = $state(false);
+	let syncNote = $state('');
 	let result = $state('');
 	let merged = $state(false);
 
@@ -38,14 +46,55 @@
 	// half-written, and merging without committing would drop the work. Neither is a
 	// choice worth offering, so wait it out.
 	const inFlux = $derived(!!status?.uncommitted && !!status?.midTurn);
+	// An unresolved sync blocks everything: the tree holds conflict markers, so neither
+	// committing nor merging is a sane thing to do next.
+	const midSync = $derived((status?.syncConflicts?.length ?? 0) > 0);
+	// Worth offering a sync when the base has moved on and the land isn't already a
+	// guaranteed fast-forward.
+	const canSync = $derived(
+		!!status?.branch && !!status?.behind && !status?.willFastForward && !inFlux && !syncing
+	);
 	const conflicts = $derived(new Set(status?.conflicts ?? []));
 	// "Clean" is only claimable when the trial merge actually ran and found nothing.
 	const mergesClean = $derived(
 		!!status && !nothingToMerge && !status.previewUnavailable && conflicts.size === 0
 	);
 	const canMerge = $derived(
-		!!status?.branch && !status?.blocker && !nothingToMerge && !merging && !inFlux
+		!!status?.branch && !status?.blocker && !nothingToMerge && !merging && !inFlux && !midSync
 	);
+
+	async function sync() {
+		if (!canSync) return;
+		syncing = true;
+		syncNote = '';
+		try {
+			const r = await syncSessionFromBase(terminalId);
+			syncNote =
+				r.outcome === 'upToDate'
+					? 'Already up to date with the base.'
+					: r.outcome === 'merged'
+						? `Synced — landing this is now a fast-forward. ${r.summary}`
+						: `Sync stopped on ${r.conflicts.length} conflict${r.conflicts.length === 1 ? '' : 's'}: ${r.conflicts.join(', ')}. Resolve them in the session, or abort.`;
+		} catch (e) {
+			syncNote = String(e);
+		} finally {
+			syncing = false;
+			await load();
+		}
+	}
+
+	async function abort() {
+		syncing = true;
+		try {
+			await abortSessionSync(terminalId);
+			syncNote = 'Sync aborted — the branch is back where it was.';
+		} catch (e) {
+			syncNote = String(e);
+		} finally {
+			syncing = false;
+			await load();
+		}
+	}
 
 	async function merge() {
 		if (!canMerge) return;
@@ -99,6 +148,9 @@
 						<strong>{status.changedFiles.length}</strong>
 						file{status.changedFiles.length === 1 ? '' : 's'} changed
 					</span>
+					{#if status.behind}
+						<span class="stat clash"><strong>{status.behind}</strong> behind</span>
+					{/if}
 					{#if conflicts.size}
 						<span class="stat clash">
 							<strong>{conflicts.size}</strong>
@@ -136,6 +188,31 @@
 						Couldn't check for conflicts ahead of time: {status.previewUnavailable}
 					</div>
 				{/if}
+				{#if midSync}
+					<div class="note warn">
+						A sync is part-way through, with conflicts still unresolved in
+						{status.syncConflicts.length === 1 ? ' one file' : ` ${status.syncConflicts.length} files`}:
+						<code>{status.syncConflicts.join(', ')}</code>. Resolve them in the session, or
+						abort the sync.
+					</div>
+					<button class="btn" disabled={syncing} onclick={abort}>Abort sync</button>
+				{:else if canSync}
+					<div class="note">
+						<code>{status.baseBranch}</code> has moved on by {status.behind}
+						commit{status.behind === 1 ? '' : 's'}. Syncing brings it into this session's
+						branch — conflicts surface here, where the agent can resolve them, and the
+						merge afterwards becomes a fast-forward that can't fail.
+					</div>
+					<button class="btn" disabled={!canSync} onclick={sync}>
+						{syncing ? 'Syncing…' : `Sync with ${status.baseBranch}`}
+					</button>
+				{:else if status.willFastForward && !nothingToMerge}
+					<div class="note ok">Up to date with the base — this will fast-forward.</div>
+				{/if}
+				{#if syncNote}
+					<div class="note">{syncNote}</div>
+				{/if}
+
 				{#if inFlux}
 					<div class="note warn">
 						This session is mid-turn and has uncommitted changes. Wait for the turn to finish,
@@ -312,6 +389,9 @@
 	}
 	.note.warn {
 		color: #d8b25a;
+	}
+	.note.ok {
+		color: #9fd0a6;
 	}
 	.blocker {
 		font-size: 12.5px;

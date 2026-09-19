@@ -6,6 +6,7 @@
 	import {
 		sessionMergeStatus,
 		mergeSession,
+		syncSessionFromBase,
 		addContextBlock,
 		readTranscript
 	} from './ipc';
@@ -49,9 +50,34 @@
 	// moment to snapshot. This panel's whole job is moving work back, so when the turn
 	// is done it always commits the leftovers rather than offering to leave them.
 	const inFlux = $derived(!!status?.uncommitted && !!status?.midTurn);
-	const canMerge = $derived(
-		!!status?.branch && !status?.blocker && !nothingToMerge && !busy && !inFlux
+	const midSync = $derived((status?.syncConflicts?.length ?? 0) > 0);
+	const canSync = $derived(
+		!!status?.branch && !!status?.behind && !status?.willFastForward && !inFlux && !busy
 	);
+	const canMerge = $derived(
+		!!status?.branch && !status?.blocker && !nothingToMerge && !busy && !inFlux && !midSync
+	);
+
+	async function doSync() {
+		if (!canSync) return;
+		busy = true;
+		error = '';
+		result = '';
+		try {
+			const r = await syncSessionFromBase(terminalId);
+			result =
+				r.outcome === 'upToDate'
+					? 'Already up to date with the base.'
+					: r.outcome === 'merged'
+						? 'Synced — merging is now a fast-forward.'
+						: `Sync stopped on conflicts: ${r.conflicts.join(', ')}. Resolve them in the session.`;
+			status = await sessionMergeStatus(projectId, terminalId).catch(() => status);
+		} catch (e) {
+			error = String(e);
+		} finally {
+			busy = false;
+		}
+	}
 	const conflictCount = $derived(status?.conflicts?.length ?? 0);
 
 	onMount(async () => {
@@ -162,7 +188,13 @@
 						{/if}
 					</div>
 					<p class="opt-desc">Fold this session’s git branch back into the branch it was forked from.</p>
-					{#if inFlux}
+					{#if midSync}
+						<div class="warn">
+							A sync is part-way through with unresolved conflicts in
+							<code>{status?.syncConflicts.join(', ')}</code>. Resolve them in the session
+							before merging.
+						</div>
+					{:else if inFlux}
 						<div class="warn">
 							This session is mid-turn with uncommitted changes. Wait for the turn to finish,
 							so the merge doesn’t take a half-written tree.
@@ -180,8 +212,18 @@
 					{:else if status?.previewUnavailable}
 						<div class="hint">Couldn’t check for conflicts first: {status.previewUnavailable}</div>
 					{/if}
-					{#if status?.uncommitted && !inFlux}
+					{#if status?.uncommitted && !inFlux && !midSync}
 						<div class="hint">Uncommitted changes will be committed onto the branch first.</div>
+					{/if}
+					{#if canSync}
+						<div class="hint">
+							<code>{status?.baseBranch}</code> is {status?.behind} commit{status?.behind === 1
+								? ''
+								: 's'} ahead. Sync first and this merge becomes a fast-forward.
+						</div>
+					{/if}
+					{#if canSync}
+						<button disabled={!canSync} onclick={doSync}>Sync with base</button>
 					{/if}
 					<button class="primary" disabled={!canMerge} onclick={doMerge}>
 						{conflictCount ? 'Merge anyway' : 'Merge'}

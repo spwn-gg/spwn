@@ -997,6 +997,14 @@ pub struct MergeStatus {
     /// A turn is running right now, so the worktree is being written as we look at it.
     /// With `uncommitted`, this is what makes committing-then-merging unsafe.
     pub mid_turn: bool,
+    /// Commits on the base that this session doesn't have yet — how stale the branch
+    /// has grown while it worked.
+    pub behind: u32,
+    /// The branch already contains the base tip, so landing it is a fast-forward and
+    /// cannot conflict. Syncing is what makes this true.
+    pub will_fast_forward: bool,
+    /// A sync conflicted and its resolution is still sitting in the worktree.
+    pub sync_conflicts: Vec<String>,
 }
 
 /// Compute a merge preview for a session: target branch, how far ahead it is, which
@@ -1029,6 +1037,16 @@ pub fn session_merge_status(
     let changed_files = gitwt::changed_files(wt, &base, &branch);
     let uncommitted = !gitwt::is_clean(wt);
     let mid_turn = agent_status_of(state, &terminal_id) == crate::agents::SessionStatus::Thinking;
+    let behind = gitwt::count_commits(wt, &format!("{branch}..{base}"));
+    let will_fast_forward = gitwt::is_ancestor(wt, &base, &branch);
+    // An unresolved sync is not the same as ordinary uncommitted work, and the panels
+    // have to say so — otherwise "commit your changes first" is advice that would
+    // commit conflict markers.
+    let sync_conflicts = if gitwt::merge_in_progress(wt) {
+        gitwt::unmerged_paths(wt)
+    } else {
+        Vec::new()
+    };
     // Cheap enough to run on every status refresh — which matters, because the status
     // strip refetches after each turn commits, and "this session now collides with
     // main" is worth knowing then rather than at merge time. Measured ~3ms on this
@@ -1064,6 +1082,9 @@ pub fn session_merge_status(
         conflicts,
         preview_unavailable,
         mid_turn,
+        behind,
+        will_fast_forward,
+        sync_conflicts,
     })
 }
 
@@ -2821,11 +2842,17 @@ mod merge_status_tests {
             conflicts: vec!["src/a.rs".into()],
             preview_unavailable: Some("unrelated histories".into()),
             mid_turn: true,
+            behind: 4,
+            will_fast_forward: false,
+            sync_conflicts: vec!["src/b.rs".into()],
         })
         .unwrap();
         assert_eq!(json["conflicts"], serde_json::json!(["src/a.rs"]));
         assert_eq!(json["previewUnavailable"], "unrelated histories");
         assert_eq!(json["midTurn"], true);
+        assert_eq!(json["behind"], 4);
+        assert_eq!(json["willFastForward"], false);
+        assert_eq!(json["syncConflicts"], serde_json::json!(["src/b.rs"]));
     }
 
     /// Default() backs the "no branch, nothing to merge" early returns, and must not
@@ -2836,5 +2863,7 @@ mod merge_status_tests {
         assert!(s.conflicts.is_empty());
         assert!(s.preview_unavailable.is_none());
         assert!(!s.mid_turn);
+        assert_eq!(s.behind, 0);
+        assert!(s.sync_conflicts.is_empty());
     }
 }

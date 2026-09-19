@@ -227,6 +227,13 @@ pub fn count_commits(dir: &Path, range: &str) -> u32 {
         .unwrap_or(0)
 }
 
+/// Whether `ancestor` is reachable from `descendant` — i.e. `descendant` already
+/// contains it. When that holds for (base, branch), merging the branch into the base
+/// is a fast-forward: no merge algorithm runs, so it cannot conflict.
+pub fn is_ancestor(dir: &Path, ancestor: &str, descendant: &str) -> bool {
+    git(dir, &["merge-base", "--is-ancestor", ancestor, descendant]).is_ok()
+}
+
 /// Files a `branch` introduces relative to `base` (three-dot: changes since they
 /// diverged), for a merge preview.
 pub fn changed_files(dir: &Path, base: &str, branch: &str) -> Vec<String> {
@@ -300,8 +307,13 @@ pub fn merge_preview(dir: &Path, base: &str, branch: &str) -> MergePreview {
 }
 
 /// Merge `branch` into `base`. Operates in whichever worktree has `base` checked
-/// out (commonly the project's main folder). Aborts on conflict so nothing is left
-/// half-merged. Returns a human-readable summary on success.
+/// out (commonly the project's main folder). Returns a human-readable summary.
+///
+/// When the branch already contains the base tip — which is what [`sync_from_base`]
+/// arranges — this lands as a `--ff-only` fast-forward. No merge algorithm runs at all,
+/// so the base checkout cannot be left half-merged even in principle, rather than
+/// relying on the abort below to tidy up after a failure. Otherwise it stays a
+/// three-way merge, which can conflict, and aborts so nothing is left half-done.
 pub fn merge_into_base(repo: &Path, base: &str, branch: &str) -> Result<String, String> {
     let base_wt = worktree_for_branch(repo, base).ok_or_else(|| {
         format!("Branch '{base}' isn't checked out anywhere — check it out (e.g. in your project folder) and try again.")
@@ -311,7 +323,15 @@ pub fn merge_into_base(repo: &Path, base: &str, branch: &str) -> Result<String, 
             "The checkout of '{base}' has uncommitted changes — commit or stash them first."
         ));
     }
-    match git_committing(&base_wt, &["merge", "--no-edit", branch]) {
+    // `--ff-only` is not just an optimisation here: asserting the fast-forward means a
+    // surprise (someone moved the base between the check and the merge) fails outright
+    // instead of silently becoming a three-way merge in the shared checkout.
+    let args: &[&str] = if is_ancestor(&base_wt, base, branch) {
+        &["merge", "--ff-only", branch]
+    } else {
+        &["merge", "--no-edit", branch]
+    };
+    match git_committing(&base_wt, args) {
         Ok(msg) => {
             let head = msg.lines().next().unwrap_or("").trim();
             Ok(if head.is_empty() {
@@ -677,7 +697,7 @@ mod merge_preview_tests {
 }
 
 #[cfg(test)]
-mod sync_from_base_tests {
+mod sync_and_land_tests {
     use super::*;
 
     /// `main` and `feat` diverged from a common base, each with one commit.
@@ -771,6 +791,57 @@ mod sync_from_base_tests {
         sync_from_base(dir, "main").unwrap();
         assert!(!is_clean(dir), "a conflict looks exactly like uncommitted work");
         assert!(merge_in_progress(dir), "this is what tells the two apart");
+    }
+
+    /// The payoff of the inversion: a branch that would have needed a three-way merge
+    /// in the shared base checkout becomes a pure fast-forward once it has synced.
+    #[test]
+    fn syncing_first_turns_the_land_into_a_fast_forward() {
+        let tmp = diverged(false);
+        let dir = tmp.path();
+        assert!(
+            !is_ancestor(dir, "main", "feat"),
+            "precondition: the branch does not yet contain the base"
+        );
+        sync_from_base(dir, "main").unwrap();
+        assert!(is_ancestor(dir, "main", "feat"));
+
+        git(dir, &["checkout", "-q", "main"]).unwrap();
+        let feat = git(dir, &["rev-parse", "feat"]).unwrap();
+        merge_into_base(dir, "main", "feat").unwrap();
+        assert_eq!(
+            git(dir, &["rev-parse", "main"]).unwrap(),
+            feat,
+            "a fast-forward moves the base ref onto the branch, making no new commit"
+        );
+    }
+
+    /// Without a sync, an unrelated-but-diverged branch still lands the old way.
+    #[test]
+    fn an_unsynced_branch_still_three_way_merges() {
+        let tmp = diverged(false);
+        let dir = tmp.path();
+        git(dir, &["checkout", "-q", "main"]).unwrap();
+        let feat = git(dir, &["rev-parse", "feat"]).unwrap();
+        merge_into_base(dir, "main", "feat").unwrap();
+        let head = git(dir, &["rev-parse", "main"]).unwrap();
+        assert_ne!(head, feat, "a three-way merge makes a new commit");
+        let parents = git(dir, &["rev-list", "--parents", "-n", "1", "HEAD"]).unwrap();
+        assert_eq!(parents.split_whitespace().count(), 3, "merge commit has two parents");
+    }
+
+    /// The abort path still matters for unsynced branches — and must leave the shared
+    /// base checkout exactly as it found it.
+    #[test]
+    fn a_conflicting_land_leaves_the_base_untouched() {
+        let tmp = diverged(true);
+        let dir = tmp.path();
+        git(dir, &["checkout", "-q", "main"]).unwrap();
+        let before = git(dir, &["rev-parse", "main"]).unwrap();
+        assert!(merge_into_base(dir, "main", "feat").is_err());
+        assert_eq!(git(dir, &["rev-parse", "main"]).unwrap(), before);
+        assert!(is_clean(dir), "no half-merge left in the base checkout");
+        assert!(!merge_in_progress(dir));
     }
 
     #[test]
