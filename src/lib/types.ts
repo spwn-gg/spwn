@@ -177,6 +177,18 @@ export interface MergeStatus {
 	 *  `["spwn/bbb", "spwn/aaa", "main"]`. A fork's base is its *parent session's*
 	 *  branch, so merging a deep fork moves the work one rung up, not to `main`. */
 	mergePath: string[];
+	/** Other live sessions editing the same files. Advisory only — nothing blocks on
+	 *  it. Hard file ownership would kill the cheap-parallel-exploration property that
+	 *  is the point of the tool. */
+	overlaps: Overlap[];
+}
+
+/** Another session working in the same files (mirrors commands::Overlap). */
+export interface Overlap {
+	terminalId: string;
+	title: string;
+	/** Files both sessions changed since each diverged from its own base. */
+	files: string[];
 }
 
 /** A project's main-checkout git status (mirrors commands::RepoStatus). */

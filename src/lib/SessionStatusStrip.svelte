@@ -125,6 +125,15 @@
 						collides with {merge.baseBranch}
 					</span>
 				{/if}
+				{#if merge?.overlaps?.length}
+					<span
+						class="chip ahead"
+						title={merge.overlaps
+							.map((o) => `${o.title}: ${o.files.join(', ')}`)
+							.join('\n')}>
+						{merge.overlaps.length} session{merge.overlaps.length === 1 ? '' : 's'} in the same files
+					</span>
+				{/if}
 				{#if merge?.uncommitted}
 					<span class="chip warn" title="The worktree has uncommitted changes">uncommitted</span>
 				{/if}
