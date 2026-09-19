@@ -1116,6 +1116,41 @@ pub struct MergeStatus {
     pub will_fast_forward: bool,
     /// A sync conflicted and its resolution is still sitting in the worktree.
     pub sync_conflicts: Vec<String>,
+    /// Every branch this session's work has to travel through to reach a root:
+    /// `["spwn/bbb", "spwn/aaa", "main"]`. A fork's base is its *parent session's*
+    /// branch, so merging a deep fork doesn't put the work anywhere near `main` — it
+    /// puts it one rung up. One entry means the next merge lands at a root.
+    pub merge_path: Vec<String>,
+}
+
+/// Walk a session's lineage, collecting the branches its work must pass through.
+///
+/// Each fork's base is its parent session's branch, so the merge graph mirrors the
+/// conversation tree spwn already draws. Walking child→parent→grandparent keeps every
+/// step a small, reviewable merge; merging a deep fork straight at `main` would skip
+/// the intermediate integration and maximise how far the two sides have diverged.
+///
+/// Stops at the first base no parent session owns — that's a real root like `main`.
+fn merge_path_of(store: &crate::store::ProjectStore, terminal_id: &str) -> Vec<String> {
+    let mut path = Vec::new();
+    let mut cur = terminal_id.to_string();
+    // Bounded rather than trusting the data: a parent_id cycle would otherwise hang the
+    // status call, and this runs on every refresh.
+    for _ in 0..64 {
+        let Some(t) = store.terminal(&cur) else { break };
+        let Some(base) = t.base_branch.clone() else { break };
+        path.push(base.clone());
+        let parent_owns_base = t
+            .parent_id
+            .as_deref()
+            .and_then(|pid| store.terminal(pid))
+            .is_some_and(|p| p.branch.as_deref() == Some(base.as_str()));
+        if !parent_owns_base {
+            break; // the base is a root branch, not another session's
+        }
+        cur = t.parent_id.clone().unwrap_or_default();
+    }
+    path
 }
 
 /// Compute a merge preview for a session: target branch, how far ahead it is, which
@@ -1125,7 +1160,7 @@ pub fn session_merge_status(
     project_id: String,
     terminal_id: String,
 ) -> Result<MergeStatus, String> {
-    let (proj_dir, branch, base, cwd) = {
+    let (proj_dir, branch, base, cwd, merge_path) = {
         let store = state.store.lock();
         let proj_dir = store
             .project(&project_id)
@@ -1134,7 +1169,13 @@ pub fn session_merge_status(
         let t = store
             .terminal(&terminal_id)
             .ok_or_else(|| "no such session".to_string())?;
-        (proj_dir, t.branch.clone(), t.base_branch.clone(), t.cwd.clone())
+        (
+            proj_dir,
+            t.branch.clone(),
+            t.base_branch.clone(),
+            t.cwd.clone(),
+            merge_path_of(&store, &terminal_id),
+        )
     };
     // No worktree branch → nothing to merge.
     let (Some(branch), Some(base)) = (branch, base) else {
@@ -1196,6 +1237,7 @@ pub fn session_merge_status(
         behind,
         will_fast_forward,
         sync_conflicts,
+        merge_path,
     })
 }
 
@@ -2969,6 +3011,7 @@ mod merge_status_tests {
             behind: 4,
             will_fast_forward: false,
             sync_conflicts: vec!["src/b.rs".into()],
+            merge_path: vec!["spwn/aaa".into(), "main".into()],
         })
         .unwrap();
         assert_eq!(json["conflicts"], serde_json::json!(["src/a.rs"]));
@@ -2977,6 +3020,77 @@ mod merge_status_tests {
         assert_eq!(json["behind"], 4);
         assert_eq!(json["willFastForward"], false);
         assert_eq!(json["syncConflicts"], serde_json::json!(["src/b.rs"]));
+        assert_eq!(json["mergePath"], serde_json::json!(["spwn/aaa", "main"]));
+    }
+
+    /// A session forked twice over: its work reaches main only via its parent and
+    /// grandparent's branches.
+    #[test]
+    fn merge_path_follows_the_fork_lineage_to_a_root() {
+        let store = store_with(&[
+            ("a", None, "spwn/aaa", "main"),
+            ("b", Some("a"), "spwn/bbb", "spwn/aaa"),
+            ("c", Some("b"), "spwn/ccc", "spwn/bbb"),
+        ]);
+        assert_eq!(merge_path_of(&store, "c"), vec!["spwn/bbb", "spwn/aaa", "main"]);
+        assert_eq!(merge_path_of(&store, "b"), vec!["spwn/aaa", "main"]);
+        assert_eq!(merge_path_of(&store, "a"), vec!["main"]);
+    }
+
+    /// A parent whose branch isn't the child's base is a root as far as the walk is
+    /// concerned — e.g. the parent was rebased elsewhere, or its branch reassigned.
+    #[test]
+    fn the_walk_stops_when_the_parent_no_longer_owns_the_base() {
+        let store = store_with(&[
+            ("a", None, "spwn/aaa", "main"),
+            ("b", Some("a"), "spwn/bbb", "main"),
+        ]);
+        assert_eq!(merge_path_of(&store, "b"), vec!["main"]);
+    }
+
+    /// parent_id comes off disk, so it can be cyclic. The walk is bounded because this
+    /// runs on every status refresh and a hang here would freeze the panel.
+    #[test]
+    fn a_parent_cycle_terminates() {
+        let store = store_with(&[
+            ("a", Some("b"), "spwn/aaa", "spwn/bbb"),
+            ("b", Some("a"), "spwn/bbb", "spwn/aaa"),
+        ]);
+        assert!(merge_path_of(&store, "a").len() <= 64);
+    }
+
+    /// Build a store of agent sessions: (id, parent, branch, base).
+    fn store_with(rows: &[(&str, Option<&str>, &str, &str)]) -> crate::store::ProjectStore {
+        let terminals = rows
+            .iter()
+            .map(|(id, parent, branch, base)| crate::store::TerminalRec {
+                id: (*id).into(),
+                title: (*id).into(),
+                kind: "agent".into(),
+                agent: None,
+                cwd: "/tmp".into(),
+                session_id: None,
+                group_id: None,
+                parent_id: parent.map(|p| p.to_string()),
+                branch: Some((*branch).into()),
+                base_branch: Some((*base).into()),
+                needs_attention: false,
+                attention_reason: None,
+                exec: None,
+                workflow: None,
+            })
+            .collect();
+        crate::store::ProjectStore {
+            projects: vec![crate::store::ProjectRec {
+                id: "p".into(),
+                name: "p".into(),
+                directory: "/tmp".into(),
+                terminals,
+                context: Vec::new(),
+                scheduled_tasks: Vec::new(),
+                workflows: Default::default(),
+            }],
+        }
     }
 
     /// Default() backs the "no branch, nothing to merge" early returns, and must not

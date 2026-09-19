@@ -60,6 +60,10 @@
 		!!status?.branch && !!status?.behind && !status?.willFastForward && !inFlux && !syncing
 	);
 	const conflicts = $derived(new Set(status?.conflicts ?? []));
+	// More than one rung means this merge lands on another session's branch, and the
+	// work still has that many hops to go before it reaches a root branch.
+	const path = $derived(status?.mergePath ?? []);
+	const rungsLeft = $derived(Math.max(0, path.length - 1));
 	// "Clean" is only claimable when the trial merge actually ran and found nothing.
 	const mergesClean = $derived(
 		!!status && !nothingToMerge && !status.previewUnavailable && conflicts.size === 0
@@ -191,6 +195,17 @@
 					<span class="arrow">→</span>
 					<code class="branch base">{status.baseBranch}</code>
 				</div>
+
+				{#if rungsLeft > 0}
+					<div class="note warn">
+						This is a fork of another session, so merging lands in
+						<code>{path[0]}</code> — not <code>{path[path.length - 1]}</code>.
+						Full route: <code>{[status.branch, ...path].join(' → ')}</code>
+						({rungsLeft} more merge{rungsLeft === 1 ? '' : 's'} after this one).
+						Folding each fork into its parent keeps every step small; going straight to
+						<code>{path[path.length - 1]}</code> would skip that.
+					</div>
+				{/if}
 
 				<div class="stats">
 					<span class="stat" class:zero={status.ahead === 0}>
