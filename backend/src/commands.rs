@@ -914,6 +914,10 @@ pub enum SyncResult {
     Merged { summary: String },
     /// The merge stopped, and the conflict is sitting in the session's worktree.
     Conflicted { conflicts: Vec<String> },
+    /// rerere replayed a resolution recorded earlier and the merge was completed with
+    /// it. Worth surfacing separately: a replayed resolution is textual, so it can be
+    /// stale if the surrounding code moved.
+    ReplayedResolution { files: Vec<String> },
 }
 
 /// Bring the session's base branch **into** the session's branch, resolving inside the
@@ -951,6 +955,9 @@ pub fn sync_session_from_base(
         gitwt::SyncOutcome::UpToDate => SyncResult::UpToDate,
         gitwt::SyncOutcome::Merged(summary) => SyncResult::Merged { summary },
         gitwt::SyncOutcome::Conflicted(conflicts) => SyncResult::Conflicted { conflicts },
+        gitwt::SyncOutcome::ReplayedResolution { files } => {
+            SyncResult::ReplayedResolution { files }
+        }
     })
 }
 
