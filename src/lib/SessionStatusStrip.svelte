@@ -103,11 +103,35 @@
 						{merge.ahead} ahead
 					</span>
 				{/if}
+				{#if merge && merge.behind > 0}
+					<span class="chip ahead" title="Commits on {merge.baseBranch} this session doesn't have yet">
+						{merge.behind} behind
+					</span>
+				{/if}
+				{#if merge?.syncConflicts?.length}
+					<!-- An open merge, not ordinary mess: committing it would commit the markers. -->
+					<span
+						class="chip warn"
+						title="A sync stopped on conflicts that are still unresolved: {merge.syncConflicts.join(', ')}">
+						sync unresolved
+					</span>
+				{:else if merge?.conflicts?.length}
+					<!-- The early warning this whole strip refresh exists for: the merge preview
+					     reruns after each turn commits, so a collision shows up while the session
+					     is still working, not at merge time. -->
+					<span
+						class="chip warn"
+						title="Merging would collide in: {merge.conflicts.join(', ')}">
+						collides with {merge.baseBranch}
+					</span>
+				{/if}
 				{#if merge?.uncommitted}
 					<span class="chip warn" title="The worktree has uncommitted changes">uncommitted</span>
 				{/if}
-				{#if merge && merge.ahead === 0 && !merge.uncommitted}
-					<span class="chip ok" title="Nothing to merge back yet">in sync with {merge.baseBranch}</span>
+				{#if merge && merge.ahead === 0 && merge.behind === 0 && !merge.uncommitted && !merge.syncConflicts?.length}
+					<span class="chip ok" title="Nothing to merge back, and nothing new on the base">
+						in sync with {merge.baseBranch}
+					</span>
 				{/if}
 			{:else}
 				<span class="seg dim" title="Not a git repo — this session shares the project directory">no worktree</span>

@@ -7,7 +7,8 @@
 		syncSessionFromBase,
 		abortSessionSync
 	} from './ipc';
-	import { refreshProjects } from './stores';
+	import { refreshProjects, pasteToInput } from './stores';
+	import { syncConflictPrompt } from './labels';
 	import type { MergeStatus } from './types';
 
 	let { projectId, terminalId, onClose }: {
@@ -74,13 +75,27 @@
 					? 'Already up to date with the base.'
 					: r.outcome === 'merged'
 						? `Synced — landing this is now a fast-forward. ${r.summary}`
-						: `Sync stopped on ${r.conflicts.length} conflict${r.conflicts.length === 1 ? '' : 's'}: ${r.conflicts.join(', ')}. Resolve them in the session, or abort.`;
+						: handOff(r.conflicts);
 		} catch (e) {
 			syncNote = String(e);
 		} finally {
 			syncing = false;
 			await load();
 		}
+	}
+
+	/** Put the conflict in front of the agent that caused it — see syncConflictPrompt. */
+	function handOff(paths: string[]): string {
+		pasteToInput.set({
+			terminalId,
+			text: syncConflictPrompt(status?.baseBranch ?? 'the base branch', paths)
+		});
+		const n = paths.length;
+		return `Sync stopped on ${n} conflict${n === 1 ? '' : 's'}. A note describing ${
+			n === 1 ? 'it' : 'them'
+		} is waiting in this session's composer — send it to have the agent resolve ${
+			n === 1 ? 'it' : 'them'
+		}, or abort the sync.`;
 	}
 
 	async function abort() {
@@ -195,7 +210,12 @@
 						<code>{status.syncConflicts.join(', ')}</code>. Resolve them in the session, or
 						abort the sync.
 					</div>
-					<button class="btn" disabled={syncing} onclick={abort}>Abort sync</button>
+					<div class="btnrow">
+						<button class="btn" disabled={syncing} onclick={() => (syncNote = handOff(status?.syncConflicts ?? []))}>
+							Hand to the agent
+						</button>
+						<button class="btn" disabled={syncing} onclick={abort}>Abort sync</button>
+					</div>
 				{:else if canSync}
 					<div class="note">
 						<code>{status.baseBranch}</code> has moved on by {status.behind}
@@ -392,6 +412,11 @@
 	}
 	.note.ok {
 		color: #9fd0a6;
+	}
+	.btnrow {
+		display: flex;
+		gap: 8px;
+		margin-bottom: 10px;
 	}
 	.blocker {
 		font-size: 12.5px;

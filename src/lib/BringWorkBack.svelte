@@ -11,6 +11,7 @@
 		readTranscript
 	} from './ipc';
 	import { projects, openTab, pasteToInput, refreshProjects } from './stores';
+	import { syncConflictPrompt } from './labels';
 	import { isSessionTerminal } from './forest';
 	import type { MergeStatus, Turn } from './types';
 
@@ -65,12 +66,22 @@
 		result = '';
 		try {
 			const r = await syncSessionFromBase(terminalId);
-			result =
-				r.outcome === 'upToDate'
-					? 'Already up to date with the base.'
-					: r.outcome === 'merged'
-						? 'Synced — merging is now a fast-forward.'
-						: `Sync stopped on conflicts: ${r.conflicts.join(', ')}. Resolve them in the session.`;
+			if (r.outcome === 'upToDate') {
+				result = 'Already up to date with the base.';
+			} else if (r.outcome === 'merged') {
+				result = 'Synced — merging is now a fast-forward.';
+			} else {
+				// Hand the conflict to the agent that owns this worktree; it goes into the
+				// composer unsubmitted, so a turn only starts when the user sends it.
+				pasteToInput.set({
+					terminalId,
+					text: syncConflictPrompt(status?.baseBranch ?? 'the base branch', r.conflicts)
+				});
+				const n = r.conflicts.length;
+				result = `Sync stopped on ${n} conflict${n === 1 ? '' : 's'}. A note describing ${
+					n === 1 ? 'it' : 'them'
+				} is waiting in this session's composer.`;
+			}
 			status = await sessionMergeStatus(projectId, terminalId).catch(() => status);
 		} catch (e) {
 			error = String(e);
