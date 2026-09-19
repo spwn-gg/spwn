@@ -173,6 +173,10 @@ export interface MergeStatus {
 	/** A sync conflicted and its resolution is still sitting in the worktree. Distinct
 	 *  from `uncommitted`: committing these would commit conflict markers. */
 	syncConflicts: string[];
+	/** Every branch this session's work travels through to reach a root, e.g.
+	 *  `["spwn/bbb", "spwn/aaa", "main"]`. A fork's base is its *parent session's*
+	 *  branch, so merging a deep fork moves the work one rung up, not to `main`. */
+	mergePath: string[];
 }
 
 /** A project's main-checkout git status (mirrors commands::RepoStatus). */
