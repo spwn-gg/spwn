@@ -212,6 +212,14 @@
 					<code class="branch base">{status.baseBranch}</code>
 				</div>
 
+				{#if status.stagingConflicts?.length}
+					<div class="note warn">
+						The queued work can't take your latest commits — it conflicts in
+						<code>{status.stagingConflicts.join(', ')}</code>. That's between the queued
+						sessions and your commits, so a session needs to resolve it; nothing of yours
+						is blocked meanwhile.
+					</div>
+				{/if}
 				{#if status.stagingAhead}
 					<div class="note">
 						<strong>{status.stagingAhead} merge{status.stagingAhead === 1 ? '' : 's'}</strong>

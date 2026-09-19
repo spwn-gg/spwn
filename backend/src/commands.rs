@@ -954,9 +954,16 @@ pub fn sync_session_from_base(
     let wt = Path::new(&cwd);
     // Sync from wherever this session will actually land. Once a queue is open, syncing
     // from the bare base would leave the branch unable to fast-forward onto staging.
-    let base = gitwt::repo_root(wt)
-        .map(|repo| gitwt::landing_target(&repo, &base))
-        .unwrap_or(base);
+    let base = match gitwt::repo_root(wt) {
+        Some(repo) => {
+            // Carry the base into the queue before syncing from it, or this session
+            // pulls a branch that stopped tracking the human's work when the queue
+            // opened.
+            gitwt::track_base(&repo, &base)?;
+            gitwt::landing_target(&repo, &base)
+        }
+        None => base,
+    };
     settle_worktree(
         state,
         &terminal_id,
@@ -1163,6 +1170,10 @@ pub struct MergeStatus {
     pub staging_ahead: u32,
     /// Files that queued work would bring into the base.
     pub staging_files: Vec<String>,
+    /// Paths where the queue cannot absorb the base's later commits. This conflict is
+    /// between queued work and the human's own commits, so it belongs to the sessions
+    /// that queued — not to the person who just committed.
+    pub staging_conflicts: Vec<String>,
     /// Every branch this session's work has to travel through to reach a root:
     /// `["spwn/bbb", "spwn/aaa", "main"]`. A fork's base is its *parent session's*
     /// branch, so merging a deep fork doesn't put the work anywhere near `main` — it
@@ -1372,6 +1383,13 @@ pub fn session_merge_status(
     let uncommitted = !gitwt::is_clean(wt);
     let mid_turn = agent_status_of(state, &terminal_id) == crate::agents::SessionStatus::Thinking;
     let human_blockers = gitwt::human_blockers(&repo, &base, &branch);
+    // Keeps the queue current on a path that already runs per refresh; an up-to-date
+    // queue costs one merge-base, and only the first caller after the base moves does
+    // any real work.
+    let staging_conflicts = match gitwt::track_base(&repo, &base) {
+        Ok(gitwt::BaseTracking::Conflicted(paths)) => paths,
+        _ => Vec::new(),
+    };
     let (staging_ahead, staging_files) = gitwt::staging_status(&repo, &base);
     let behind = gitwt::count_commits(wt, &format!("{branch}..{base}"));
     let will_fast_forward = gitwt::is_ancestor(wt, &base, &branch);
@@ -1425,6 +1443,7 @@ pub fn session_merge_status(
         human_blockers,
         staging_ahead,
         staging_files,
+        staging_conflicts,
         merge_path,
     })
 }
@@ -3203,6 +3222,7 @@ mod merge_status_tests {
             human_blockers: vec!["src/open.rs".into()],
             staging_ahead: 2,
             staging_files: vec!["src/queued.rs".into()],
+            staging_conflicts: vec!["src/contested.rs".into()],
             overlaps: vec![Overlap {
                 terminal_id: "t2".into(),
                 title: "other session".into(),
@@ -3219,6 +3239,7 @@ mod merge_status_tests {
         assert_eq!(json["mergePath"], serde_json::json!(["spwn/aaa", "main"]));
         assert_eq!(json["humanBlockers"], serde_json::json!(["src/open.rs"]));
         assert_eq!(json["stagingAhead"], 2);
+        assert_eq!(json["stagingConflicts"], serde_json::json!(["src/contested.rs"]));
         assert_eq!(json["overlaps"][0]["terminalId"], "t2");
         assert_eq!(json["overlaps"][0]["files"], serde_json::json!(["src/a.rs"]));
     }
