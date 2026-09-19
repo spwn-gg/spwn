@@ -865,6 +865,15 @@ pub struct MergeStatus {
     /// A human-readable reason the merge can't proceed right now (base branch isn't
     /// checked out, or its checkout is dirty). None when the merge is ready.
     pub blocker: Option<String>,
+    /// Paths a trial merge would collide in — computed in memory, so asking costs
+    /// nothing and touches nothing. Empty means the merge applies cleanly, but only
+    /// when `preview_unavailable` is None.
+    pub conflicts: Vec<String>,
+    /// Why the trial merge couldn't be run, when it couldn't (unrelated histories, a
+    /// git too old for `merge-tree --write-tree`). Kept separate from an empty
+    /// `conflicts` on purpose: the UI must not show "merges cleanly" for a check that
+    /// never ran.
+    pub preview_unavailable: Option<String>,
 }
 
 /// Compute a merge preview for a session: target branch, how far ahead it is, which
@@ -896,6 +905,21 @@ pub fn session_merge_status(
     let ahead = gitwt::count_commits(wt, &format!("{base}..{branch}"));
     let changed_files = gitwt::changed_files(wt, &base, &branch);
     let uncommitted = !gitwt::is_clean(wt);
+    // Cheap enough to run on every status refresh — which matters, because the status
+    // strip refetches after each turn commits, and "this session now collides with
+    // main" is worth knowing then rather than at merge time. Measured ~3ms on this
+    // repo, and re-previewing an unchanged pair of commits writes no new objects at
+    // all (the merged trees already exist), so the refresh loop doesn't grow the
+    // object database. Nothing ahead means nothing could collide, so skip it.
+    let (conflicts, preview_unavailable) = if ahead == 0 {
+        (Vec::new(), None)
+    } else {
+        match gitwt::merge_preview(wt, &base, &branch) {
+            gitwt::MergePreview::Clean => (Vec::new(), None),
+            gitwt::MergePreview::Conflicts(paths) => (paths, None),
+            gitwt::MergePreview::Unavailable(why) => (Vec::new(), Some(why)),
+        }
+    };
     // Mirror merge_into_base's preconditions so the panel can warn ahead of time.
     let blocker = match gitwt::worktree_for_branch(&repo, &base) {
         None => Some(format!(
@@ -913,6 +937,8 @@ pub fn session_merge_status(
         changed_files,
         uncommitted,
         blocker,
+        conflicts,
+        preview_unavailable,
     })
 }
 
@@ -2651,3 +2677,36 @@ pub(crate) fn persist(state: &AppState) {
     }
 }
 
+#[cfg(test)]
+mod merge_status_tests {
+    use super::*;
+
+    /// The field names here are a contract with `src/lib/types.ts`. A rename on this
+    /// side is silent on the wire — the UI just reads `undefined` and renders the
+    /// optimistic branch, i.e. "merges cleanly" for a check that never ran.
+    #[test]
+    fn serializes_conflict_fields_as_the_ui_expects() {
+        let json = serde_json::to_value(MergeStatus {
+            branch: Some("spwn/abc".into()),
+            base_branch: Some("main".into()),
+            ahead: 2,
+            changed_files: vec!["src/a.rs".into()],
+            uncommitted: false,
+            blocker: None,
+            conflicts: vec!["src/a.rs".into()],
+            preview_unavailable: Some("unrelated histories".into()),
+        })
+        .unwrap();
+        assert_eq!(json["conflicts"], serde_json::json!(["src/a.rs"]));
+        assert_eq!(json["previewUnavailable"], "unrelated histories");
+    }
+
+    /// Default() backs the "no branch, nothing to merge" early returns, and must not
+    /// imply a conflict check happened.
+    #[test]
+    fn default_reports_no_conflicts_and_no_failed_check() {
+        let s = MergeStatus::default();
+        assert!(s.conflicts.is_empty());
+        assert!(s.preview_unavailable.is_none());
+    }
+}
