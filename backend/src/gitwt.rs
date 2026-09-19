@@ -245,8 +245,9 @@ pub fn changed_files(dir: &Path, base: &str, branch: &str) -> Vec<String> {
 /// The outcome of a trial merge, computed without touching a worktree or moving a ref.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MergePreview {
-    /// The merge applies cleanly.
-    Clean,
+    /// The merge applies cleanly. Carries the oid of the merged tree, which
+    /// [`trial_worktree`] can check out to test the result nobody has built yet.
+    Clean { tree: String },
     /// The merge would conflict, in these paths.
     Conflicts(Vec<String>),
     /// The trial couldn't be run at all -- unrelated histories, an unknown ref, or a
@@ -285,7 +286,7 @@ pub fn merge_preview(dir: &Path, base: &str, branch: &str) -> MergePreview {
     // apart only by stdout, which leads with the merged tree's oid whenever the merge
     // actually ran. Checking the status alone would report a typo'd branch as clean.
     let ran = matches!(out.status.code(), Some(0 | 1));
-    let Some(_merged_tree) = fields.next().filter(|oid| ran && !oid.is_empty()) else {
+    let Some(merged_tree) = fields.next().filter(|oid| ran && !oid.is_empty()) else {
         let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
         return MergePreview::Unavailable(if err.is_empty() {
             format!("git merge-tree failed ({})", out.status)
@@ -300,10 +301,91 @@ pub fn merge_preview(dir: &Path, base: &str, branch: &str) -> MergePreview {
         .map(String::from)
         .collect();
     if conflicts.is_empty() {
-        MergePreview::Clean
+        MergePreview::Clean { tree: merged_tree.to_string() }
     } else {
         MergePreview::Conflicts(conflicts)
     }
+}
+
+/// Heavy, gitignored directories worth cloning into a fresh worktree so a build can
+/// start immediately. Mirrors the list in `session-created.d/10-worktree.sh`.
+const HEAVY_DIRS: &[&str] = &[
+    "node_modules",
+    "target",
+    ".venv",
+    "venv",
+    "dist",
+    "build",
+    ".next",
+    ".svelte-kit",
+    ".turbo",
+];
+
+/// Copy-on-write clone `HEAVY_DIRS` from `from` into `to` where they're missing.
+///
+/// `cp -c` (APFS clonefile) and `--reflink=auto` (btrfs/xfs) make this near-free on the
+/// filesystems that support it, and a plain recursive copy elsewhere. Best-effort
+/// throughout: a worktree without `node_modules` still works, it just builds slowly.
+pub fn seed_heavy_dirs(from: &Path, to: &Path) {
+    for d in HEAVY_DIRS {
+        let (src, dst) = (from.join(d), to.join(d));
+        if !src.is_dir() || dst.exists() {
+            continue;
+        }
+        let cloned = Command::new("cp")
+            .args(["-c", "-R"])
+            .arg(&src)
+            .arg(&dst)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+            || Command::new("cp")
+                .args(["-R", "--reflink=auto"])
+                .arg(&src)
+                .arg(&dst)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+        if !cloned {
+            let _ = Command::new("cp").arg("-R").arg(&src).arg(&dst).output();
+        }
+    }
+}
+
+/// Check out `tree` — a merged tree from [`merge_preview`] — in a throwaway worktree at
+/// `dest`, so the *merged result* can be built and tested before anything lands.
+///
+/// This is the only way to catch the conflicts git cannot see: A renames a function, B
+/// adds a caller, both branches are green, and the merge compiles into nothing that
+/// works. No textual conflict exists to find, so the only detector is running the suite
+/// against the combined tree — which, until now, existed nowhere.
+///
+/// The tree is wrapped in a real commit (unreferenced, so `git gc` collects it) because
+/// worktrees check out commits, not trees. Both parents are recorded, so the trial
+/// commit reads as the merge it stands in for.
+pub fn trial_worktree(
+    dir: &Path,
+    tree: &str,
+    base: &str,
+    branch: &str,
+    dest: &Path,
+) -> Result<(), String> {
+    let commit = git(
+        dir,
+        &["commit-tree", tree, "-p", base, "-p", branch, "-m", "spwn: trial merge"],
+    )?;
+    if let Some(parent) = dest.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    git(dir, &["worktree", "add", "--detach", &dest.to_string_lossy(), &commit]).map(|_| ())
+}
+
+/// Remove a [`trial_worktree`], including its checkout. Best-effort: a leftover trial
+/// directory is untidy, never harmful, and `git worktree prune` reclaims the metadata.
+pub fn remove_trial_worktree(dir: &Path, dest: &Path) {
+    let _ = git(dir, &["worktree", "remove", "--force", &dest.to_string_lossy()]);
+    let _ = std::fs::remove_dir_all(dest);
+    let _ = git(dir, &["worktree", "prune"]);
 }
 
 /// Merge `branch` into `base`. Operates in whichever worktree has `base` checked
@@ -704,7 +786,10 @@ mod merge_preview_tests {
         branch_with(dir, "feat", "g.txt", "from the session\n");
         std::fs::write(dir.join("h.txt"), "from main\n").unwrap();
         commit_all(dir, "main moves too").unwrap();
-        assert_eq!(merge_preview(dir, "main", "feat"), MergePreview::Clean);
+        assert!(matches!(
+            merge_preview(dir, "main", "feat"),
+            MergePreview::Clean { .. }
+        ));
     }
 
     #[test]
@@ -963,6 +1048,45 @@ mod sync_and_land_tests {
             std::fs::read_to_string(dir.join("f.txt")).unwrap().contains("<<<<<<<"),
             "markers are still on disk, so nothing may be auto-committed"
         );
+    }
+
+    /// The semantic-conflict case, which is the whole reason this exists: both branches
+    /// change different files, so git merges them without a murmur — and the merged
+    /// tree contains a combination that exists in neither branch and has never been
+    /// built. The trial worktree is the only place it can be.
+    #[test]
+    fn a_trial_worktree_holds_the_merged_result_of_both_branches() {
+        let tmp = diverged(false);
+        let dir = tmp.path();
+        let tree = match merge_preview(dir, "main", "feat") {
+            MergePreview::Clean { tree } => tree,
+            other => panic!("expected a clean merge, got {other:?}"),
+        };
+
+        let dest = tmp.path().join("trial-checkout");
+        trial_worktree(dir, &tree, "main", "feat", &dest).unwrap();
+
+        // Neither branch's own checkout has both of these; the merged tree does.
+        assert!(dest.join("main.txt").exists(), "the base's change");
+        assert!(dest.join("feat.txt").exists(), "the session's change");
+        assert!(!dir.join("main.txt").exists(), "and the session worktree still doesn't");
+
+        remove_trial_worktree(dir, &dest);
+        assert!(!dest.exists(), "the trial checkout is cleaned up");
+        // The branches themselves were never touched.
+        assert!(is_clean(dir));
+        assert!(!merge_in_progress(dir));
+    }
+
+    /// A conflicted merge has no single merged tree, so there's nothing to build — the
+    /// caller has to be told rather than handed a half-tree.
+    #[test]
+    fn a_conflicted_merge_yields_no_tree_to_verify() {
+        let tmp = diverged(true);
+        assert!(matches!(
+            merge_preview(tmp.path(), "main", "feat"),
+            MergePreview::Conflicts(_)
+        ));
     }
 
     #[test]

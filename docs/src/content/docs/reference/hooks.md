@@ -138,7 +138,33 @@ intended "opt all the way out" behavior; just know it's a package deal.
 | `session-created` | When a session starts. | The **project dir** for global scripts (the worktree doesn't exist yet — this is where it gets created); the **worktree** for repo scripts (which run after it exists). |
 | `session-ready` | The first time the Claude session id is known (after the sidecar starts). | The worktree. |
 | `session-turn` | After each completed Claude turn. | The worktree. |
+| `session-integrate` | On demand, from **Verify merged result** in the merge panel. | A **throwaway worktree holding the merged result** of the session and its base — not the session's own worktree. |
 | `session-deleted` | On delete — deleting a session, or deleting the project that contains it (which deletes each of its sessions in turn). Repo scripts run **first**, inside the worktree; global scripts run **last** (that's where the worktree gets removed). | The **worktree** for repo scripts; the **project dir** for global scripts. |
+
+### Testing a merge before it lands
+
+`session-integrate` exists for the conflicts git cannot see. Session A renames a
+function; session B adds a caller. Neither branch touches the other's files, so the merge
+is textually clean and both branches are green on their own — and the merged result does
+not compile. Nothing detects that except building the combined tree, which until the
+merge happens exists nowhere.
+
+spwn builds it for you: it computes the merged tree without touching any branch, checks
+it out in a throwaway worktree, copy-on-write clones the heavy gitignored directories
+from the session's worktree so a build can start immediately, runs your scripts, and
+removes the checkout.
+
+What "verified" means is yours to define:
+
+```sh
+# ~/.spwn/hooks/session-integrate.d/10-test.sh — runs in the MERGED result
+npm ci --prefer-offline --no-audit >/dev/null 2>&1 || true
+npm test
+```
+
+A non-zero exit fails the check; the merge panel reports which script failed. If no
+`session-integrate` script exists, the panel says nothing was checked — which is not the
+same answer as "nothing is wrong".
 
 Hooks run only for sessions that have their own worktree. A session that falls back to the
 plain project directory doesn't fire lifecycle hooks.
@@ -184,6 +210,8 @@ Each script runs with these variables (the working directory is per the table ab
 | `SPWN_BASE_BRANCH` | The branch it will merge back into. |
 | `SPWN_SESSION_ID` | The Claude session id — set for `session-ready` / `session-turn` / `session-deleted`; absent on `session-created` (not known yet). |
 | `SPWN_TURN_UUID` | The turn's id — set for `session-turn` only. |
+| `SPWN_TRIAL_WORKTREE` | The merged-result checkout — set for `session-integrate` only. Same as `SPWN_WORKTREE` for that event. |
+| `SPWN_SESSION_WORKTREE` | The session's *own* worktree — set for `session-integrate` only, since `SPWN_WORKTREE` points at the trial checkout there. |
 | `SPWN_BIN` | Path to the spwn binary — run `"$SPWN_BIN" prompt …` to [ask the user](#ask-the-user) or `"$SPWN_BIN" checkpoint "$SPWN_TURN_UUID"` to snapshot. |
 | `SPWN_EXEC` | The prefix reaching this session's [environment](#running-a-session-somewhere-else), if a hook made one — so a later hook can run commands inside it, or tear it down on delete. |
 
