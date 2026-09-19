@@ -133,6 +133,49 @@ export interface CreateSessionOptions {
   onHookPrompt?: HookPromptHandler;
 }
 
+export interface SessionMergeStatus {
+  branch: string | null;
+  baseBranch: string | null;
+  /** Commits on this branch not yet in the base. */
+  ahead: number;
+  /** Commits on the base this session doesn't have — how stale it has grown. */
+  behind: number;
+  changedFiles: string[];
+  /** Paths a merge would collide in. Empty means clean, unless `previewUnavailable`. */
+  conflicts: string[];
+  /** Why the collision check couldn't run. Never read an empty `conflicts` as "clean"
+   *  while this is set. */
+  previewUnavailable: string | null;
+  uncommitted: boolean;
+  midTurn: boolean;
+  /** Landing is a fast-forward and cannot conflict. `sync()` is what makes this true. */
+  willFastForward: boolean;
+  /** An unresolved sync still sitting in the worktree. */
+  syncConflicts: string[];
+  /** Other sessions editing the same files. Advisory. */
+  overlaps: Array<{ terminalId: string; title: string; files: string[] }>;
+  /** Branches this work travels through to reach a root, e.g. ["spwn/aaa", "main"]. */
+  mergePath: string[];
+  /** Why the merge can't proceed right now, if it can't. */
+  blocker: string | null;
+}
+
+export type SyncOutcome =
+  | { outcome: "upToDate" }
+  | { outcome: "merged"; summary: string }
+  | { outcome: "conflicted"; conflicts: string[] }
+  /** git replayed a resolution recorded earlier and closed the merge. Textual, so it
+   *  can be stale if the surrounding code moved. */
+  | { outcome: "replayedResolution"; files: string[] };
+
+export interface VerifyOutcome {
+  runs: Array<{ script: string; ok: boolean; exitCode: number | null; output: string }>;
+  ok: boolean;
+  /** No `session-integrate` hook exists, so nothing was checked — which is not the
+   *  same answer as "nothing is wrong". */
+  noScripts: boolean;
+}
+
 export interface Session {
   /** spwn's id for the session (what `sessions.get` takes). */
   readonly id: string;
@@ -174,6 +217,18 @@ export interface Session {
   transcript(): Promise<TranscriptTurn[]>;
   /** The agent's reply to the latest prompt. */
   lastMessage(): Promise<string | null>;
+  /** How this session's branch stands against its base: what it changes, what would
+   *  collide, how far behind it is, and the chain of branches to a root. */
+  mergeStatus(): Promise<SessionMergeStatus>;
+  /** Merge the base INTO this session's branch, in its own worktree. A conflict is
+   *  left there to resolve (hand it to the agent with `prompt`) rather than rolled
+   *  back. Afterwards, landing the branch is a fast-forward. */
+  sync(): Promise<SyncOutcome>;
+  /** Build and test the MERGED result in a throwaway worktree, via `session-integrate`
+   *  hooks. The only way to catch a conflict that merges clean and breaks anyway. */
+  verifyMerge(): Promise<VerifyOutcome>;
+  /** Land this session's branch on its base. */
+  merge(options?: { commitFirst?: boolean }): Promise<string>;
   /** Delete the session, its worktree and its branch (like the sidebar's ×). */
   delete(): Promise<void>;
   refresh(): Promise<this>;

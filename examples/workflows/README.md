@@ -3,6 +3,28 @@
 [Workflows](https://spwn-gg.github.io/spwn/guides/workflows/) are scripts in a project's
 `.spwn/workflows/` that orchestrate agent sessions.
 
+## `merge-queue.ts`
+
+Lands finished sessions one at a time, so no conflict is ever more than two-way:
+
+- **One land per pass.** Parallel sessions each work against the base as it was when they
+  forked; merging them all at once is an N-way pile-up. Merging one at a time means every
+  conflict is against a base that moved by exactly one branch.
+- **Conflicts go to the session that caused them.** `session.sync()` brings the base into
+  the session's *own* worktree, so a conflict surfaces where its agent is still live and
+  still holds the conversation explaining the code. The workflow hands it back with
+  `prompt()` — and then re-reads `mergeStatus()`, because an agent believing it resolved
+  everything is not evidence.
+- **Verified against the merged result**, not the branch. `session.verifyMerge()` builds
+  and tests the combination via `session-integrate` hooks. Two green branches say nothing
+  about the two of them together.
+- **Sessions mid-turn are left alone.** A running turn owns its worktree.
+- **Policy is all in the file** — which sessions qualify, whether conflicts are delegated,
+  whether an unverified merge may land.
+
+This is the design test for everything under it: the queue is a *script*, not a spwn
+feature. spwn supplies the git; the file supplies the order and the judgement.
+
 ## `github-board.ts`
 
 Works a GitHub Projects board with a persona per column:

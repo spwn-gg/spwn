@@ -693,6 +693,44 @@ async fn async_op(rc: &Arc<RunCtx>, op: &str, args: Value) -> OpResult {
                 .and_then(crate::projects::locate_session)
                 .and_then(|p| final_text(&p))))
         }
+        // Thin bindings over the same commands the merge panel drives. No merge logic
+        // lives here: a workflow decides the ORDER and the POLICY, spwn does the git.
+        "session.mergeStatus" => {
+            let a: IdArgs = parse(args)?;
+            rc.project_terminal(&a.id)?;
+            let (state, pid) = (rc.state.clone(), rc.project_id.clone());
+            Ok(json!(commands::session_merge_status(&state, pid, a.id)?))
+        }
+        "session.sync" => {
+            let a: IdArgs = parse(args)?;
+            rc.project_terminal(&a.id)?;
+            let state = rc.state.clone();
+            Ok(json!(commands::sync_session_from_base(&state, a.id)?))
+        }
+        "session.verifyMerge" => {
+            let a: IdArgs = parse(args)?;
+            rc.project_terminal(&a.id)?;
+            let (state, pid) = (rc.state.clone(), rc.project_id.clone());
+            // A workflow has no window to answer a hook prompt, so decline rather than
+            // block the run on a dialog nobody will see.
+            Ok(json!(commands::verify_session_merge(
+                &state,
+                pid,
+                a.id,
+                &hooks::PromptMode::Decline
+            )?))
+        }
+        "session.merge" => {
+            let a: MergeArgs = parse(args)?;
+            rc.project_terminal(&a.id)?;
+            let (state, pid) = (rc.state.clone(), rc.project_id.clone());
+            Ok(json!(commands::merge_session(
+                &state,
+                pid,
+                a.id,
+                a.commit_first.unwrap_or(true)
+            )?))
+        }
         "session.delete" => {
             let a: IdArgs = parse(args)?;
             rc.project_terminal(&a.id)?;
@@ -713,6 +751,15 @@ fn yes() -> bool {
 #[derive(Deserialize)]
 struct IdArgs {
     id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MergeArgs {
+    id: String,
+    /// Defaults to true for workflows: an unattended run leaving a turn's work behind
+    /// would lose it silently, with nobody watching to notice.
+    commit_first: Option<bool>,
 }
 
 #[derive(Deserialize)]

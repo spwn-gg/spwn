@@ -195,6 +195,18 @@
     lastMessage() {
       return call("session.lastMessage", { id: this.id });
     }
+    mergeStatus() {
+      return call("session.mergeStatus", { id: this.id });
+    }
+    sync() {
+      return call("session.sync", { id: this.id });
+    }
+    verifyMerge() {
+      return call("session.verifyMerge", { id: this.id });
+    }
+    merge({ commitFirst = true } = {}) {
+      return call("session.merge", { id: this.id, commitFirst });
+    }
     delete() {
       return call("session.delete", { id: this.id });
     }

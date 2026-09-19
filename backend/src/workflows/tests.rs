@@ -225,6 +225,22 @@ fn the_published_agent_guide_matches_the_one_spwn_installs() {
 }
 
 #[test]
+fn the_merge_queue_example_loads() {
+    let e = env();
+    e.write(
+        "merge-queue.ts",
+        include_str!("../../../examples/workflows/merge-queue.ts"),
+    );
+    let listing = list(&e.state, PROJECT).unwrap();
+    let w = &listing.workflows[0];
+    assert_eq!(w.error, None, "the shipped example must parse");
+    let meta = w.meta.as_ref().unwrap();
+    assert_eq!(meta.name.as_deref(), Some("Merge queue"));
+    assert!(meta.keep_alive);
+    assert_eq!(meta.inputs["requireVerified"]["default"], true);
+}
+
+#[test]
 fn the_github_board_example_loads() {
     let e = env();
     e.write(
