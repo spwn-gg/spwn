@@ -181,6 +181,14 @@ export interface MergeStatus {
 	 *  it. Hard file ownership would kill the cheap-parallel-exploration property that
 	 *  is the point of the tool. */
 	overlaps: Overlap[];
+	/** Files the human has in progress that landing this session would overwrite. When
+	 *  non-empty the work queues on staging instead — the person is never asked to
+	 *  stash so an agent can proceed. */
+	humanBlockers: string[];
+	/** Commits queued on staging, waiting for the human to bring in. */
+	stagingAhead: number;
+	/** Files that queued work would bring into the base. */
+	stagingFiles: string[];
 }
 
 /** Another session working in the same files (mirrors commands::Overlap). */

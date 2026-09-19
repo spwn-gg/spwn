@@ -389,6 +389,11 @@ export function syncSessionFromBase(terminalId: string): Promise<SyncResult> {
 	return invoke('sync_session_from_base', { terminalId });
 }
 
+/** Bring work queued on staging into the base, when the human is ready for it. */
+export function integrateStaging(projectId: string, terminalId: string): Promise<string> {
+	return invoke('integrate_staging', { projectId, terminalId });
+}
+
 /** Back out a conflicted sync, restoring the session's branch. */
 export function abortSessionSync(terminalId: string): Promise<void> {
 	return invoke('abort_session_sync', { terminalId });

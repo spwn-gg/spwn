@@ -858,7 +858,15 @@ pub fn merge_session(
         commit_first,
         "spwn: uncommitted work, committed before merge",
     )?;
-    gitwt::merge_into_base(&repo, &base, &branch)
+    match gitwt::land_session(&repo, &base, &branch)? {
+        gitwt::Landing::Base(summary) => Ok(summary),
+        gitwt::Landing::Staged { branch: staging, blocked_by } => Ok(format!(
+            "Queued on '{staging}' rather than '{base}' — landing would have overwritten \
+             work in progress in {}. Nothing of yours was touched; bring it in whenever \
+             you're ready.",
+            blocked_by.join(", ")
+        )),
+    }
 }
 
 /// Deal with a session worktree's uncommitted work before a git operation that wants a
@@ -944,6 +952,11 @@ pub fn sync_session_from_base(
         (base, t.cwd.clone())
     };
     let wt = Path::new(&cwd);
+    // Sync from wherever this session will actually land. Once a queue is open, syncing
+    // from the bare base would leave the branch unable to fast-forward onto staging.
+    let base = gitwt::repo_root(wt)
+        .map(|repo| gitwt::landing_target(&repo, &base))
+        .unwrap_or(base);
     settle_worktree(
         state,
         &terminal_id,
@@ -1065,6 +1078,29 @@ pub fn verify_session_merge(
     Ok(VerifyResult { runs, ok, no_scripts })
 }
 
+/// Bring queued agent work into the base, on the human's say-so.
+pub fn integrate_staging(
+    state: &AppState,
+    project_id: String,
+    terminal_id: String,
+) -> Result<String, String> {
+    let (proj_dir, base) = {
+        let store = state.store.lock();
+        let proj_dir = store
+            .project(&project_id)
+            .map(|p| p.directory.clone())
+            .ok_or_else(|| "no such project".to_string())?;
+        let base = store
+            .terminal(&terminal_id)
+            .and_then(|t| t.base_branch.clone())
+            .ok_or_else(|| "this session has no base branch".to_string())?;
+        (proj_dir, base)
+    };
+    let repo = gitwt::repo_root(Path::new(&proj_dir))
+        .ok_or_else(|| "project is not a git repository".to_string())?;
+    gitwt::integrate_staging(&repo, &base)
+}
+
 /// Back out a conflicted sync, putting the session's branch back where it was.
 pub fn abort_session_sync(state: &AppState, terminal_id: String) -> Result<(), String> {
     let cwd = {
@@ -1119,6 +1155,14 @@ pub struct MergeStatus {
     /// Other live sessions editing the same files as this one. Advisory only — nothing
     /// blocks on it.
     pub overlaps: Vec<Overlap>,
+    /// Files the human has in progress that landing this session would overwrite. When
+    /// this isn't empty the work queues on staging instead; the person is never asked
+    /// to stash so an agent can proceed.
+    pub human_blockers: Vec<String>,
+    /// Commits queued on the base's staging branch, waiting for the human to bring in.
+    pub staging_ahead: u32,
+    /// Files that queued work would bring into the base.
+    pub staging_files: Vec<String>,
     /// Every branch this session's work has to travel through to reach a root:
     /// `["spwn/bbb", "spwn/aaa", "main"]`. A fork's base is its *parent session's*
     /// branch, so merging a deep fork doesn't put the work anywhere near `main` — it
@@ -1262,6 +1306,8 @@ pub fn session_merge_status(
     let uncommitted = !gitwt::is_clean(wt);
     let mid_turn = agent_status_of(state, &terminal_id) == crate::agents::SessionStatus::Thinking;
     let overlaps = overlaps_with(wt, &changed_files, &siblings);
+    let human_blockers = gitwt::human_blockers(&repo, &base, &branch);
+    let (staging_ahead, staging_files) = gitwt::staging_status(&repo, &base);
     let behind = gitwt::count_commits(wt, &format!("{branch}..{base}"));
     let will_fast_forward = gitwt::is_ancestor(wt, &base, &branch);
     // An unresolved sync is not the same as ordinary uncommitted work, and the panels
@@ -1287,16 +1333,16 @@ pub fn session_merge_status(
             gitwt::MergePreview::Unavailable(why) => (Vec::new(), Some(why)),
         }
     };
-    // Mirror merge_into_base's preconditions so the panel can warn ahead of time.
-    let blocker = match gitwt::worktree_for_branch(&repo, &base) {
-        None => Some(format!(
+    // A dirty base checkout is deliberately NOT a blocker any more. It used to be, so
+    // one file left open by the person working there stalled every agent merge in the
+    // project — the merge now queues on staging instead, and `human_blockers` says which
+    // of their files caused that. The only thing genuinely in the way is a base nobody
+    // has checked out, since there's then no tree to fast-forward.
+    let blocker = gitwt::worktree_for_branch(&repo, &base).is_none().then(|| {
+        format!(
             "'{base}' isn't checked out anywhere — check it out (e.g. in your project folder) to merge into it."
-        )),
-        Some(base_wt) if !gitwt::is_clean(&base_wt) => Some(format!(
-            "The checkout of '{base}' has uncommitted changes — commit or stash them first."
-        )),
-        Some(_) => None,
-    };
+        )
+    });
     Ok(MergeStatus {
         branch: Some(branch),
         base_branch: Some(base),
@@ -1311,6 +1357,9 @@ pub fn session_merge_status(
         will_fast_forward,
         sync_conflicts,
         overlaps,
+        human_blockers,
+        staging_ahead,
+        staging_files,
         merge_path,
     })
 }
@@ -3086,6 +3135,9 @@ mod merge_status_tests {
             will_fast_forward: false,
             sync_conflicts: vec!["src/b.rs".into()],
             merge_path: vec!["spwn/aaa".into(), "main".into()],
+            human_blockers: vec!["src/open.rs".into()],
+            staging_ahead: 2,
+            staging_files: vec!["src/queued.rs".into()],
             overlaps: vec![Overlap {
                 terminal_id: "t2".into(),
                 title: "other session".into(),
@@ -3100,6 +3152,8 @@ mod merge_status_tests {
         assert_eq!(json["willFastForward"], false);
         assert_eq!(json["syncConflicts"], serde_json::json!(["src/b.rs"]));
         assert_eq!(json["mergePath"], serde_json::json!(["spwn/aaa", "main"]));
+        assert_eq!(json["humanBlockers"], serde_json::json!(["src/open.rs"]));
+        assert_eq!(json["stagingAhead"], 2);
         assert_eq!(json["overlaps"][0]["terminalId"], "t2");
         assert_eq!(json["overlaps"][0]["files"], serde_json::json!(["src/a.rs"]));
     }

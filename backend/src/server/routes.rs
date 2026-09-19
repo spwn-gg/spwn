@@ -201,6 +201,10 @@ pub async fn invoke(
             state, body, TerminalIdArgs, st, a,
             ok_result(cmd::sync_session_from_base(&st, a.terminal_id))
         ),
+        "integrate_staging" => blocking!(
+            state, body, ProjectTerminalArgs, st, a,
+            ok_result(cmd::integrate_staging(&st, a.project_id, a.terminal_id))
+        ),
         "abort_session_sync" => blocking!(
             state, body, TerminalIdArgs, st, a,
             ok_result(cmd::abort_session_sync(&st, a.terminal_id))

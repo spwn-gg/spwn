@@ -125,6 +125,20 @@
 						collides with {merge.baseBranch}
 					</span>
 				{/if}
+				{#if merge?.humanBlockers?.length}
+					<span
+						class="chip ahead"
+						title="You have these open, so this session's merge will queue on staging rather than overwrite them: {merge.humanBlockers.join(
+							', '
+						)}">
+						you're editing {merge.humanBlockers.length} of these files
+					</span>
+				{/if}
+				{#if merge?.stagingAhead}
+					<span class="chip ahead" title="Queued for you: {merge.stagingFiles.join(', ')}">
+						{merge.stagingAhead} queued for you
+					</span>
+				{/if}
 				{#if merge?.overlaps?.length}
 					<span
 						class="chip ahead"
