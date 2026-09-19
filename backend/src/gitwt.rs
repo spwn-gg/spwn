@@ -329,6 +329,107 @@ pub fn merge_into_base(repo: &Path, base: &str, branch: &str) -> Result<String, 
     }
 }
 
+/// What syncing a session's branch with its base did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SyncOutcome {
+    /// The branch already contained the base tip; nothing moved.
+    UpToDate,
+    /// The base merged in cleanly and the branch now carries it. Carries git's summary.
+    Merged(String),
+    /// The merge stopped on these paths and the conflict is **still in the worktree**,
+    /// waiting for someone to resolve it. Back it out with [`abort_sync`].
+    Conflicted(Vec<String>),
+}
+
+/// Paths left unmerged in `dir` by a conflicted merge. Empty when no merge is stuck.
+///
+/// `-z` for the same reason [`merge_preview`] needs it: git C-quotes non-ASCII paths
+/// otherwise.
+pub fn unmerged_paths(dir: &Path) -> Vec<String> {
+    Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["diff", "--name-only", "--diff-filter=U", "-z"])
+        .output()
+        .ok()
+        .map(|out| {
+            String::from_utf8_lossy(&out.stdout)
+                .split('\0')
+                .filter(|p| !p.is_empty())
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Whether `dir` is part-way through a merge — i.e. a sync conflicted and is waiting
+/// on a resolution.
+pub fn merge_in_progress(dir: &Path) -> bool {
+    git(dir, &["rev-parse", "--verify", "--quiet", "MERGE_HEAD"]).is_ok()
+}
+
+/// Merge `base` **into** the session's branch, inside the session's own worktree, and
+/// leave any conflict sitting there rather than rolling it back.
+///
+/// This is [`merge_into_base`] turned around, and the direction is the whole point.
+/// Merging branch→base can only conflict in the *base* checkout — a tree with no agent
+/// attached, shared by every session, which is why that path has to abort and hand the
+/// user a manual cleanup. Merging base→branch conflicts in the session's own worktree
+/// instead, where the agent that wrote the code is still live and still holds the
+/// conversation that explains it. The base checkout is never touched, so it can't be
+/// left half-merged, and afterwards the session's branch contains the base tip, which
+/// makes landing it a fast-forward that cannot fail.
+///
+/// Requires a clean worktree: a merge over uncommitted work either refuses or buries
+/// that work in the conflict. Callers settle the tree first (see `merge_session`).
+pub fn sync_from_base(worktree: &Path, base: &str) -> Result<SyncOutcome, String> {
+    if !is_clean(worktree) {
+        return Err(
+            "This session has uncommitted changes — commit them before syncing, so they \
+             don't get tangled up in the merge."
+                .to_string(),
+        );
+    }
+    // A merge commit needs an identity, and a fresh container may have no ~/.gitconfig.
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(worktree).args(["merge", "--no-edit", base]);
+    if !has_git_identity(worktree) {
+        cmd.envs(FALLBACK_IDENTITY);
+    }
+    let out = cmd
+        .output()
+        .map_err(|e| format!("failed to run git merge: {e}"))?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    if out.status.success() {
+        return Ok(if stdout.contains("Already up to date") {
+            SyncOutcome::UpToDate
+        } else {
+            SyncOutcome::Merged(stdout.lines().next().unwrap_or("").trim().to_string())
+        });
+    }
+    // Same trap as `merge-tree`: exit 1 means both "conflicts" and "that isn't a ref".
+    // Here the unmerged path list separates them — a real conflict always leaves some.
+    let conflicts = unmerged_paths(worktree);
+    if conflicts.is_empty() {
+        // Not a conflict, so nothing should be left part-merged. (A no-op when the
+        // merge never started, which is the usual case for a bad ref.)
+        let _ = git(worktree, &["merge", "--abort"]);
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(if err.is_empty() {
+            format!("git merge failed ({})", out.status)
+        } else {
+            err
+        });
+    }
+    Ok(SyncOutcome::Conflicted(conflicts))
+}
+
+/// Back a conflicted sync out, restoring the branch to where [`sync_from_base`] found
+/// it.
+pub fn abort_sync(worktree: &Path) -> Result<(), String> {
+    git(worktree, &["merge", "--abort"]).map(|_| ())
+}
+
 // ---------------------------------------------------------------------------
 // Source Control: managing the project's *main* checkout (branch switch + sync).
 // These operate on `dir` directly (the project directory), not a session worktree.
@@ -572,5 +673,118 @@ mod merge_preview_tests {
             merge_preview(dir, "main", "feat"),
             MergePreview::Conflicts(vec![name.to_string()])
         );
+    }
+}
+
+#[cfg(test)]
+mod sync_from_base_tests {
+    use super::*;
+
+    /// `main` and `feat` diverged from a common base, each with one commit.
+    /// `touch` decides whether they collide: same file or different ones.
+    fn diverged(same_file: bool) -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        git(dir, &["init", "-q", "-b", "main", "."]).unwrap();
+        std::fs::write(dir.join("f.txt"), "one\n").unwrap();
+        commit_all(dir, "base").unwrap();
+
+        git(dir, &["checkout", "-q", "-b", "feat"]).unwrap();
+        std::fs::write(dir.join(if same_file { "f.txt" } else { "feat.txt" }), "feat\n").unwrap();
+        commit_all(dir, "feat").unwrap();
+
+        git(dir, &["checkout", "-q", "main"]).unwrap();
+        std::fs::write(dir.join(if same_file { "f.txt" } else { "main.txt" }), "main\n").unwrap();
+        commit_all(dir, "main").unwrap();
+
+        git(dir, &["checkout", "-q", "feat"]).unwrap();
+        tmp
+    }
+
+    #[test]
+    fn a_clean_sync_puts_the_base_tip_into_the_branch() {
+        let tmp = diverged(false);
+        let dir = tmp.path();
+        assert!(matches!(
+            sync_from_base(dir, "main").unwrap(),
+            SyncOutcome::Merged(_)
+        ));
+        // The branch now contains main, which is what makes landing it a fast-forward.
+        assert!(git(dir, &["merge-base", "--is-ancestor", "main", "HEAD"]).is_ok());
+        assert!(!merge_in_progress(dir));
+    }
+
+    #[test]
+    fn syncing_twice_is_up_to_date() {
+        let tmp = diverged(false);
+        let dir = tmp.path();
+        sync_from_base(dir, "main").unwrap();
+        assert_eq!(sync_from_base(dir, "main").unwrap(), SyncOutcome::UpToDate);
+    }
+
+    /// The point of the inversion: the conflict stays in the session's worktree for the
+    /// agent to resolve, instead of being rolled back the way merge_into_base does it.
+    #[test]
+    fn a_conflict_is_left_in_the_worktree() {
+        let tmp = diverged(true);
+        let dir = tmp.path();
+        assert_eq!(
+            sync_from_base(dir, "main").unwrap(),
+            SyncOutcome::Conflicted(vec!["f.txt".to_string()])
+        );
+        assert!(merge_in_progress(dir), "the merge should still be open");
+        assert_eq!(unmerged_paths(dir), vec!["f.txt".to_string()]);
+        assert!(
+            std::fs::read_to_string(dir.join("f.txt")).unwrap().contains("<<<<<<<"),
+            "conflict markers should be on disk for the agent to work through"
+        );
+    }
+
+    /// git exits 1 for a bad ref just as it does for a conflict. Reporting that as
+    /// Conflicted would park the session in a resolution state with nothing to resolve.
+    #[test]
+    fn a_bad_ref_errors_rather_than_looking_like_a_conflict() {
+        let tmp = diverged(false);
+        let dir = tmp.path();
+        assert!(sync_from_base(dir, "no-such-branch").is_err());
+        assert!(!merge_in_progress(dir), "nothing should be left part-merged");
+        assert!(is_clean(dir));
+    }
+
+    #[test]
+    fn a_dirty_worktree_is_refused() {
+        let tmp = diverged(false);
+        let dir = tmp.path();
+        std::fs::write(dir.join("scratch.txt"), "in flight\n").unwrap();
+        assert!(sync_from_base(dir, "main").is_err());
+        assert!(!merge_in_progress(dir));
+    }
+
+    /// Why `settle_worktree` checks `merge_in_progress` *before* falling back to a
+    /// dirty-tree check: a conflicted tree reads as dirty, so a caller keying off
+    /// cleanliness alone would run `git add -A` and commit the conflict markers onto
+    /// the session branch.
+    #[test]
+    fn a_conflicted_tree_reads_as_dirty_so_cleanliness_is_not_the_signal() {
+        let tmp = diverged(true);
+        let dir = tmp.path();
+        sync_from_base(dir, "main").unwrap();
+        assert!(!is_clean(dir), "a conflict looks exactly like uncommitted work");
+        assert!(merge_in_progress(dir), "this is what tells the two apart");
+    }
+
+    #[test]
+    fn aborting_restores_the_branch() {
+        let tmp = diverged(true);
+        let dir = tmp.path();
+        let before = git(dir, &["rev-parse", "HEAD"]).unwrap();
+        assert!(matches!(
+            sync_from_base(dir, "main").unwrap(),
+            SyncOutcome::Conflicted(_)
+        ));
+        abort_sync(dir).unwrap();
+        assert!(!merge_in_progress(dir));
+        assert!(is_clean(dir));
+        assert_eq!(git(dir, &["rev-parse", "HEAD"]).unwrap(), before);
     }
 }

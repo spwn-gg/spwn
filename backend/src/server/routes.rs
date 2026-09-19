@@ -187,6 +187,14 @@ pub async fn invoke(
             state, body, MergeSessionArgs, st, a,
             ok_result(cmd::merge_session(&st, a.project_id, a.terminal_id, a.commit_first))
         ),
+        "sync_session_from_base" => blocking!(
+            state, body, TerminalIdArgs, st, a,
+            ok_result(cmd::sync_session_from_base(&st, a.terminal_id))
+        ),
+        "abort_session_sync" => blocking!(
+            state, body, TerminalIdArgs, st, a,
+            ok_result(cmd::abort_session_sync(&st, a.terminal_id))
+        ),
         "session_merge_status" => blocking!(
             state, body, ProjectTerminalArgs, st, a,
             ok_result(cmd::session_merge_status(&st, a.project_id, a.terminal_id))

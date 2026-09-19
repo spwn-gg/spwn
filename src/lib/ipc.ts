@@ -19,6 +19,7 @@ import type {
 	ScheduledTask,
 	SessionStatus,
 	Settings,
+	SyncResult,
 	TerminalKind,
 	Turn,
 	WorkflowListing,
@@ -373,6 +374,17 @@ export function mergeSession(
 	commitFirst = false
 ): Promise<string> {
 	return invoke('merge_session', { projectId, terminalId, commitFirst });
+}
+
+/** Bring the session's base branch into the session's branch, in its own worktree.
+ *  A conflict is left there for the session's agent to resolve, not rolled back. */
+export function syncSessionFromBase(terminalId: string): Promise<SyncResult> {
+	return invoke('sync_session_from_base', { terminalId });
+}
+
+/** Back out a conflicted sync, restoring the session's branch. */
+export function abortSessionSync(terminalId: string): Promise<void> {
+	return invoke('abort_session_sync', { terminalId });
 }
 
 /** Preview what merging a session's branch into its base would do. */

@@ -89,6 +89,13 @@ export interface HookEventInfo {
 	scripts: HookScriptInfo[];
 }
 
+/** What syncing a session with its base did (mirrors Rust `SyncResult`). */
+export type SyncResult =
+	| { outcome: 'upToDate' }
+	| { outcome: 'merged'; summary: string }
+	/** The conflict is sitting in the session's worktree, waiting on a resolution. */
+	| { outcome: 'conflicted'; conflicts: string[] };
+
 /** A session's hooks status (mirrors hooks::HooksStatus). */
 export interface HooksStatus {
 	available: boolean;
