@@ -6,7 +6,8 @@
 		deleteTerminal,
 		syncSessionFromBase,
 		abortSessionSync,
-		verifySessionMerge
+		verifySessionMerge,
+		integrateStaging
 	} from './ipc';
 	import { refreshProjects, pasteToInput } from './stores';
 	import { syncConflictPrompt } from './labels';
@@ -29,6 +30,9 @@
 	let verifying = $state(false);
 	let verifyNote = $state('');
 	let verifyOk = $state<boolean | null>(null);
+	let integrating = $state(false);
+	// Not a blocker: the work still lands, it just queues instead of touching their tree.
+	const blockedByMe = $derived(status?.humanBlockers ?? []);
 	let result = $state('');
 	let merged = $state(false);
 
@@ -139,6 +143,18 @@
 		}
 	}
 
+	async function integrate() {
+		integrating = true;
+		try {
+			syncNote = await integrateStaging(projectId, terminalId);
+		} catch (e) {
+			syncNote = String(e);
+		} finally {
+			integrating = false;
+			await load();
+		}
+	}
+
 	async function abort() {
 		syncing = true;
 		try {
@@ -195,6 +211,26 @@
 					<span class="arrow">→</span>
 					<code class="branch base">{status.baseBranch}</code>
 				</div>
+
+				{#if status.stagingAhead}
+					<div class="note">
+						<strong>{status.stagingAhead} merge{status.stagingAhead === 1 ? '' : 's'}</strong>
+						queued for you, touching <code>{status.stagingFiles.join(', ')}</code>. They were
+						kept off <code>{status.baseBranch}</code> so your working copy stayed yours.
+					</div>
+					<div class="btnrow">
+						<button class="btn" disabled={integrating} onclick={integrate}>
+							{integrating ? 'Bringing it in…' : 'Bring queued work in'}
+						</button>
+					</div>
+				{/if}
+				{#if blockedByMe.length}
+					<div class="note">
+						You have <code>{blockedByMe.join(', ')}</code> open, and this session changes
+						{blockedByMe.length === 1 ? 'it' : 'them'} too — so merging will queue the work
+						rather than overwrite what you're doing. Carry on; bring it in when you're ready.
+					</div>
+				{/if}
 
 				{#if rungsLeft > 0}
 					<div class="note warn">

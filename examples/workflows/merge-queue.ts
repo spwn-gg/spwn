@@ -9,6 +9,12 @@
 // where their conflicts surface, in their OWN worktrees), re-verify, and queue up
 // again. Nothing is resolved by a bystander.
 //
+// You are not in this queue. You own the base branch, so your work is already ahead of
+// every agent's by construction — there is nothing to schedule. What the queue owes you
+// is the other half: never touching your working copy, and never stalling because you
+// happen to have a file open. A landing that would overwrite something you're editing
+// goes to a staging branch instead, and waits for you.
+//
 // spwn supplies the git; this file supplies the policy. Which sessions qualify, whether
 // a conflict is handed back to its agent or left for you, whether an unverified merge
 // may land — all of it is below, and all of it is yours to change.
@@ -99,6 +105,8 @@ async function tryLand(spwn: Spwn, session: Session, inputs: Inputs): Promise<bo
     spwn.log(`${session.title}: a sync is still unresolved (${status.syncConflicts.join(", ")}).`);
     return false;
   }
+  // Still a real obstacle (nowhere checked out to land into); note that a dirty base
+  // checkout is NOT one — that case queues rather than blocks.
   if (status.blocker) {
     spwn.log(`${session.title}: ${status.blocker}`);
     return false;
@@ -150,6 +158,15 @@ async function tryLand(spwn: Spwn, session: Session, inputs: Inputs): Promise<bo
     }
   }
 
+  // Landing decides its own destination: straight onto the base when that disturbs
+  // nobody, onto staging when it would overwrite something the human has open. Either
+  // way the agent is done and the queue moves on.
+  if (status.humanBlockers.length) {
+    spwn.log(
+      `${session.title}: you have ${status.humanBlockers.join(", ")} open, so this queues ` +
+        "on staging instead of touching your working copy.",
+    );
+  }
   spwn.log(await session.merge());
   if (inputs.deleteAfterMerge) await session.delete();
   return true;

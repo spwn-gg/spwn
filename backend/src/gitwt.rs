@@ -212,6 +212,50 @@ pub fn worktree_for_branch(repo: &Path, branch: &str) -> Option<PathBuf> {
     None
 }
 
+/// Paths in `dir` that someone has in progress: tracked files modified since HEAD, plus
+/// untracked files. Both are things a merge can refuse to overwrite.
+///
+/// This is the human's working set. spwn's other worktrees belong to agents, which can
+/// be asked to redo work; the project checkout belongs to a person, who cannot.
+pub fn dirty_paths(dir: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    for args in [
+        &["diff", "--name-only", "-z", "HEAD"][..],
+        &["ls-files", "--others", "--exclude-standard", "-z"][..],
+    ] {
+        if let Ok(text) = git(dir, args) {
+            out.extend(text.split('\0').filter(|p| !p.is_empty()).map(String::from));
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Which of the human's in-progress files landing `branch` on `base` would disturb.
+///
+/// Empty means the merge can go ahead even with a dirty checkout — git only refuses
+/// when the incoming changes collide with something modified locally, and spwn has no
+/// business being stricter than git about someone else's working tree.
+///
+/// Computed rather than discovered by attempting the merge, so it can be reported
+/// before anything is tried.
+pub fn human_blockers(repo: &Path, base: &str, branch: &str) -> Vec<String> {
+    let Some(base_wt) = worktree_for_branch(repo, base) else {
+        return Vec::new();
+    };
+    let dirty: std::collections::HashSet<String> = dirty_paths(&base_wt).into_iter().collect();
+    if dirty.is_empty() {
+        return Vec::new();
+    }
+    let mut hit: Vec<String> = changed_files(&base_wt, base, branch)
+        .into_iter()
+        .filter(|f| dirty.contains(f))
+        .collect();
+    hit.sort();
+    hit
+}
+
 /// Whether `dir`'s working tree is clean (no staged/unstaged changes).
 pub fn is_clean(dir: &Path) -> bool {
     git(dir, &["status", "--porcelain"])
@@ -240,6 +284,120 @@ pub fn changed_files(dir: &Path, base: &str, branch: &str) -> Vec<String> {
     git(dir, &["diff", "--name-only", &format!("{base}...{branch}")])
         .map(|s| s.lines().filter(|l| !l.is_empty()).map(String::from).collect())
         .unwrap_or_default()
+}
+
+/// The branch agent work queues on when landing would disturb the human's checkout.
+///
+/// Per base, so a fork tree doesn't funnel every session through one queue. Slashes in
+/// the base are flattened, since `spwn/staging/spwn/aaa` would collide with a ref named
+/// `spwn/staging/spwn`.
+pub fn staging_branch(base: &str) -> String {
+    format!("spwn/staging/{}", base.replace('/', "-"))
+}
+
+/// Whether `base`'s staging branch exists — i.e. work is queued for the human.
+pub fn staging_exists(repo: &Path, base: &str) -> bool {
+    git(
+        repo,
+        &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{}", staging_branch(base))],
+    )
+    .is_ok()
+}
+
+/// The branch a session should sync from and land on.
+///
+/// Once staging exists, everything flows through it until the human integrates. Sending
+/// some sessions to the base and others to staging would fork the queue in two and put
+/// the conflict back where this is trying to remove it.
+pub fn landing_target(repo: &Path, base: &str) -> String {
+    if staging_exists(repo, base) {
+        staging_branch(base)
+    } else {
+        base.to_string()
+    }
+}
+
+/// Where a session's work ended up.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Landing {
+    /// Straight onto the base. The human's checkout fast-forwarded, untouched work and
+    /// all, or was already clean.
+    Base(String),
+    /// Queued on staging, because landing on the base would have overwritten these
+    /// files the human has open. Nothing of theirs was touched.
+    Staged { branch: String, blocked_by: Vec<String> },
+}
+
+/// Land `branch`, choosing its destination by whether the human would notice.
+///
+/// Clear base → land there, so the base stays current with no human involvement at all.
+/// Otherwise the work queues on staging: the agent is never stalled, and the person
+/// mid-edit is never asked to stash so a robot can proceed.
+///
+/// The queue costs nothing to maintain because sessions sync from [`landing_target`],
+/// so the branch always contains staging's tip and landing is a ref move — no worktree
+/// for staging, no checkout, no merge algorithm.
+pub fn land_session(repo: &Path, base: &str, branch: &str) -> Result<Landing, String> {
+    let staging = staging_branch(base);
+    if !staging_exists(repo, base) {
+        let blockers = human_blockers(repo, base, branch);
+        if blockers.is_empty() {
+            return merge_into_base(repo, base, branch).map(Landing::Base);
+        }
+        // Open the queue at the base, so the first queued landing is a fast-forward.
+        let base_sha = git(repo, &["rev-parse", base])?;
+        git(repo, &["branch", &staging, &base_sha])?;
+        advance_staging(repo, &staging, branch)?;
+        return Ok(Landing::Staged { branch: staging, blocked_by: blockers });
+    }
+    // Queue already open: everything joins it until the human integrates.
+    let blocked_by = human_blockers(repo, base, branch);
+    advance_staging(repo, &staging, branch)?;
+    Ok(Landing::Staged { branch: staging, blocked_by })
+}
+
+/// Move `staging` up to `branch`. Refuses unless it's a fast-forward — a non-ff here
+/// would mean dropping whatever another session already queued.
+fn advance_staging(repo: &Path, staging: &str, branch: &str) -> Result<(), String> {
+    if is_ancestor(repo, branch, staging) {
+        return Ok(()); // already queued, nothing to move
+    }
+    if !is_ancestor(repo, staging, branch) {
+        return Err(format!(
+            "This session hasn't caught up with '{staging}' — sync it first, so queueing it \
+             can't drop work another session already queued there."
+        ));
+    }
+    let sha = git(repo, &["rev-parse", branch])?;
+    git(repo, &["update-ref", &format!("refs/heads/{staging}"), &sha]).map(|_| ())
+}
+
+/// How far a base's staging branch is ahead, and which files it would bring in. Zero
+/// commits means nothing is queued.
+pub fn staging_status(repo: &Path, base: &str) -> (u32, Vec<String>) {
+    if !staging_exists(repo, base) {
+        return (0, Vec::new());
+    }
+    let staging = staging_branch(base);
+    (
+        count_commits(repo, &format!("{base}..{staging}")),
+        changed_files(repo, base, &staging),
+    )
+}
+
+/// Bring the queued work into the base, on the human's say-so, and close the queue.
+///
+/// Fast-forwards when the base hasn't moved. When it has — they committed the file an
+/// agent was waiting on — this is a real merge in their checkout, which is correct:
+/// they asked for it, at a moment of their choosing, rather than being interrupted.
+pub fn integrate_staging(repo: &Path, base: &str) -> Result<String, String> {
+    if !staging_exists(repo, base) {
+        return Err(format!("Nothing is queued for '{base}'."));
+    }
+    let staging = staging_branch(base);
+    let summary = merge_into_base(repo, base, &staging)?;
+    let _ = git(repo, &["branch", "-D", &staging]);
+    Ok(summary)
 }
 
 /// The outcome of a trial merge, computed without touching a worktree or moving a ref.
@@ -400,9 +558,16 @@ pub fn merge_into_base(repo: &Path, base: &str, branch: &str) -> Result<String, 
     let base_wt = worktree_for_branch(repo, base).ok_or_else(|| {
         format!("Branch '{base}' isn't checked out anywhere — check it out (e.g. in your project folder) and try again.")
     })?;
-    if !is_clean(&base_wt) {
+    // Deliberately NOT refused just for being dirty. git fast-forwards into a dirty
+    // tree quite happily when the incoming changes don't touch what's being edited, and
+    // the project checkout is a person's — telling them to stash so an agent can land
+    // is exactly the interruption this is supposed to avoid. Let git decide, and if it
+    // refuses, say which of their files it was.
+    let blockers = human_blockers(repo, base, branch);
+    if !blockers.is_empty() {
         return Err(format!(
-            "The checkout of '{base}' has uncommitted changes — commit or stash them first."
+            "Landing this would overwrite work in progress in {}. Left '{base}' alone.",
+            blockers.join(", ")
         ));
     }
     // `--ff-only` is not just an optimisation here: asserting the fast-forward means a
@@ -1087,6 +1252,202 @@ mod sync_and_land_tests {
             merge_preview(tmp.path(), "main", "feat"),
             MergePreview::Conflicts(_)
         ));
+    }
+
+    /// The behaviour the whole human-priority model rests on: an agent lands freely
+    /// while a person is mid-edit, as long as it doesn't touch what they're editing.
+    /// spwn used to refuse this outright, so one open file stalled every agent merge.
+    #[test]
+    fn an_agent_lands_while_the_human_edits_an_unrelated_file() {
+        let tmp = diverged(false);
+        let dir = tmp.path();
+        git(dir, &["checkout", "-q", "main"]).unwrap();
+
+        // The human is typing in a file the session never touched.
+        std::fs::write(dir.join("human.txt"), "mid-sentence\n").unwrap();
+        assert!(!is_clean(dir));
+        assert!(human_blockers(dir, "main", "feat").is_empty());
+
+        merge_into_base(dir, "main", "feat").expect("should land despite the dirty tree");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("human.txt")).unwrap(),
+            "mid-sentence\n",
+            "the human's uncommitted work is untouched"
+        );
+    }
+
+    /// And when it WOULD touch their open file, it's refused by name rather than
+    /// attempted — the human is never asked to stash so an agent can proceed.
+    #[test]
+    fn a_landing_that_would_overwrite_the_humans_edits_is_refused_by_name() {
+        let tmp = diverged(false);
+        let dir = tmp.path();
+        git(dir, &["checkout", "-q", "main"]).unwrap();
+
+        // Now they're editing the very file the session changed.
+        std::fs::write(dir.join("feat.txt"), "the human got here first\n").unwrap();
+        assert_eq!(human_blockers(dir, "main", "feat"), vec!["feat.txt"]);
+
+        let err = merge_into_base(dir, "main", "feat").unwrap_err();
+        assert!(err.contains("feat.txt"), "must name the file: {err}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("feat.txt")).unwrap(),
+            "the human got here first\n"
+        );
+    }
+
+    /// Untracked files block a merge too, so they count as work in progress.
+    #[test]
+    fn an_untracked_file_counts_as_work_in_progress() {
+        let tmp = diverged(false);
+        let dir = tmp.path();
+        git(dir, &["checkout", "-q", "main"]).unwrap();
+        std::fs::write(dir.join("feat.txt"), "not committed yet\n").unwrap();
+        assert!(dirty_paths(dir).contains(&"feat.txt".to_string()));
+    }
+
+    /// `main` with a shared tracked file, and a synced session branch that changed it.
+    /// Leaves `main` checked out, ready for the human to start editing.
+    fn contested() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        git(dir, &["init", "-q", "-b", "main", "."]).unwrap();
+        std::fs::write(dir.join("shared.txt"), "original\n").unwrap();
+        commit_all(dir, "base").unwrap();
+
+        git(dir, &["checkout", "-q", "-b", "feat"]).unwrap();
+        std::fs::write(dir.join("shared.txt"), "the session's version\n").unwrap();
+        commit_all(dir, "session work").unwrap();
+
+        git(dir, &["checkout", "-q", "main"]).unwrap();
+        tmp
+    }
+
+    /// The point of the whole staging path: the agent is never stalled and the person
+    /// mid-edit is never touched.
+    #[test]
+    fn work_queues_on_staging_when_it_would_disturb_the_human() {
+        let tmp = contested();
+        let dir = tmp.path();
+        let base_before = git(dir, &["rev-parse", "main"]).unwrap();
+
+        // They're mid-sentence in the very file this session changed.
+        std::fs::write(dir.join("shared.txt"), "human is mid-sentence\n").unwrap();
+
+        match land_session(dir, "main", "feat").unwrap() {
+            Landing::Staged { branch, blocked_by } => {
+                assert_eq!(branch, "spwn/staging/main");
+                assert_eq!(blocked_by, vec!["shared.txt"]);
+            }
+            other => panic!("expected staging, got {other:?}"),
+        }
+        assert_eq!(git(dir, &["rev-parse", "main"]).unwrap(), base_before, "base untouched");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("shared.txt")).unwrap(),
+            "human is mid-sentence\n",
+            "their edit survived"
+        );
+        let (ahead, files) = staging_status(dir, "main");
+        assert_eq!(ahead, 1);
+        assert_eq!(files, vec!["shared.txt"]);
+    }
+
+    /// With the human clear, work goes straight to the base — staging only exists when
+    /// it has to, so the common case leaves nothing for anyone to integrate.
+    #[test]
+    fn a_clear_base_takes_the_work_directly() {
+        let tmp = contested();
+        let dir = tmp.path();
+        assert!(matches!(
+            land_session(dir, "main", "feat").unwrap(),
+            Landing::Base(_)
+        ));
+        assert!(!staging_exists(dir, "main"), "no queue was opened");
+    }
+
+    /// Once open, the queue takes everyone — splitting between base and staging would
+    /// fork the line of work in two.
+    #[test]
+    fn a_second_session_joins_the_open_queue() {
+        let tmp = contested();
+        let dir = tmp.path();
+        std::fs::write(dir.join("shared.txt"), "human is mid-sentence\n").unwrap();
+        land_session(dir, "main", "feat").unwrap();
+        // Set their edit aside so the fixture can move between branches.
+        git(dir, &["checkout", "-q", "--", "shared.txt"]).unwrap();
+
+        // A second session, branched off staging as landing_target directs.
+        git(dir, &["checkout", "-q", "-b", "feat2", "spwn/staging/main"]).unwrap();
+        std::fs::write(dir.join("second.txt"), "more work\n").unwrap();
+        commit_all(dir, "second session").unwrap();
+        git(dir, &["checkout", "-q", "main"]).unwrap();
+
+        assert_eq!(landing_target(dir, "main"), "spwn/staging/main");
+        assert!(matches!(
+            land_session(dir, "main", "feat2").unwrap(),
+            Landing::Staged { .. }
+        ));
+        assert_eq!(staging_status(dir, "main").0, 2, "both are queued");
+    }
+
+    /// Queueing a session that hasn't caught up would silently drop whatever another
+    /// session already queued, so it's refused instead.
+    #[test]
+    fn queueing_a_stale_session_is_refused_rather_than_dropping_queued_work() {
+        let tmp = contested();
+        let dir = tmp.path();
+        std::fs::write(dir.join("shared.txt"), "human is mid-sentence\n").unwrap();
+        land_session(dir, "main", "feat").unwrap();
+        git(dir, &["checkout", "-q", "--", "shared.txt"]).unwrap();
+
+        // Branched from the base, so it never saw what's already queued.
+        git(dir, &["checkout", "-q", "-b", "stale", "main"]).unwrap();
+        std::fs::write(dir.join("stale.txt"), "behind\n").unwrap();
+        commit_all(dir, "stale work").unwrap();
+        git(dir, &["checkout", "-q", "main"]).unwrap();
+
+        assert!(land_session(dir, "main", "stale").is_err());
+        assert_eq!(staging_status(dir, "main").0, 1, "the queued work is still there");
+    }
+
+    /// The human integrates when they choose, and the queue closes behind them.
+    #[test]
+    fn integrating_brings_the_queue_in_and_closes_it() {
+        let tmp = contested();
+        let dir = tmp.path();
+        std::fs::write(dir.join("shared.txt"), "human is mid-sentence\n").unwrap();
+        land_session(dir, "main", "feat").unwrap();
+
+        // They think better of that edit and drop it, then let the queue in.
+        git(dir, &["checkout", "-q", "--", "shared.txt"]).unwrap();
+        integrate_staging(dir, "main").unwrap();
+
+        assert!(!staging_exists(dir, "main"), "queue closed");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("shared.txt")).unwrap(),
+            "the session's version\n",
+            "the queued work arrived"
+        );
+    }
+
+    /// If they instead COMMIT a change to the same file, integrating is a real merge in
+    /// their checkout — and a conflicting one leaves it exactly as it was. That is the
+    /// deferred cost of the staging path, paid at a moment they chose.
+    #[test]
+    fn integrating_over_the_humans_own_commit_leaves_their_checkout_intact() {
+        let tmp = contested();
+        let dir = tmp.path();
+        std::fs::write(dir.join("shared.txt"), "human is mid-sentence\n").unwrap();
+        land_session(dir, "main", "feat").unwrap();
+
+        // They commit their own take on the contested file instead.
+        commit_all(dir, "the human's own version").unwrap();
+        let before = git(dir, &["rev-parse", "main"]).unwrap();
+        if integrate_staging(dir, "main").is_err() {
+            assert_eq!(git(dir, &["rev-parse", "main"]).unwrap(), before);
+            assert!(is_clean(dir), "no half-merge in a person's working tree");
+            assert!(staging_exists(dir, "main"), "the queue is kept for another go");
+        }
     }
 
     #[test]

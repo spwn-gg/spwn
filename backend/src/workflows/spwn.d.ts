@@ -156,8 +156,15 @@ export interface SessionMergeStatus {
   overlaps: Array<{ terminalId: string; title: string; files: string[] }>;
   /** Branches this work travels through to reach a root, e.g. ["spwn/aaa", "main"]. */
   mergePath: string[];
-  /** Why the merge can't proceed right now, if it can't. */
+  /** Why the merge can't proceed right now, if it can't. A dirty base checkout is NOT
+   *  one of these — that work queues on staging instead. */
   blocker: string | null;
+  /** Files the human has in progress that landing this would overwrite. Non-empty means
+   *  merging queues the work on staging rather than touching their working copy. */
+  humanBlockers: string[];
+  /** Commits queued on staging, waiting for the human to bring in. */
+  stagingAhead: number;
+  stagingFiles: string[];
 }
 
 export type SyncOutcome =

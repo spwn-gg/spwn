@@ -141,6 +141,24 @@ intended "opt all the way out" behavior; just know it's a package deal.
 | `session-integrate` | On demand, from **Verify merged result** in the merge panel. | A **throwaway worktree holding the merged result** of the session and its base — not the session's own worktree. |
 | `session-deleted` | On delete — deleting a session, or deleting the project that contains it (which deletes each of its sessions in turn). Repo scripts run **first**, inside the worktree; global scripts run **last** (that's where the worktree gets removed). | The **worktree** for repo scripts; the **project dir** for global scripts. |
 
+### Agents never interrupt you
+
+Your project checkout is yours. An agent landing its work will fast-forward it — the
+same as a `git pull` — but only when the incoming changes don't touch anything you have
+open. git allows exactly that, and spwn no longer asks you to stash so a session can
+proceed.
+
+When a landing *would* overwrite something you're editing, it goes to a staging branch
+(`spwn/staging/<base>`) instead. The agent isn't stalled, your working copy isn't
+touched, and the merge panel offers to bring the queued work in whenever you want it.
+
+Once a queue is open, sessions sync from it rather than from the base, which keeps every
+queued landing a fast-forward — so staging needs no worktree of its own.
+
+The best outcome needs nothing from you at all: commit the file you were holding, and
+the agents sync onto your version, resolve in their own worktrees, and the queue
+fast-forwards in clean.
+
 ### Testing a merge before it lands
 
 `session-integrate` exists for the conflicts git cannot see. Session A renames a
