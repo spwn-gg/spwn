@@ -189,6 +189,9 @@ export interface MergeStatus {
 	stagingAhead: number;
 	/** Files that queued work would bring into the base. */
 	stagingFiles: string[];
+	/** Paths where the queue can't absorb your later commits. This conflict is between
+	 *  queued work and yours, so it belongs to the sessions that queued — not to you. */
+	stagingConflicts: string[];
 }
 
 /** Another session working in the same files (mirrors commands::Overlap). */

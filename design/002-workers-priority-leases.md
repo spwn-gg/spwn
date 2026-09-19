@@ -148,7 +148,7 @@ to lunch mid-edit; a batch agent is not.
 
 The residual risk is **starvation**, bounded by §5.
 
-## 7. Implementation gap this exposes
+## 7. Implementation gap this exposes — **fixed**
 
 Staging as shipped in #74 **does not track the base**. `land_session` opens staging at the
 base tip and advances it to session branches; nothing brings later base commits in. So
@@ -175,6 +175,16 @@ git update-ref refs/heads/spwn/staging/main "$C"
 
 When that merge-tree conflicts, the conflict belongs to the staged sessions, not the
 human — hand it back via #67's handoff, which is what that mechanism is for.
+
+**Shipped** as `gitwt::track_base`, called before a session syncs, before a landing
+queues, and before the human integrates. Writing the test first showed the bug was worse
+than described above: sessions sync from `landing_target`, which *is* staging once a
+queue is open, so every commit the human made after the queue opened was **invisible to
+every agent indefinitely**. Not just an awkward integration later — agents quietly
+working against a base that had moved, which is the human-priority story failing in its
+least visible direction. `integrate_staging` now names whose conflict it is rather than
+handing a person a raw merge failure for a disagreement between queued sessions and
+their own commits.
 
 ## 8. Corrections to RFC 001
 

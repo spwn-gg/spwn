@@ -367,7 +367,11 @@ pub fn land_session(repo: &Path, base: &str, branch: &str) -> Result<Landing, St
         advance_staging(repo, &staging, branch)?;
         return Ok(Landing::Staged { branch: staging, blocked_by: blockers });
     }
-    // Queue already open: everything joins it until the human integrates.
+    // Queue already open: everything joins it until the human integrates. Carry the
+    // base forward first, so what this branch fast-forwards onto is current — and so a
+    // session that hasn't caught up is told to sync rather than quietly queueing on a
+    // stale tip.
+    track_base(repo, base)?;
     let blocked_by = human_blockers(repo, base, branch);
     advance_staging(repo, &staging, branch)?;
     Ok(Landing::Staged { branch: staging, blocked_by })
@@ -387,6 +391,54 @@ fn advance_staging(repo: &Path, staging: &str, branch: &str) -> Result<(), Strin
     }
     let sha = git(repo, &["rev-parse", branch])?;
     git(repo, &["update-ref", &format!("refs/heads/{staging}"), &sha]).map(|_| ())
+}
+
+/// What advancing the queue to include the base did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BaseTracking {
+    /// No queue open, or it already contains the base.
+    UpToDate,
+    /// The queue now contains the base tip.
+    Advanced,
+    /// The base can't be merged into the queue without resolving these paths. That
+    /// conflict is between queued work and the human's own commits, so it belongs to
+    /// the sessions that queued, not to the person who just committed.
+    Conflicted(Vec<String>),
+}
+
+/// Bring the base's later commits into the queue.
+///
+/// Without this a queue is a trap. Sessions sync from [`landing_target`], which is
+/// staging once a queue is open — and nothing otherwise carried the base forward into
+/// it. So every commit the human made after the queue opened stayed invisible to every
+/// agent, indefinitely: they keep working against a base that moved, which is the
+/// human-priority story failing in its least visible direction.
+///
+/// Needs no worktree. The merge is computed in memory ([`merge_preview`]), wrapped in a
+/// commit, and the ref moved — so the base checkout, which belongs to a person, is never
+/// touched. Cheap to call on a hot path: an already-current queue costs one
+/// `merge-base --is-ancestor`.
+pub fn track_base(repo: &Path, base: &str) -> Result<BaseTracking, String> {
+    if !staging_exists(repo, base) {
+        return Ok(BaseTracking::UpToDate);
+    }
+    let staging = staging_branch(base);
+    if is_ancestor(repo, base, &staging) {
+        return Ok(BaseTracking::UpToDate);
+    }
+    match merge_preview(repo, &staging, base) {
+        MergePreview::Conflicts(paths) => Ok(BaseTracking::Conflicted(paths)),
+        MergePreview::Unavailable(why) => Err(why),
+        MergePreview::Clean { tree } => {
+            // staging first, so the queue's own history stays the first-parent line.
+            let commit = git(
+                repo,
+                &["commit-tree", &tree, "-p", &staging, "-p", base, "-m", "spwn: track base"],
+            )?;
+            git(repo, &["update-ref", &format!("refs/heads/{staging}"), &commit])?;
+            Ok(BaseTracking::Advanced)
+        }
+    }
 }
 
 /// How far a base's staging branch is ahead, and which files it would bring in. Zero
@@ -412,6 +464,17 @@ pub fn integrate_staging(repo: &Path, base: &str) -> Result<String, String> {
         return Err(format!("Nothing is queued for '{base}'."));
     }
     let staging = staging_branch(base);
+    // With the base already in the queue this lands as a fast-forward, which is the
+    // whole point: integrating is never a merge a person has to sit through.
+    if let BaseTracking::Conflicted(paths) = track_base(repo, base)? {
+        // Say whose conflict it is. Falling through would hand the person a raw merge
+        // failure for a disagreement between queued sessions and their own commits.
+        return Err(format!(
+            "The queued work conflicts with your commits in {}. A session needs to \
+             resolve that before it can come in — nothing of yours is blocked meanwhile.",
+            paths.join(", ")
+        ));
+    }
     let summary = merge_into_base(repo, base, &staging)?;
     let _ = git(repo, &["branch", "-D", &staging]);
     Ok(summary)
@@ -1460,11 +1523,109 @@ mod sync_and_land_tests {
         // They commit their own take on the contested file instead.
         commit_all(dir, "the human's own version").unwrap();
         let before = git(dir, &["rev-parse", "main"]).unwrap();
-        if integrate_staging(dir, "main").is_err() {
-            assert_eq!(git(dir, &["rev-parse", "main"]).unwrap(), before);
-            assert!(is_clean(dir), "no half-merge in a person's working tree");
-            assert!(staging_exists(dir, "main"), "the queue is kept for another go");
+        let err = integrate_staging(dir, "main").unwrap_err();
+        assert!(
+            err.contains("shared.txt") && err.contains("A session needs to"),
+            "the message must name the file and whose conflict it is: {err}"
+        );
+        assert_eq!(git(dir, &["rev-parse", "main"]).unwrap(), before);
+        assert!(is_clean(dir), "no half-merge in a person's working tree");
+        assert!(staging_exists(dir, "main"), "the queue is kept for another go");
+    }
+
+    /// The bug this fixes, stated as a test before the fix exists.
+    ///
+    /// Once a queue opens, sessions sync from `landing_target` — staging — and nothing
+    /// brought the base's later commits into it. So every commit the human made after
+    /// the queue opened was invisible to every agent, indefinitely. That is the
+    /// human-priority story failing in the direction that matters least visibly: agents
+    /// quietly working against a base that moved.
+    #[test]
+    fn a_queue_takes_the_humans_later_commits() {
+        let tmp = contested();
+        let dir = tmp.path();
+        std::fs::write(dir.join("shared.txt"), "human is mid-sentence\n").unwrap();
+        land_session(dir, "main", "feat").unwrap();
+        git(dir, &["checkout", "-q", "--", "shared.txt"]).unwrap();
+
+        // They finish, and commit something of their own that no session has seen.
+        std::fs::write(dir.join("humans-work.txt"), "shipped by a person\n").unwrap();
+        commit_all(dir, "the human's own commit").unwrap();
+
+        track_base(dir, "main").unwrap();
+
+        let staging = staging_branch("main");
+        assert!(
+            is_ancestor(dir, "main", &staging),
+            "the queue must contain the base, or agents syncing from it never see it"
+        );
+        assert!(
+            git(dir, &["cat-file", "-e", &format!("{staging}:humans-work.txt")]).is_ok(),
+            "the human's commit has to reach the branch agents sync from"
+        );
+    }
+
+    /// Tracking must not need a worktree: the base checkout belongs to a person, and
+    /// the whole design turns on never touching it.
+    #[test]
+    fn tracking_the_base_leaves_every_working_tree_alone() {
+        let tmp = contested();
+        let dir = tmp.path();
+        std::fs::write(dir.join("shared.txt"), "human is mid-sentence\n").unwrap();
+        land_session(dir, "main", "feat").unwrap();
+
+        // Still mid-edit while the queue catches up behind them.
+        let head_before = git(dir, &["rev-parse", "HEAD"]).unwrap();
+        track_base(dir, "main").unwrap();
+
+        assert_eq!(git(dir, &["rev-parse", "HEAD"]).unwrap(), head_before);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("shared.txt")).unwrap(),
+            "human is mid-sentence\n"
+        );
+        assert!(!merge_in_progress(dir));
+    }
+
+    /// When the queue can't absorb the base, that conflict is between queued work and
+    /// the human's commits — it is reported, not forced, and nothing moves.
+    #[test]
+    fn a_queue_that_cannot_take_the_base_reports_rather_than_forces() {
+        let tmp = contested();
+        let dir = tmp.path();
+        std::fs::write(dir.join("shared.txt"), "human is mid-sentence\n").unwrap();
+        land_session(dir, "main", "feat").unwrap();
+
+        // They commit their own take on the very file the queued session changed.
+        commit_all(dir, "the human's own version of shared.txt").unwrap();
+
+        let staging = staging_branch("main");
+        let before = git(dir, &["rev-parse", &staging]).unwrap();
+        match track_base(dir, "main").unwrap() {
+            BaseTracking::Conflicted(paths) => assert_eq!(paths, vec!["shared.txt"]),
+            other => panic!("expected a conflict, got {other:?}"),
         }
+        assert_eq!(
+            git(dir, &["rev-parse", &staging]).unwrap(),
+            before,
+            "a queue that can't take the base must not move"
+        );
+    }
+
+    /// Tracking an already-current queue is a no-op, so it can be called freely on the
+    /// paths that run per refresh without piling up empty merge commits.
+    #[test]
+    fn tracking_a_current_queue_does_nothing() {
+        let tmp = contested();
+        let dir = tmp.path();
+        std::fs::write(dir.join("shared.txt"), "human is mid-sentence\n").unwrap();
+        land_session(dir, "main", "feat").unwrap();
+        git(dir, &["checkout", "-q", "--", "shared.txt"]).unwrap();
+
+        let staging = staging_branch("main");
+        let first = git(dir, &["rev-parse", &staging]).unwrap();
+        assert!(matches!(track_base(dir, "main").unwrap(), BaseTracking::UpToDate));
+        assert!(matches!(track_base(dir, "main").unwrap(), BaseTracking::UpToDate));
+        assert_eq!(git(dir, &["rev-parse", &staging]).unwrap(), first);
     }
 
     #[test]
