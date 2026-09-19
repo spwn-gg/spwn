@@ -5,7 +5,8 @@
 		mergeSession,
 		deleteTerminal,
 		syncSessionFromBase,
-		abortSessionSync
+		abortSessionSync,
+		verifySessionMerge
 	} from './ipc';
 	import { refreshProjects, pasteToInput } from './stores';
 	import { syncConflictPrompt } from './labels';
@@ -25,6 +26,9 @@
 	let commitFirst = $state(true);
 	let syncing = $state(false);
 	let syncNote = $state('');
+	let verifying = $state(false);
+	let verifyNote = $state('');
+	let verifyOk = $state<boolean | null>(null);
 	let result = $state('');
 	let merged = $state(false);
 
@@ -101,6 +105,34 @@
 		} is waiting in this session's composer — send it to have the agent resolve ${
 			n === 1 ? 'it' : 'them'
 		}, or abort the sync.`;
+	}
+
+	// Both branches can be green on their own and still merge into something broken —
+	// only the combined tree proves otherwise, so it has to be built somewhere.
+	async function verify() {
+		if (verifying) return;
+		verifying = true;
+		verifyNote = '';
+		verifyOk = null;
+		try {
+			const r = await verifySessionMerge(projectId, terminalId);
+			if (r.noScripts) {
+				verifyNote =
+					'No session-integrate hook is set up, so nothing was checked. Add one (e.g. ~/.spwn/hooks/session-integrate.d/10-test.sh) to build and test the merged result.';
+			} else {
+				verifyOk = r.ok;
+				const failed = r.runs.filter((x) => !x.ok);
+				verifyNote = r.ok
+					? `The merged result passed ${r.runs.length} check${r.runs.length === 1 ? '' : 's'}.`
+					: `${failed.length} of ${r.runs.length} checks failed on the merged result: ${failed
+							.map((x) => x.script)
+							.join(', ')}. Both branches can pass alone and still break together.`;
+			}
+		} catch (e) {
+			verifyNote = String(e);
+		} finally {
+			verifying = false;
+		}
 	}
 
 	async function abort() {
@@ -256,6 +288,19 @@
 				{/if}
 				{#if status.blocker}
 					<div class="blocker">{status.blocker}</div>
+				{/if}
+
+				{#if !nothingToMerge && !midSync && !conflicts.size}
+					<div class="btnrow">
+						<button class="btn" disabled={verifying} onclick={verify}>
+							{verifying ? 'Building the merged result…' : 'Verify merged result'}
+						</button>
+					</div>
+				{/if}
+				{#if verifyNote}
+					<div class="note" class:warn={verifyOk === false} class:ok={verifyOk === true}>
+						{verifyNote}
+					</div>
 				{/if}
 
 				<label class="del">

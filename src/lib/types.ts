@@ -100,6 +100,26 @@ export type SyncResult =
 	 *  surrounding code moved, and these files are worth a glance. */
 	| { outcome: 'replayedResolution'; files: string[] };
 
+/** One `session-integrate` script's run (mirrors hooks::HookRun). */
+export interface HookRunResult {
+	event: string;
+	scope: HookScope;
+	script: string;
+	exitCode?: number | null;
+	ok: boolean;
+	output: string;
+	at: number;
+}
+
+/** What verifying a merged result found (mirrors commands::VerifyResult). */
+export interface VerifyResult {
+	runs: HookRunResult[];
+	ok: boolean;
+	/** No `session-integrate` script exists, so nothing was checked. Distinct from
+	 *  `ok: false`: "found no problems" and "didn't look" are different answers. */
+	noScripts: boolean;
+}
+
 /** A session's hooks status (mirrors hooks::HooksStatus). */
 export interface HooksStatus {
 	available: boolean;

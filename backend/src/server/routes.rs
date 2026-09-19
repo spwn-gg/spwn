@@ -7,6 +7,7 @@
 //! already-async ones are awaited directly.
 
 use crate::commands::{self as cmd, OpenTerminalSpec};
+use crate::hooks;
 use crate::settings::Settings;
 use crate::state::AppState;
 use crate::workflows;
@@ -186,6 +187,15 @@ pub async fn invoke(
         "merge_session" => blocking!(
             state, body, MergeSessionArgs, st, a,
             ok_result(cmd::merge_session(&st, a.project_id, a.terminal_id, a.commit_first))
+        ),
+        "verify_session_merge" => blocking!(
+            state, body, ProjectTerminalArgs, st, a,
+            ok_result(cmd::verify_session_merge(
+                &st,
+                a.project_id,
+                a.terminal_id,
+                &hooks::PromptMode::Ui,
+            ))
         ),
         "sync_session_from_base" => blocking!(
             state, body, TerminalIdArgs, st, a,

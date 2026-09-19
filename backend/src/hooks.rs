@@ -16,7 +16,9 @@
 //! A file runs directly when it's executable (honoring its shebang); otherwise via `sh`.
 //!
 //! Events (see [`EVENTS`]): `session-created`, `session-ready`, `session-turn`,
-//! `session-deleted`. Most hooks run with the worktree as their cwd, EXCEPT the
+//! `session-integrate`, `session-deleted`. `session-integrate` is the odd one: it runs
+//! in a throwaway worktree holding the *merged* result of a session and its base, not
+//! in the session's own worktree, so a project can test a merge before it lands. Most hooks run with the worktree as their cwd, EXCEPT the
 //! *global* `session-created` / `session-deleted` scripts, which run in the *project
 //! dir* — the global `session-created` script creates the worktree (which doesn't
 //! exist yet), and the global `session-deleted` script removes it.
@@ -69,6 +71,7 @@ pub const EVENTS: &[&str] = &[
     "session-created",
     "session-ready",
     "session-turn",
+    "session-integrate",
     "session-deleted",
 ];
 

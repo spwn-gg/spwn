@@ -961,6 +961,110 @@ pub fn sync_session_from_base(
     })
 }
 
+/// What verifying a merged result found.
+#[derive(Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifyResult {
+    /// Every `session-integrate` script that ran, in order.
+    pub runs: Vec<hooks::HookRun>,
+    /// Every script passed (and at least one ran).
+    pub ok: bool,
+    /// No `session-integrate` script exists, so nothing was checked. Distinct from
+    /// `ok: false` — "we found no problems" and "we didn't look" are different answers.
+    pub no_scripts: bool,
+}
+
+/// Build and test the *merged* result of a session and its base, in a throwaway
+/// worktree, before anything lands.
+///
+/// This is the only thing that catches a semantic conflict: A renames a function, B
+/// adds a caller, git merges both without a murmur and the result doesn't compile. Both
+/// branches are green on their own, so testing them separately proves nothing — the
+/// combined tree is what has to run, and until now it existed nowhere.
+///
+/// What "verified" means is the project's business, not spwn's, so the work is a
+/// `session-integrate` hook. spwn supplies the merged checkout and reports what the
+/// scripts say.
+pub fn verify_session_merge(
+    state: &AppState,
+    project_id: String,
+    terminal_id: String,
+    mode: &hooks::PromptMode,
+) -> Result<VerifyResult, String> {
+    let (proj_dir, branch, base, cwd) = {
+        let store = state.store.lock();
+        let proj_dir = store
+            .project(&project_id)
+            .map(|p| p.directory.clone())
+            .ok_or_else(|| "no such project".to_string())?;
+        let t = store
+            .terminal(&terminal_id)
+            .ok_or_else(|| "no such session".to_string())?;
+        let branch = t
+            .branch
+            .clone()
+            .ok_or_else(|| "this session has no git branch to verify".to_string())?;
+        let base = t
+            .base_branch
+            .clone()
+            .ok_or_else(|| "this session has no base branch to merge into".to_string())?;
+        (proj_dir, branch, base, t.cwd.clone())
+    };
+    let repo = gitwt::repo_root(Path::new(&proj_dir))
+        .ok_or_else(|| "project is not a git repository".to_string())?;
+    let session_wt = Path::new(&cwd);
+
+    // A conflicted merge has no single merged tree, so there is nothing to build.
+    let tree = match gitwt::merge_preview(session_wt, &base, &branch) {
+        gitwt::MergePreview::Clean { tree } => tree,
+        gitwt::MergePreview::Conflicts(paths) => {
+            return Err(format!(
+                "Merging would conflict in {}. Resolve that first — there's no merged \
+                 result to test until then.",
+                paths.join(", ")
+            ))
+        }
+        gitwt::MergePreview::Unavailable(why) => {
+            return Err(format!("Couldn't compute the merged result: {why}"))
+        }
+    };
+
+    // The trial checkout lives inside the repo, so it must read as ignored — otherwise
+    // it shows up as untracked in the main checkout, and the per-turn `git add -A`
+    // in any session rooted here would happily commit a whole second checkout.
+    gitwt::ensure_git_excludes(&repo, "/.spwn/trial/");
+    let dest = repo.join(".spwn").join("trial").join(&terminal_id);
+    gitwt::remove_trial_worktree(&repo, &dest); // clear a leftover from a crashed run
+    gitwt::trial_worktree(&repo, &tree, &base, &branch, &dest)?;
+    // Seed from the SESSION's worktree rather than the project dir: its dependencies
+    // already match this branch, which is the closest thing to what the merge needs.
+    gitwt::seed_heavy_dirs(session_wt, &dest);
+
+    let ctx = hooks::HookCtx {
+        terminal_id: terminal_id.clone(),
+        project_dir: proj_dir,
+        worktree: dest.clone(),
+        branch: Some(branch.clone()),
+        base_branch: Some(base.clone()),
+        session_id: None,
+        turn_uuid: None,
+        exec: None,
+        extra_env: vec![
+            ("SPWN_TRIAL_WORKTREE".into(), dest.to_string_lossy().into_owned()),
+            ("SPWN_SESSION_WORKTREE".into(), cwd.clone()),
+        ],
+    };
+    let mut runs = fire_hooks_all(state, &ctx, "session-integrate", mode);
+    gitwt::remove_trial_worktree(&repo, &dest);
+
+    let no_scripts = runs.is_empty();
+    let ok = !no_scripts && runs.iter().all(|r| r.ok);
+    // run_hook_entries already recorded these for the Hooks panel; trim what goes back
+    // over the wire so a chatty test suite can't bloat the response.
+    runs.iter_mut().for_each(|r| r.output.truncate(4000));
+    Ok(VerifyResult { runs, ok, no_scripts })
+}
+
 /// Back out a conflicted sync, putting the session's branch back where it was.
 pub fn abort_session_sync(state: &AppState, terminal_id: String) -> Result<(), String> {
     let cwd = {
@@ -1064,7 +1168,7 @@ pub fn session_merge_status(
         (Vec::new(), None)
     } else {
         match gitwt::merge_preview(wt, &base, &branch) {
-            gitwt::MergePreview::Clean => (Vec::new(), None),
+            gitwt::MergePreview::Clean { .. } => (Vec::new(), None),
             gitwt::MergePreview::Conflicts(paths) => (paths, None),
             gitwt::MergePreview::Unavailable(why) => (Vec::new(), Some(why)),
         }
@@ -1937,10 +2041,10 @@ fn run_hook_entries(
     event: &str,
     entries: Vec<(hooks::Scope, PathBuf)>,
     mode: &hooks::PromptMode,
-) -> std::collections::BTreeMap<String, String> {
+) -> (std::collections::BTreeMap<String, String>, Vec<hooks::HookRun>) {
     let mut reported = std::collections::BTreeMap::new();
     if entries.is_empty() {
-        return reported;
+        return (reported, Vec::new());
     }
     let terminal_id = ctx.terminal_id.clone();
     set_hook_running(state, &terminal_id, Some(event));
@@ -1967,13 +2071,13 @@ fn run_hook_entries(
         hooks::run_entries(ctx, event, &entries, &mut on_line, &mut on_prompt)
     };
     set_hook_running(state, &terminal_id, None);
-    for run in runs {
+    for run in &runs {
         for (k, v) in &run.reported {
             reported.insert(k.clone(), v.clone());
         }
-        record_hook_run(state, &terminal_id, run);
+        record_hook_run(state, &terminal_id, run.clone());
     }
-    reported
+    (reported, runs)
 }
 
 /// Fire an event's hooks across BOTH scopes (global first, then repo), each in its
@@ -1986,7 +2090,20 @@ fn fire_hooks(
 ) -> std::collections::BTreeMap<String, String> {
     let entries =
         hooks::discover_all(enabled_global_hooks_dir(state).as_deref(), &ctx.worktree, event);
-    run_hook_entries(state, ctx, event, entries, mode)
+    run_hook_entries(state, ctx, event, entries, mode).0
+}
+
+/// Like [`fire_hooks`], but hands back what each script *did* rather than what it
+/// reported — `session-integrate` cares whether the scripts passed, not their values.
+fn fire_hooks_all(
+    state: &AppState,
+    ctx: &hooks::HookCtx,
+    event: &str,
+    mode: &hooks::PromptMode,
+) -> Vec<hooks::HookRun> {
+    let entries =
+        hooks::discover_all(enabled_global_hooks_dir(state).as_deref(), &ctx.worktree, event);
+    run_hook_entries(state, ctx, event, entries, mode).1
 }
 
 /// Fire only ONE scope's hook for an event. Used where scope ordering matters relative
@@ -2009,7 +2126,7 @@ fn fire_hooks_scope(
     .into_iter()
     .map(|p| (scope, p))
     .collect();
-    run_hook_entries(state, ctx, event, entries, mode)
+    run_hook_entries(state, ctx, event, entries, mode).0
 }
 
 /// Create a fresh Claude session's worktree via the `session-created` hooks (with a

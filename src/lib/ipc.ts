@@ -20,6 +20,7 @@ import type {
 	SessionStatus,
 	Settings,
 	SyncResult,
+	VerifyResult,
 	TerminalKind,
 	Turn,
 	WorkflowListing,
@@ -374,6 +375,12 @@ export function mergeSession(
 	commitFirst = false
 ): Promise<string> {
 	return invoke('merge_session', { projectId, terminalId, commitFirst });
+}
+
+/** Build and test the MERGED result of a session and its base in a throwaway
+ *  worktree, via `session-integrate` hooks. Catches conflicts git can't see. */
+export function verifySessionMerge(projectId: string, terminalId: string): Promise<VerifyResult> {
+	return invoke('verify_session_merge', { projectId, terminalId });
 }
 
 /** Bring the session's base branch into the session's branch, in its own worktree.
