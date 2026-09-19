@@ -851,23 +851,120 @@ pub fn merge_session(
     let repo = gitwt::repo_root(Path::new(&proj_dir))
         .ok_or_else(|| "project is not a git repository".to_string())?;
     let wt = Path::new(&cwd);
-    if !gitwt::is_clean(wt) {
-        // A running turn is actively writing this tree, so there's no coherent moment
-        // to snapshot: committing catches it half-written, and merging without
-        // committing drops the work. Enforced here and not only in the panel, because
-        // a stale client would otherwise sail straight past the warning.
-        if agent_status_of(state, &terminal_id) == crate::agents::SessionStatus::Thinking {
-            return Err(
-                "This session is mid-turn and has uncommitted changes — wait for the turn \
-                 to finish, so the merge doesn't take a half-written tree."
-                    .to_string(),
-            );
-        }
-        if commit_first {
-            gitwt::commit_all(wt, "spwn: uncommitted work, committed before merge")?;
-        }
-    }
+    settle_worktree(
+        state,
+        &terminal_id,
+        wt,
+        commit_first,
+        "spwn: uncommitted work, committed before merge",
+    )?;
     gitwt::merge_into_base(&repo, &base, &branch)
+}
+
+/// Deal with a session worktree's uncommitted work before a git operation that wants a
+/// clean tree.
+///
+/// A running turn is actively writing the tree, so there's no coherent moment to
+/// snapshot: committing catches it half-written, and proceeding without committing
+/// drops the work. Once the turn is idle, `commit_first` folds the leftovers onto the
+/// session branch so they travel with it.
+///
+/// Enforced here rather than only in the panels, because a stale client would otherwise
+/// sail straight past the warning.
+fn settle_worktree(
+    state: &AppState,
+    terminal_id: &str,
+    wt: &Path,
+    commit_first: bool,
+    message: &str,
+) -> Result<(), String> {
+    // Checked before is_clean, and not folded into it: a conflicted sync leaves the
+    // tree dirty, so the commit path below would cheerfully `git add -A` the conflict
+    // markers and commit them onto the session branch.
+    if gitwt::merge_in_progress(wt) {
+        return Err(
+            "This session has a sync in progress with unresolved conflicts. Resolve them \
+             (or abort the sync) first."
+                .to_string(),
+        );
+    }
+    if gitwt::is_clean(wt) {
+        return Ok(());
+    }
+    if agent_status_of(state, terminal_id) == crate::agents::SessionStatus::Thinking {
+        return Err(
+            "This session is mid-turn and has uncommitted changes — wait for the turn to \
+             finish, so this doesn't take a half-written tree."
+                .to_string(),
+        );
+    }
+    if commit_first {
+        gitwt::commit_all(wt, message)?;
+    }
+    Ok(())
+}
+
+/// What a sync did, shaped as a discriminated union for the UI.
+#[derive(Serialize)]
+#[serde(tag = "outcome", rename_all = "camelCase")]
+pub enum SyncResult {
+    /// The branch already contained the base tip.
+    UpToDate,
+    /// The base merged in cleanly.
+    Merged { summary: String },
+    /// The merge stopped, and the conflict is sitting in the session's worktree.
+    Conflicted { conflicts: Vec<String> },
+}
+
+/// Bring the session's base branch **into** the session's branch, resolving inside the
+/// session's own worktree.
+///
+/// The direction is the point — see `gitwt::sync_from_base`. A conflict lands in the
+/// worktree of the agent that wrote the code, which still holds the conversation
+/// explaining it, instead of in the shared base checkout where nobody can answer for
+/// it. Always commits leftovers first (a merge needs a clean tree), subject to the same
+/// mid-turn rule as merging.
+pub fn sync_session_from_base(
+    state: &AppState,
+    terminal_id: String,
+) -> Result<SyncResult, String> {
+    let (base, cwd) = {
+        let store = state.store.lock();
+        let t = store
+            .terminal(&terminal_id)
+            .ok_or_else(|| "no such session".to_string())?;
+        let base = t
+            .base_branch
+            .clone()
+            .ok_or_else(|| "this session has no base branch to sync from".to_string())?;
+        (base, t.cwd.clone())
+    };
+    let wt = Path::new(&cwd);
+    settle_worktree(
+        state,
+        &terminal_id,
+        wt,
+        true,
+        "spwn: uncommitted work, committed before syncing with base",
+    )?;
+    Ok(match gitwt::sync_from_base(wt, &base)? {
+        gitwt::SyncOutcome::UpToDate => SyncResult::UpToDate,
+        gitwt::SyncOutcome::Merged(summary) => SyncResult::Merged { summary },
+        gitwt::SyncOutcome::Conflicted(conflicts) => SyncResult::Conflicted { conflicts },
+    })
+}
+
+/// Back out a conflicted sync, putting the session's branch back where it was.
+pub fn abort_session_sync(state: &AppState, terminal_id: String) -> Result<(), String> {
+    let cwd = {
+        let store = state.store.lock();
+        store
+            .terminal(&terminal_id)
+            .ok_or_else(|| "no such session".to_string())?
+            .cwd
+            .clone()
+    };
+    gitwt::abort_sync(Path::new(&cwd))
 }
 
 /// A preview of what merging a session's branch into its base would do.
