@@ -207,6 +207,16 @@
 					</div>
 				{/if}
 
+				{#if status.overlaps?.length}
+					<div class="note warn">
+						Also being edited elsewhere:
+						{#each status.overlaps as o (o.terminalId)}
+							<div><strong>{o.title}</strong> — <code>{o.files.join(', ')}</code></div>
+						{/each}
+						Not a problem by itself; both sets of changes still have to meet somewhere.
+					</div>
+				{/if}
+
 				<div class="stats">
 					<span class="stat" class:zero={status.ahead === 0}>
 						<strong>{status.ahead}</strong> commit{status.ahead === 1 ? '' : 's'} ahead

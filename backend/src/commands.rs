@@ -1116,11 +1116,64 @@ pub struct MergeStatus {
     pub will_fast_forward: bool,
     /// A sync conflicted and its resolution is still sitting in the worktree.
     pub sync_conflicts: Vec<String>,
+    /// Other live sessions editing the same files as this one. Advisory only — nothing
+    /// blocks on it.
+    pub overlaps: Vec<Overlap>,
     /// Every branch this session's work has to travel through to reach a root:
     /// `["spwn/bbb", "spwn/aaa", "main"]`. A fork's base is its *parent session's*
     /// branch, so merging a deep fork doesn't put the work anywhere near `main` — it
     /// puts it one rung up. One entry means the next merge lands at a root.
     pub merge_path: Vec<String>,
+}
+
+/// Another session working in the same files as this one.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Overlap {
+    pub terminal_id: String,
+    /// The other session's title, so the UI can name it rather than show an id.
+    pub title: String,
+    /// Files both sessions have changed since each diverged from its own base.
+    pub files: Vec<String>,
+}
+
+/// How many sibling sessions to diff before giving up. This runs on every status
+/// refresh, so the work is O(siblings) per refresh and O(sessions²) across a busy
+/// project; a diff is a few ms, but the cap keeps a project with dozens of sessions
+/// from turning the strip into a git benchmark.
+const MAX_OVERLAP_SIBLINGS: usize = 12;
+
+/// Sibling sessions whose changed files intersect `ours`.
+///
+/// Deliberately advisory, and deliberately not a lock. Hard file ownership would kill
+/// the cheap-parallel-exploration property that is the entire point of the tool; a
+/// warning that two sessions are circling the same file lets you decide, early, whether
+/// that's a problem. Each side is diffed three-dot against its *own* base, so a fork
+/// doesn't "overlap" with its parent over work it merely inherited.
+fn overlaps_with(
+    wt: &Path,
+    ours: &[String],
+    siblings: &[(String, String, String, String)],
+) -> Vec<Overlap> {
+    if ours.is_empty() {
+        return Vec::new();
+    }
+    let ours: std::collections::HashSet<&str> = ours.iter().map(String::as_str).collect();
+    siblings
+        .iter()
+        .take(MAX_OVERLAP_SIBLINGS)
+        .filter_map(|(terminal_id, title, branch, base)| {
+            let files: Vec<String> = gitwt::changed_files(wt, base, branch)
+                .into_iter()
+                .filter(|f| ours.contains(f.as_str()))
+                .collect();
+            (!files.is_empty()).then(|| Overlap {
+                terminal_id: terminal_id.clone(),
+                title: title.clone(),
+                files,
+            })
+        })
+        .collect()
 }
 
 /// Walk a session's lineage, collecting the branches its work must pass through.
@@ -1160,7 +1213,7 @@ pub fn session_merge_status(
     project_id: String,
     terminal_id: String,
 ) -> Result<MergeStatus, String> {
-    let (proj_dir, branch, base, cwd, merge_path) = {
+    let (proj_dir, branch, base, cwd, merge_path, siblings) = {
         let store = state.store.lock();
         let proj_dir = store
             .project(&project_id)
@@ -1175,6 +1228,25 @@ pub fn session_merge_status(
             t.base_branch.clone(),
             t.cwd.clone(),
             merge_path_of(&store, &terminal_id),
+            // Gathered under the lock, diffed outside it — git calls have no business
+            // holding the store mutex.
+            store
+                .project(&project_id)
+                .map(|p| {
+                    p.terminals
+                        .iter()
+                        .filter(|t| t.id != terminal_id && t.kind == "agent")
+                        .filter_map(|t| {
+                            Some((
+                                t.id.clone(),
+                                t.title.clone(),
+                                t.branch.clone()?,
+                                t.base_branch.clone()?,
+                            ))
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default(),
         )
     };
     // No worktree branch → nothing to merge.
@@ -1189,6 +1261,7 @@ pub fn session_merge_status(
     let changed_files = gitwt::changed_files(wt, &base, &branch);
     let uncommitted = !gitwt::is_clean(wt);
     let mid_turn = agent_status_of(state, &terminal_id) == crate::agents::SessionStatus::Thinking;
+    let overlaps = overlaps_with(wt, &changed_files, &siblings);
     let behind = gitwt::count_commits(wt, &format!("{branch}..{base}"));
     let will_fast_forward = gitwt::is_ancestor(wt, &base, &branch);
     // An unresolved sync is not the same as ordinary uncommitted work, and the panels
@@ -1237,6 +1310,7 @@ pub fn session_merge_status(
         behind,
         will_fast_forward,
         sync_conflicts,
+        overlaps,
         merge_path,
     })
 }
@@ -3012,6 +3086,11 @@ mod merge_status_tests {
             will_fast_forward: false,
             sync_conflicts: vec!["src/b.rs".into()],
             merge_path: vec!["spwn/aaa".into(), "main".into()],
+            overlaps: vec![Overlap {
+                terminal_id: "t2".into(),
+                title: "other session".into(),
+                files: vec!["src/a.rs".into()],
+            }],
         })
         .unwrap();
         assert_eq!(json["conflicts"], serde_json::json!(["src/a.rs"]));
@@ -3021,6 +3100,89 @@ mod merge_status_tests {
         assert_eq!(json["willFastForward"], false);
         assert_eq!(json["syncConflicts"], serde_json::json!(["src/b.rs"]));
         assert_eq!(json["mergePath"], serde_json::json!(["spwn/aaa", "main"]));
+        assert_eq!(json["overlaps"][0]["terminalId"], "t2");
+        assert_eq!(json["overlaps"][0]["files"], serde_json::json!(["src/a.rs"]));
+    }
+
+    /// Advisory, so it reports rather than blocks — but it must not cry wolf.
+    #[test]
+    fn overlap_names_only_the_files_both_sessions_touched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        run_git(dir, &["init", "-q", "-b", "main", "."]);
+        std::fs::write(dir.join("shared.rs"), "base\n").unwrap();
+        std::fs::write(dir.join("other.rs"), "base\n").unwrap();
+        gitwt::commit_all(dir, "base").unwrap();
+
+        // Two sessions off main: both touch shared.rs, only one touches other.rs.
+        run_git(dir, &["checkout", "-q", "-b", "spwn/aaa"]);
+        std::fs::write(dir.join("shared.rs"), "from a\n").unwrap();
+        std::fs::write(dir.join("a-only.rs"), "from a\n").unwrap();
+        gitwt::commit_all(dir, "a").unwrap();
+
+        run_git(dir, &["checkout", "-q", "main"]);
+        run_git(dir, &["checkout", "-q", "-b", "spwn/bbb"]);
+        std::fs::write(dir.join("shared.rs"), "from b\n").unwrap();
+        std::fs::write(dir.join("other.rs"), "from b\n").unwrap();
+        gitwt::commit_all(dir, "b").unwrap();
+
+        let ours = gitwt::changed_files(dir, "main", "spwn/bbb");
+        let siblings = vec![(
+            "t-a".to_string(),
+            "Session A".to_string(),
+            "spwn/aaa".to_string(),
+            "main".to_string(),
+        )];
+        let found = overlaps_with(dir, &ours, &siblings);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].terminal_id, "t-a");
+        assert_eq!(
+            found[0].files,
+            vec!["shared.rs"],
+            "only the file both changed — not a-only.rs or other.rs"
+        );
+    }
+
+    /// A fork inherits its parent's work, so diffing each side against its OWN base is
+    /// what stops every fork reporting an overlap with the session it came from.
+    #[test]
+    fn a_fork_does_not_overlap_its_parent_over_inherited_work() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        run_git(dir, &["init", "-q", "-b", "main", "."]);
+        std::fs::write(dir.join("f.rs"), "base\n").unwrap();
+        gitwt::commit_all(dir, "base").unwrap();
+
+        run_git(dir, &["checkout", "-q", "-b", "spwn/parent"]);
+        std::fs::write(dir.join("f.rs"), "parent's work\n").unwrap();
+        gitwt::commit_all(dir, "parent").unwrap();
+
+        // The child forks from the parent and changes something else entirely.
+        run_git(dir, &["checkout", "-q", "-b", "spwn/child"]);
+        std::fs::write(dir.join("g.rs"), "child's work\n").unwrap();
+        gitwt::commit_all(dir, "child").unwrap();
+
+        let ours = gitwt::changed_files(dir, "spwn/parent", "spwn/child");
+        let siblings = vec![(
+            "t-p".to_string(),
+            "Parent".to_string(),
+            "spwn/parent".to_string(),
+            "main".to_string(),
+        )];
+        assert!(
+            overlaps_with(dir, &ours, &siblings).is_empty(),
+            "f.rs is inherited, not contested"
+        );
+    }
+
+    fn run_git(dir: &std::path::Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .expect("git");
+        assert!(out.status.success(), "git {args:?} failed");
     }
 
     /// A session forked twice over: its work reaches main only via its parent and
