@@ -235,6 +235,70 @@ pub fn changed_files(dir: &Path, base: &str, branch: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The outcome of a trial merge, computed without touching a worktree or moving a ref.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MergePreview {
+    /// The merge applies cleanly.
+    Clean,
+    /// The merge would conflict, in these paths.
+    Conflicts(Vec<String>),
+    /// The trial couldn't be run at all -- unrelated histories, an unknown ref, or a
+    /// git older than 2.38 (which has no `merge-tree --write-tree`). Carries git's own
+    /// message. Deliberately distinct from `Clean`: "nothing conflicts" and "we
+    /// couldn't tell" must never render the same, or the panel quietly promises a
+    /// clean merge it never actually checked.
+    Unavailable(String),
+}
+
+/// Would merging `branch` into `base` conflict? Runs the entire merge in memory via
+/// `git merge-tree`: no worktree is touched, no ref moves, and there is nothing to
+/// abort afterwards -- unlike [`merge_into_base`], which can only answer the question
+/// by doing it for real and rolling back.
+///
+/// `--write-tree` does write the merged blobs and trees into the object database.
+/// They're unreferenced and `git gc` collects them; this is the same trick forges use
+/// to put a mergeability badge on a pull request.
+///
+/// `-z` is load-bearing, not a style choice: without it git C-quotes any path that
+/// isn't plain ASCII (`uni-café.txt` comes back as `"uni-caf\303\251.txt"`), so a
+/// preview in a repo with accented filenames would name paths that match nothing.
+pub fn merge_preview(dir: &Path, base: &str, branch: &str) -> MergePreview {
+    let out = match Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["merge-tree", "--write-tree", "--name-only", "-z", base, branch])
+        .output()
+    {
+        Ok(out) => out,
+        Err(e) => return MergePreview::Unavailable(format!("failed to run git: {e}")),
+    };
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let mut fields = stdout.split('\0');
+    // Exit 1 means BOTH "conflicts found" and "that isn't a ref" -- git tells them
+    // apart only by stdout, which leads with the merged tree's oid whenever the merge
+    // actually ran. Checking the status alone would report a typo'd branch as clean.
+    let ran = matches!(out.status.code(), Some(0 | 1));
+    let Some(_merged_tree) = fields.next().filter(|oid| ran && !oid.is_empty()) else {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return MergePreview::Unavailable(if err.is_empty() {
+            format!("git merge-tree failed ({})", out.status)
+        } else {
+            err
+        });
+    };
+    // Conflicted paths run until the empty field closing the section; what follows is
+    // git's own prose about each conflict, which we don't surface.
+    let conflicts: Vec<String> = fields
+        .take_while(|f| !f.is_empty())
+        .map(String::from)
+        .collect();
+    if conflicts.is_empty() {
+        MergePreview::Clean
+    } else {
+        MergePreview::Conflicts(conflicts)
+    }
+}
+
 /// Merge `branch` into `base`. Operates in whichever worktree has `base` checked
 /// out (commonly the project's main folder). Aborts on conflict so nothing is left
 /// half-merged. Returns a human-readable summary on success.
@@ -419,5 +483,94 @@ mod repo_url_tests {
         assert_eq!(repo_name_from_url("git@github.com:o/spwn.git").as_deref(), Some("spwn"));
         assert_eq!(repo_name_from_url("https://github.com/o/spwn/").as_deref(), Some("spwn"));
         assert_eq!(repo_name_from_url("https://github.com/o/..").as_deref(), None);
+    }
+}
+
+#[cfg(test)]
+mod merge_preview_tests {
+    use super::*;
+
+    /// A repo on `main` with one committed file, ready to diverge.
+    fn repo() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        git(dir, &["init", "-q", "-b", "main", "."]).unwrap();
+        std::fs::write(dir.join("f.txt"), "one\ntwo\nthree\n").unwrap();
+        commit_all(dir, "base").unwrap();
+        tmp
+    }
+
+    /// Branch off `main`, write `file`, commit, and return to `main`.
+    fn branch_with(dir: &Path, name: &str, file: &str, body: &str) {
+        git(dir, &["checkout", "-q", "-b", name]).unwrap();
+        std::fs::write(dir.join(file), body).unwrap();
+        commit_all(dir, name).unwrap();
+        git(dir, &["checkout", "-q", "main"]).unwrap();
+    }
+
+    #[test]
+    fn divergent_files_merge_clean() {
+        let tmp = repo();
+        let dir = tmp.path();
+        branch_with(dir, "feat", "g.txt", "from the session\n");
+        std::fs::write(dir.join("h.txt"), "from main\n").unwrap();
+        commit_all(dir, "main moves too").unwrap();
+        assert_eq!(merge_preview(dir, "main", "feat"), MergePreview::Clean);
+    }
+
+    #[test]
+    fn overlapping_edits_name_the_conflicting_path() {
+        let tmp = repo();
+        let dir = tmp.path();
+        branch_with(dir, "feat", "f.txt", "FEAT\ntwo\nthree\n");
+        std::fs::write(dir.join("f.txt"), "MAIN\ntwo\nthree\n").unwrap();
+        commit_all(dir, "main edits the same line").unwrap();
+        assert_eq!(
+            merge_preview(dir, "main", "feat"),
+            MergePreview::Conflicts(vec!["f.txt".to_string()])
+        );
+    }
+
+    /// The trap this function exists to avoid: `merge-tree` exits 1 for conflicts AND
+    /// for an unknown ref, so keying off the exit code alone would call a typo'd
+    /// branch a clean merge.
+    #[test]
+    fn unknown_ref_is_unavailable_not_clean() {
+        let tmp = repo();
+        match merge_preview(tmp.path(), "main", "no-such-branch") {
+            MergePreview::Unavailable(msg) => assert!(!msg.is_empty(), "want git's message"),
+            other => panic!("expected Unavailable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unrelated_histories_are_unavailable() {
+        let tmp = repo();
+        let dir = tmp.path();
+        git(dir, &["checkout", "-q", "--orphan", "solo"]).unwrap();
+        std::fs::write(dir.join("only.txt"), "x\n").unwrap();
+        commit_all(dir, "orphan root").unwrap();
+        git(dir, &["checkout", "-q", "main"]).unwrap();
+        assert!(matches!(
+            merge_preview(dir, "main", "solo"),
+            MergePreview::Unavailable(_)
+        ));
+    }
+
+    /// Without `-z` this path comes back C-quoted and matches nothing on disk.
+    #[test]
+    fn non_ascii_conflict_paths_survive_verbatim() {
+        let tmp = repo();
+        let dir = tmp.path();
+        let name = "uni-café.txt";
+        std::fs::write(dir.join(name), "a\n").unwrap();
+        commit_all(dir, "add an accented filename").unwrap();
+        branch_with(dir, "feat", name, "FEAT\n");
+        std::fs::write(dir.join(name), "MAIN\n").unwrap();
+        commit_all(dir, "main edits it too").unwrap();
+        assert_eq!(
+            merge_preview(dir, "main", "feat"),
+            MergePreview::Conflicts(vec![name.to_string()])
+        );
     }
 }
