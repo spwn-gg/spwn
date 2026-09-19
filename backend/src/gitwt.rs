@@ -359,6 +359,11 @@ pub enum SyncOutcome {
     /// The merge stopped on these paths and the conflict is **still in the worktree**,
     /// waiting for someone to resolve it. Back it out with [`abort_sync`].
     Conflicted(Vec<String>),
+    /// It conflicted, but rerere replayed a resolution recorded earlier and the merge
+    /// was completed with it. Reported separately from `Merged` on purpose: a replayed
+    /// resolution is textual, so it can be stale if the surrounding code moved, and
+    /// these files are worth a glance.
+    ReplayedResolution { files: Vec<String> },
 }
 
 /// Paths left unmerged in `dir` by a conflicted merge. Empty when no merge is stuck.
@@ -380,6 +385,38 @@ pub fn unmerged_paths(dir: &Path) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Whether rerere is switched on for `dir`.
+///
+/// This gate matters more than it looks: `git rerere remaining` prints **nothing and
+/// exits 0** on a genuinely conflicted tree when rerere is off, so reading it without
+/// checking this first would conclude "all resolved" and commit conflict markers.
+pub fn rerere_enabled(dir: &Path) -> bool {
+    git(dir, &["config", "--bool", "--get", "rerere.enabled"])
+        .map(|v| v == "true")
+        .unwrap_or(false)
+}
+
+/// Paths a conflicted merge still needs a human (or agent) for, with anything rerere
+/// replayed from a previous resolution already excluded. Only meaningful when
+/// [`rerere_enabled`].
+pub fn rerere_remaining(dir: &Path) -> Vec<String> {
+    git(dir, &["rerere", "remaining"])
+        .map(|out| out.lines().filter(|l| !l.is_empty()).map(String::from).collect())
+        .unwrap_or_default()
+}
+
+/// Whether `path` still holds conflict markers — a last check before trusting that a
+/// replayed resolution is complete. Deliberately conservative: a file that legitimately
+/// contains marker-shaped lines reads as unresolved, which costs a needless handoff
+/// rather than a bad commit.
+fn has_conflict_markers(path: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    text.lines().any(|l| l.starts_with("<<<<<<< "))
+        && text.lines().any(|l| l.starts_with(">>>>>>> "))
 }
 
 /// Whether `dir` is part-way through a merge — i.e. a sync conflicted and is waiting
@@ -430,6 +467,37 @@ pub fn sync_from_base(worktree: &Path, base: &str) -> Result<SyncOutcome, String
     // Same trap as `merge-tree`: exit 1 means both "conflicts" and "that isn't a ref".
     // Here the unmerged path list separates them — a real conflict always leaves some.
     let conflicts = unmerged_paths(worktree);
+    if !conflicts.is_empty() && rerere_enabled(worktree) {
+        // rerere leaves replayed files unmerged in the index even though their content
+        // is already correct, so `conflicts` over-reports. `rerere remaining` is the
+        // list that actually needs someone's attention.
+        let remaining = rerere_remaining(worktree);
+        let markers = conflicts.iter().any(|p| has_conflict_markers(&worktree.join(p)));
+        if remaining.is_empty() && !markers {
+            // Everything came back from the cache: stage the replayed files and close
+            // the merge. Redoing a resolution you already made is precisely what rerere
+            // exists to avoid, and leaving the merge open would park the session in a
+            // state that blocks committing and merging alike.
+            git(worktree, &["add", "-A"])?;
+            let mut cmd = Command::new("git");
+            cmd.arg("-C").arg(worktree).args(["commit", "--no-edit", "--no-verify"]);
+            if !has_git_identity(worktree) {
+                cmd.envs(FALLBACK_IDENTITY);
+            }
+            let done = cmd
+                .output()
+                .map_err(|e| format!("failed to run git commit: {e}"))?;
+            if done.status.success() {
+                return Ok(SyncOutcome::ReplayedResolution { files: conflicts });
+            }
+            // Couldn't close it — fall through and report it as needing attention
+            // rather than leaving the caller believing it landed.
+            return Ok(SyncOutcome::Conflicted(conflicts));
+        }
+        if !remaining.is_empty() {
+            return Ok(SyncOutcome::Conflicted(remaining));
+        }
+    }
     if conflicts.is_empty() {
         // Not a conflict, so nothing should be left part-merged. (A no-op when the
         // merge never started, which is the usual case for a bad ref.)
@@ -842,6 +910,59 @@ mod sync_and_land_tests {
         assert_eq!(git(dir, &["rev-parse", "main"]).unwrap(), before);
         assert!(is_clean(dir), "no half-merge left in the base checkout");
         assert!(!merge_in_progress(dir));
+    }
+
+    /// The whole point of turning rerere on: N sessions fork from one base, so they all
+    /// hit the same conflict. Resolve it once and the rest complete by themselves.
+    #[test]
+    fn rerere_replays_a_recorded_resolution_and_closes_the_merge() {
+        let tmp = diverged(true);
+        let dir = tmp.path();
+        git(dir, &["config", "rerere.enabled", "true"]).unwrap();
+
+        // First encounter: a real conflict, resolved by hand and committed.
+        assert!(matches!(
+            sync_from_base(dir, "main").unwrap(),
+            SyncOutcome::Conflicted(_)
+        ));
+        std::fs::write(dir.join("f.txt"), "reconciled\n").unwrap();
+        commit_all(dir, "resolve the conflict").unwrap();
+
+        // Rewind past the merge and walk into the identical conflict again.
+        git(dir, &["reset", "--hard", "HEAD~1"]).unwrap();
+        match sync_from_base(dir, "main").unwrap() {
+            SyncOutcome::ReplayedResolution { files } => assert_eq!(files, vec!["f.txt"]),
+            other => panic!("expected a replayed resolution, got {other:?}"),
+        }
+        assert!(!merge_in_progress(dir), "the merge should have been closed");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("f.txt")).unwrap(),
+            "reconciled\n"
+        );
+    }
+
+    /// The trap that shapes this code: `git rerere remaining` prints nothing and exits
+    /// 0 on a genuinely conflicted tree when rerere is off. Reading it without checking
+    /// `rerere_enabled` first would read as "nothing left to do" and commit the markers.
+    #[test]
+    fn with_rerere_off_a_conflict_is_never_reported_as_resolved() {
+        let tmp = diverged(true);
+        let dir = tmp.path();
+        git(dir, &["config", "rerere.enabled", "false"]).unwrap();
+
+        assert_eq!(
+            sync_from_base(dir, "main").unwrap(),
+            SyncOutcome::Conflicted(vec!["f.txt".to_string()])
+        );
+        assert!(!rerere_enabled(dir));
+        assert!(
+            rerere_remaining(dir).is_empty(),
+            "this is the trap: empty despite f.txt being unresolved"
+        );
+        assert!(
+            std::fs::read_to_string(dir.join("f.txt")).unwrap().contains("<<<<<<<"),
+            "markers are still on disk, so nothing may be auto-committed"
+        );
     }
 
     #[test]

@@ -29,6 +29,17 @@ fi
 mkdir -p "$(dirname "$SPWN_WORKTREE")"
 git worktree add -b "$SPWN_BRANCH" "$SPWN_WORKTREE" "$SPWN_BASE_BRANCH" || exit 1
 
+# Record conflict resolutions once, replay them everywhere. Parallel sessions all fork
+# from the same base, so when the base moves they hit the SAME conflict N times over.
+# rerere's cache lives in the repo's common git dir, shared by every worktree, so a
+# resolution made in one session replays automatically in the rest.
+#
+# Only set when the user has expressed no preference — an explicit `rerere.enabled
+# false` is theirs to keep. Delete these lines to opt out.
+if [ -z "$(git config --get rerere.enabled 2>/dev/null)" ]; then
+  git config rerere.enabled true
+fi
+
 # COW-clone heavy, gitignored build dirs (clonefile on APFS; plain copy elsewhere) so
 # the agent doesn't pay a cold install/build. A worktree only checks out tracked files,
 # so these are otherwise absent.

@@ -94,7 +94,11 @@ export type SyncResult =
 	| { outcome: 'upToDate' }
 	| { outcome: 'merged'; summary: string }
 	/** The conflict is sitting in the session's worktree, waiting on a resolution. */
-	| { outcome: 'conflicted'; conflicts: string[] };
+	| { outcome: 'conflicted'; conflicts: string[] }
+	/** rerere replayed a resolution recorded earlier and closed the merge. Separate from
+	 *  'merged' on purpose: a replayed resolution is textual, so it can be stale if the
+	 *  surrounding code moved, and these files are worth a glance. */
+	| { outcome: 'replayedResolution'; files: string[] };
 
 /** A session's hooks status (mirrors hooks::HooksStatus). */
 export interface HooksStatus {

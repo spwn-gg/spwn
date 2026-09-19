@@ -70,12 +70,17 @@
 		syncNote = '';
 		try {
 			const r = await syncSessionFromBase(terminalId);
-			syncNote =
-				r.outcome === 'upToDate'
-					? 'Already up to date with the base.'
-					: r.outcome === 'merged'
-						? `Synced — landing this is now a fast-forward. ${r.summary}`
-						: handOff(r.conflicts);
+			if (r.outcome === 'upToDate') {
+				syncNote = 'Already up to date with the base.';
+			} else if (r.outcome === 'merged') {
+				syncNote = `Synced — landing this is now a fast-forward. ${r.summary}`;
+			} else if (r.outcome === 'replayedResolution') {
+				syncNote = `Conflicted, but git replayed a resolution you'd recorded before and finished the merge (${r.files.join(
+					', '
+				)}). Replays are textual, so give ${r.files.length === 1 ? 'it' : 'them'} a look.`;
+			} else {
+				syncNote = handOff(r.conflicts);
+			}
 		} catch (e) {
 			syncNote = String(e);
 		} finally {

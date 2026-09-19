@@ -95,7 +95,7 @@ hooks that spwn writes into `~/.spwn/hooks/` the first time it runs:
 
 | File | What it does |
 |------|--------------|
-| `session-created.d/10-worktree.sh` | Creates the session's git worktree and COW-seeds heavy build dirs (`node_modules`, `target`, …). Reports the worktree back to spwn (see [Reporting values back](#reporting-values-back-to-spwn)). |
+| `session-created.d/10-worktree.sh` | Creates the session's git worktree, turns on [`rerere`](#conflict-resolutions-are-recorded-once) and COW-seeds heavy build dirs (`node_modules`, `target`, …). Reports the worktree back to spwn (see [Reporting values back](#reporting-values-back-to-spwn)). |
 | `session-deleted.d/90-worktree.sh` | Removes the worktree and deletes its branch. |
 | `session-turn.d/10-commit.sh` | Commits the turn's changes onto the session branch. |
 | `session-turn.d/20-checkpoint.sh` | Snapshots a checkpoint for [rewind/undo](/spwn/guides/fork-and-rewind/). |
@@ -110,6 +110,20 @@ Because these are just scripts in a folder, you can:
 - **Turn them all off** — see [enabling/disabling global hooks](/spwn/reference/settings/#global-hooks).
 
 :::caution[Worktrees come from a hook]
+### Conflict resolutions are recorded once
+
+`10-worktree.sh` sets `rerere.enabled` on the repository, unless you have already set it
+yourself — an explicit `false` is left alone.
+
+Parallel sessions all fork from the same base, so when that base moves they tend to walk
+into *the same* conflict, once per session. git's "reuse recorded resolution" cache lives
+in the repository's common git dir, shared by every worktree, so resolving a conflict in
+one session replays it automatically in the others. Syncing a session reports that
+separately from an ordinary clean merge, because a replayed resolution is textual and can
+be stale if the surrounding code has moved.
+
+Delete those lines from the script to opt out.
+
 Creating and removing a session's worktree is done by the default `10-worktree.sh` /
 `90-worktree.sh` scripts. If you disable global hooks or delete those files, **new
 sessions no longer get an isolated worktree or branch** — they run in the project folder,

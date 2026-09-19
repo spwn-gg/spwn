@@ -70,6 +70,10 @@
 				result = 'Already up to date with the base.';
 			} else if (r.outcome === 'merged') {
 				result = 'Synced — merging is now a fast-forward.';
+			} else if (r.outcome === 'replayedResolution') {
+				result = `Conflicted, but a previously recorded resolution was replayed to finish the merge (${r.files.join(
+					', '
+				)}). Worth a look — replays are textual.`;
 			} else {
 				// Hand the conflict to the agent that owns this worktree; it goes into the
 				// composer unsubmitted, so a turn only starts when the user sends it.
