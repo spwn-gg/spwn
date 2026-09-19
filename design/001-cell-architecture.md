@@ -1,6 +1,6 @@
 # 001 — The cell: N agents on one repo
 
-**Status:** draft · **Context:** moving spwn from local orchestration to hosted infrastructure
+**Status:** draft · **Partly superseded by:** [002](./002-workers-priority-leases.md) §8 · **Context:** moving spwn from local orchestration to hosted infrastructure
 
 ## Summary
 
