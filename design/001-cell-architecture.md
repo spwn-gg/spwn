@@ -19,8 +19,8 @@ taken on this repository.
 - At N=50, the current status path costs **~1265 ms per refresh cycle** against a
   1200 ms debounce — it stops converging right about there — and the answer it produces
   is *wrong*, because `MAX_OVERLAP_SIBLINGS = 12` silently truncates. Restructuring the
-  same work as one shared index pass costs **~104 ms** and is correct. This is the first
-  thing to fix.
+  same work as one shared index pass costs **~104 ms** and is correct. **Fixed** — a full
+  N=50 cycle now measures 140 ms, and the work is O(turns) rather than O(N²).
 - Git is not the storage problem. This repo's `.git` is **4.1 MB**; its build artifacts
   are **3.5 GB** — 850× larger. Disk is the binding constraint on cell size, and it has
   nothing to do with git.
@@ -105,10 +105,22 @@ Two separate failures here, and the second is worse than the first:
    rest. An advisory that quietly stops being complete is worse than one that is absent,
    because people calibrate on it.
 
-**Fix:** invert the computation. Build one `path → [session]` index per cell per cycle —
-50 diffs, 130 ms — and answer every session's overlap query from it. That is ~12×
-faster than the capped version, ~50× faster than uncapped, **and** it removes the cap,
-so the answer becomes correct. This is the single highest-value change in this document.
+**Fix (shipped):** invert the computation. Each session's diff is computed once into a
+shared index keyed by `(branch_sha, base_sha)`, and every session's overlap query is
+answered from it. Measured after the change, at N=50:
+
+| | Time |
+|---|---:|
+| Cold — one call, index empty, 50 diffs | 112 ms |
+| **Warm — a full 50-session cycle, nothing changed** | **140 ms** |
+
+A whole refresh cycle now costs about what one cold call does, because the warm path
+runs no diffs at all: the residual ~2.8 ms per call is a single `for-each-ref` to check
+staleness. **1265 ms → 140 ms, and the cap is gone**, so the answer is correct as well
+as fast.
+
+In real steady state one session's branch has moved (its agent just committed), so a
+cycle costs one `for-each-ref` plus one diff — the work is O(turns), not O(N²).
 
 ### 3.2 Disk — the actual binding constraint
 
@@ -182,8 +194,7 @@ first in practice, before any git-level contention appears.
 Ordered by when you'd actually hit it:
 
 1. **Global mutex + whole-file persist** — concurrency, any N > a handful
-2. **Overlap O(N²) + wrong answers past N=12** — measured wall at N≈45–50, and the
-   correctness failure starts at 13
+2. ~~**Overlap O(N²) + wrong answers past N=12**~~ — fixed by the shared index (§3.1)
 3. **Verify concurrency** — the moment more than a few agents verify at once
 4. **Disk divergence** — grows with agent-hours, not agent count
 5. **Repack contention** — hours to days of sustained load
@@ -197,7 +208,7 @@ out.
 
 | Problem | Response |
 |---|---|
-| Overlap O(N²) | One `path → [session]` index per cell per cycle; delete the sibling cap |
+| ~~Overlap O(N²)~~ | Done: shared index keyed by `(branch_sha, base_sha)`; sibling cap deleted |
 | Status storm | Push, don't poll — the cell knows when a ref moves; emit events instead of N sessions re-diffing |
 | Global mutex | Per-cell state, not global. SQLite or an event log per cell; never a whole-file rewrite |
 | Disk divergence | Size cells by disk; dedupe below git (overlayfs/btrfs) rather than per-worktree copies; evict idle worktrees, keep branches |

@@ -1181,43 +1181,103 @@ pub struct Overlap {
     pub files: Vec<String>,
 }
 
-/// How many sibling sessions to diff before giving up. This runs on every status
-/// refresh, so the work is O(siblings) per refresh and O(sessions²) across a busy
-/// project; a diff is a few ms, but the cap keeps a project with dozens of sessions
-/// from turning the strip into a git benchmark.
-const MAX_OVERLAP_SIBLINGS: usize = 12;
+/// What a session's branch changes, plus the commits that answer was computed from.
+/// Stale exactly when either commit moves, which for a session branch means "its agent
+/// committed a turn".
+pub struct OverlapEntry {
+    branch_sha: String,
+    base_sha: String,
+    files: Vec<String>,
+}
 
-/// Sibling sessions whose changed files intersect `ours`.
+/// Sibling sessions whose changed files intersect `ours`, via a per-project index.
 ///
 /// Deliberately advisory, and deliberately not a lock. Hard file ownership would kill
 /// the cheap-parallel-exploration property that is the entire point of the tool; a
 /// warning that two sessions are circling the same file lets you decide, early, whether
 /// that's a problem. Each side is diffed three-dot against its *own* base, so a fork
 /// doesn't "overlap" with its parent over work it merely inherited.
-fn overlaps_with(
+///
+/// This used to diff every sibling on every refresh: O(N) git calls per session, so
+/// O(N²) across a project, which at N=50 measured ~1.3s per cycle against a 1200ms
+/// debounce — and was capped at 12 siblings, so past N=12 it silently answered wrong.
+/// Now each session's diff is computed once and shared. A branch only changes when its
+/// agent commits, so the steady state is one `for-each-ref` plus one diff per turn
+/// rather than N² diffs per cycle, and the cap is gone along with the wrong answers.
+/// See `design/001-cell-architecture.md` §3.1.
+fn overlaps_for(
+    state: &AppState,
     wt: &Path,
-    ours: &[String],
-    siblings: &[(String, String, String, String)],
-) -> Vec<Overlap> {
-    if ours.is_empty() {
-        return Vec::new();
-    }
-    let ours: std::collections::HashSet<&str> = ours.iter().map(String::as_str).collect();
-    siblings
+    terminal_id: &str,
+    sessions: &[(String, String, String, String)],
+) -> (Vec<String>, Vec<Overlap>) {
+    // One call for every branch head, rather than a rev-parse per session — that would
+    // put the quadratic straight back.
+    let heads = gitwt::branch_heads(wt);
+    let shas = |branch: &str, base: &str| Some((heads.get(branch)?.clone(), heads.get(base)?.clone()));
+
+    // Decide what's stale under the lock; compute outside it. git has no business
+    // holding the mutex, least of all while N sessions are asking for status.
+    let stale: Vec<(String, String, String)> = {
+        let idx = state.overlap_index.lock();
+        sessions
+            .iter()
+            .filter(|(id, _, branch, base)| match (idx.get(id), shas(branch, base)) {
+                (Some(e), Some((b, bs))) => e.branch_sha != b || e.base_sha != bs,
+                _ => true,
+            })
+            .map(|(id, _, branch, base)| (id.clone(), branch.clone(), base.clone()))
+            .collect()
+    };
+    let fresh: Vec<(String, OverlapEntry)> = stale
         .iter()
-        .take(MAX_OVERLAP_SIBLINGS)
-        .filter_map(|(terminal_id, title, branch, base)| {
-            let files: Vec<String> = gitwt::changed_files(wt, base, branch)
-                .into_iter()
-                .filter(|f| ours.contains(f.as_str()))
+        .filter_map(|(id, branch, base)| {
+            let (branch_sha, base_sha) = shas(branch, base)?;
+            Some((
+                id.clone(),
+                OverlapEntry {
+                    branch_sha,
+                    base_sha,
+                    files: gitwt::changed_files(wt, base, branch),
+                },
+            ))
+        })
+        .collect();
+
+    let mut idx = state.overlap_index.lock();
+    for (id, entry) in fresh {
+        idx.insert(id, entry);
+    }
+    // Sessions come and go; their entries shouldn't outlive them.
+    let live: std::collections::HashSet<&str> =
+        sessions.iter().map(|(id, ..)| id.as_str()).collect();
+    idx.retain(|id, _| live.contains(id.as_str()));
+
+    let Some(ours) = idx.get(terminal_id) else {
+        return (Vec::new(), Vec::new());
+    };
+    let ours_files = ours.files.clone();
+    let ours_set: std::collections::HashSet<&str> =
+        ours.files.iter().map(String::as_str).collect();
+    let overlaps = sessions
+        .iter()
+        .filter(|(id, ..)| id != terminal_id)
+        .filter_map(|(id, title, _, _)| {
+            let files: Vec<String> = idx
+                .get(id)?
+                .files
+                .iter()
+                .filter(|f| ours_set.contains(f.as_str()))
+                .cloned()
                 .collect();
             (!files.is_empty()).then(|| Overlap {
-                terminal_id: terminal_id.clone(),
+                terminal_id: id.clone(),
                 title: title.clone(),
                 files,
             })
         })
-        .collect()
+        .collect();
+    (ours_files, overlaps)
 }
 
 /// Walk a session's lineage, collecting the branches its work must pass through.
@@ -1279,7 +1339,7 @@ pub fn session_merge_status(
                 .map(|p| {
                     p.terminals
                         .iter()
-                        .filter(|t| t.id != terminal_id && t.kind == "agent")
+                        .filter(|t| t.kind == "agent")
                         .filter_map(|t| {
                             Some((
                                 t.id.clone(),
@@ -1302,10 +1362,15 @@ pub fn session_merge_status(
     };
     let wt = Path::new(&cwd);
     let ahead = gitwt::count_commits(wt, &format!("{base}..{branch}"));
-    let changed_files = gitwt::changed_files(wt, &base, &branch);
+    // changed_files comes back from the index too, so self isn't diffed twice.
+    let (indexed_files, overlaps) = overlaps_for(state, wt, &terminal_id, &siblings);
+    let changed_files = if indexed_files.is_empty() && !siblings.iter().any(|(id, ..)| *id == terminal_id) {
+        gitwt::changed_files(wt, &base, &branch)
+    } else {
+        indexed_files
+    };
     let uncommitted = !gitwt::is_clean(wt);
     let mid_turn = agent_status_of(state, &terminal_id) == crate::agents::SessionStatus::Thinking;
-    let overlaps = overlaps_with(wt, &changed_files, &siblings);
     let human_blockers = gitwt::human_blockers(&repo, &base, &branch);
     let (staging_ahead, staging_files) = gitwt::staging_status(&repo, &base);
     let behind = gitwt::count_commits(wt, &format!("{branch}..{base}"));
@@ -3180,14 +3245,13 @@ mod merge_status_tests {
         std::fs::write(dir.join("other.rs"), "from b\n").unwrap();
         gitwt::commit_all(dir, "b").unwrap();
 
-        let ours = gitwt::changed_files(dir, "main", "spwn/bbb");
-        let siblings = vec![(
-            "t-a".to_string(),
-            "Session A".to_string(),
-            "spwn/aaa".to_string(),
-            "main".to_string(),
-        )];
-        let found = overlaps_with(dir, &ours, &siblings);
+        let state = AppState::default();
+        let sessions = vec![
+            session_row("t-a", "Session A", "spwn/aaa"),
+            session_row("t-b", "Session B", "spwn/bbb"),
+        ];
+        let (ours, found) = overlaps_for(&state, dir, "t-b", &sessions);
+        assert!(ours.contains(&"shared.rs".to_string()));
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].terminal_id, "t-a");
         assert_eq!(
@@ -3216,17 +3280,132 @@ mod merge_status_tests {
         std::fs::write(dir.join("g.rs"), "child's work\n").unwrap();
         gitwt::commit_all(dir, "child").unwrap();
 
-        let ours = gitwt::changed_files(dir, "spwn/parent", "spwn/child");
-        let siblings = vec![(
-            "t-p".to_string(),
-            "Parent".to_string(),
-            "spwn/parent".to_string(),
-            "main".to_string(),
-        )];
-        assert!(
-            overlaps_with(dir, &ours, &siblings).is_empty(),
-            "f.rs is inherited, not contested"
+        let state = AppState::default();
+        let sessions = vec![
+            session_row("t-p", "Parent", "spwn/parent"),
+            (
+                "t-c".to_string(),
+                "Child".to_string(),
+                "spwn/child".to_string(),
+                "spwn/parent".to_string(),
+            ),
+        ];
+        let (_, found) = overlaps_for(&state, dir, "t-c", &sessions);
+        assert!(found.is_empty(), "f.rs is inherited, not contested");
+    }
+
+    /// The regression this index exists for. The old code diffed each sibling per
+    /// refresh and gave up after MAX_OVERLAP_SIBLINGS = 12, so past twelve sessions it
+    /// silently reported a subset — an advisory that quietly stops being complete is
+    /// worse than one that is absent, because people calibrate on it.
+    #[test]
+    fn every_session_is_reported_past_the_old_cap_of_twelve() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        run_git(dir, &["init", "-q", "-b", "main", "."]);
+        std::fs::write(dir.join("contested.rs"), "base\n").unwrap();
+        gitwt::commit_all(dir, "base").unwrap();
+
+        let n = 20;
+        let mut sessions = Vec::new();
+        for i in 0..n {
+            run_git(dir, &["checkout", "-q", "main"]);
+            run_git(dir, &["checkout", "-q", "-b", &format!("spwn/s{i}")]);
+            std::fs::write(dir.join("contested.rs"), format!("from {i}\n")).unwrap();
+            gitwt::commit_all(dir, &format!("session {i}")).unwrap();
+            sessions.push(session_row(&format!("t{i}"), &format!("S{i}"), &format!("spwn/s{i}")));
+        }
+
+        let state = AppState::default();
+        let (_, found) = overlaps_for(&state, dir, "t0", &sessions);
+        assert_eq!(found.len(), n - 1, "all {} siblings, not the first 12", n - 1);
+    }
+
+    /// The index must not go stale: a session that commits again changes what it
+    /// contributes, and the next refresh has to see it.
+    #[test]
+    fn a_new_commit_refreshes_that_sessions_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        run_git(dir, &["init", "-q", "-b", "main", "."]);
+        std::fs::write(dir.join("a.rs"), "base\n").unwrap();
+        std::fs::write(dir.join("b.rs"), "base\n").unwrap();
+        gitwt::commit_all(dir, "base").unwrap();
+
+        run_git(dir, &["checkout", "-q", "-b", "spwn/aaa"]);
+        std::fs::write(dir.join("a.rs"), "from a\n").unwrap();
+        gitwt::commit_all(dir, "a").unwrap();
+        run_git(dir, &["checkout", "-q", "main"]);
+        run_git(dir, &["checkout", "-q", "-b", "spwn/bbb"]);
+        std::fs::write(dir.join("a.rs"), "from b\n").unwrap();
+        gitwt::commit_all(dir, "b").unwrap();
+
+        let state = AppState::default();
+        let sessions = vec![
+            session_row("t-a", "A", "spwn/aaa"),
+            session_row("t-b", "B", "spwn/bbb"),
+        ];
+        let (_, first) = overlaps_for(&state, dir, "t-b", &sessions);
+        assert_eq!(first[0].files, vec!["a.rs"]);
+
+        // A's agent takes another turn, touching a file B also changed.
+        run_git(dir, &["checkout", "-q", "spwn/aaa"]);
+        std::fs::write(dir.join("b.rs"), "a touches b.rs too\n").unwrap();
+        gitwt::commit_all(dir, "a again").unwrap();
+        run_git(dir, &["checkout", "-q", "spwn/bbb"]);
+        std::fs::write(dir.join("b.rs"), "b's b.rs\n").unwrap();
+        gitwt::commit_all(dir, "b again").unwrap();
+
+        let (_, second) = overlaps_for(&state, dir, "t-b", &sessions);
+        assert_eq!(
+            second[0].files,
+            vec!["a.rs", "b.rs"],
+            "the cached entry must follow the new commits"
         );
+    }
+
+    /// Not a correctness test — it records the win the index exists for, so a future
+    /// change that reintroduces per-refresh diffing shows up as a timing regression.
+    #[test]
+    fn a_warm_index_costs_far_less_than_a_cold_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        run_git(dir, &["init", "-q", "-b", "main", "."]);
+        std::fs::write(dir.join("contested.rs"), "base\n").unwrap();
+        gitwt::commit_all(dir, "base").unwrap();
+
+        let n = 50;
+        let mut sessions = Vec::new();
+        for i in 0..n {
+            run_git(dir, &["checkout", "-q", "main"]);
+            run_git(dir, &["checkout", "-q", "-b", &format!("spwn/s{i}")]);
+            std::fs::write(dir.join("contested.rs"), format!("from {i}\n")).unwrap();
+            gitwt::commit_all(dir, &format!("session {i}")).unwrap();
+            sessions.push(session_row(&format!("t{i}"), &format!("S{i}"), &format!("spwn/s{i}")));
+        }
+
+        let state = AppState::default();
+        let cold = std::time::Instant::now();
+        overlaps_for(&state, dir, "t0", &sessions);
+        let cold = cold.elapsed();
+
+        // A full refresh cycle with nothing changed: every session asks, nothing diffs.
+        let warm = std::time::Instant::now();
+        for i in 0..n {
+            overlaps_for(&state, dir, &format!("t{i}"), &sessions);
+        }
+        let warm = warm.elapsed();
+        println!("  cold (1 call, {n} diffs): {cold:?}");
+        println!("  warm ({n} calls, 0 diffs): {warm:?}");
+        assert!(
+            warm < cold * 3,
+            "a whole warm cycle should cost about one cold call, got cold={cold:?} warm={warm:?}"
+        );
+    }
+
+    /// (id, title, branch, base) for a session branched straight off main.
+    fn session_row(id: &str, title: &str, branch: &str) -> (String, String, String, String) {
+        (id.into(), title.into(), branch.into(), "main".into())
     }
 
     fn run_git(dir: &std::path::Path, args: &[&str]) {
