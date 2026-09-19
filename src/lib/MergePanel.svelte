@@ -33,6 +33,11 @@
 	onMount(load);
 
 	const nothingToMerge = $derived(!!status && status.ahead === 0);
+	const conflicts = $derived(new Set(status?.conflicts ?? []));
+	// "Clean" is only claimable when the trial merge actually ran and found nothing.
+	const mergesClean = $derived(
+		!!status && !nothingToMerge && !status.previewUnavailable && conflicts.size === 0
+	);
 	const canMerge = $derived(
 		!!status?.branch && !status?.blocker && !nothingToMerge && !merging
 	);
@@ -89,18 +94,40 @@
 						<strong>{status.changedFiles.length}</strong>
 						file{status.changedFiles.length === 1 ? '' : 's'} changed
 					</span>
+					{#if conflicts.size}
+						<span class="stat clash">
+							<strong>{conflicts.size}</strong>
+							conflict{conflicts.size === 1 ? '' : 's'}
+						</span>
+					{:else if mergesClean}
+						<span class="stat clean">merges cleanly</span>
+					{/if}
 				</div>
 
 				{#if status.changedFiles.length}
 					<ul class="files">
 						{#each status.changedFiles as f (f)}
-							<li title={f}>{f}</li>
+							<li class:clash={conflicts.has(f)} title={conflicts.has(f) ? `${f} — conflicts with ${status.baseBranch}` : f}>
+								{f}
+							</li>
 						{/each}
 					</ul>
 				{/if}
 
 				{#if nothingToMerge}
 					<div class="note">This session's branch has no new commits — nothing to merge yet.</div>
+				{/if}
+				{#if conflicts.size}
+					<div class="note warn">
+						{conflicts.size === 1 ? 'One file conflicts' : `${conflicts.size} files conflict`}
+						with <code>{status.baseBranch}</code>. Merging will stop on the conflict and
+						leave <code>{status.baseBranch}</code> untouched.
+					</div>
+				{/if}
+				{#if status.previewUnavailable}
+					<div class="note">
+						Couldn't check for conflicts ahead of time: {status.previewUnavailable}
+					</div>
 				{/if}
 				{#if status.uncommitted}
 					<div class="note warn">
@@ -126,7 +153,13 @@
 			<button class="btn" onclick={onClose}>{merged ? 'Close' : 'Cancel'}</button>
 			{#if status?.branch}
 				<button class="btn primary" disabled={!canMerge} onclick={merge}>
-					{merging ? 'Merging…' : deleteAfter ? 'Merge & delete' : 'Merge'}
+					{merging
+						? 'Merging…'
+						: conflicts.size
+							? 'Merge anyway'
+							: deleteAfter
+								? 'Merge & delete'
+								: 'Merge'}
 				</button>
 			{/if}
 		</div>
@@ -230,11 +263,29 @@
 		font-size: 12px;
 		color: #c8c8c8;
 	}
+	.stat.clash strong {
+		color: #d8b25a;
+	}
+	.stat.clean {
+		color: #9fd0a6;
+	}
 	.files li {
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 		padding: 1px 0;
+	}
+	.files li.clash {
+		color: #d8b25a;
+	}
+	.files li.clash::before {
+		content: '!';
+		display: inline-block;
+		width: 10px;
+		font-weight: 700;
+	}
+	.files li:not(.clash) {
+		padding-left: 10px;
 	}
 	.note {
 		font-size: 12.5px;

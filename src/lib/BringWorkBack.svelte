@@ -46,6 +46,7 @@
 
 	const nothingToMerge = $derived(!!status && status.ahead === 0 && !status.uncommitted);
 	const canMerge = $derived(!!status?.branch && !status?.blocker && !nothingToMerge && !busy);
+	const conflictCount = $derived(status?.conflicts?.length ?? 0);
 
 	onMount(async () => {
 		try {
@@ -159,8 +160,18 @@
 						<div class="warn">Can’t merge yet: {status.blocker}</div>
 					{:else if nothingToMerge}
 						<div class="hint">Nothing to merge — no commits ahead of base.</div>
+					{:else if conflictCount}
+						<div class="warn">
+							Conflicts in {conflictCount} file{conflictCount === 1 ? '' : 's'}:
+							<code>{status?.conflicts.join(', ')}</code>. The merge will stop and leave
+							<code>{status?.baseBranch}</code> untouched.
+						</div>
+					{:else if status?.previewUnavailable}
+						<div class="hint">Couldn’t check for conflicts first: {status.previewUnavailable}</div>
 					{/if}
-					<button class="primary" disabled={!canMerge} onclick={doMerge}>Merge</button>
+					<button class="primary" disabled={!canMerge} onclick={doMerge}>
+						{conflictCount ? 'Merge anyway' : 'Merge'}
+					</button>
 				</section>
 
 				<!-- 2. Send last response into another session -->

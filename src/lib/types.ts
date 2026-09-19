@@ -125,6 +125,12 @@ export interface MergeStatus {
 	changedFiles: string[];
 	uncommitted: boolean;
 	blocker?: string | null;
+	/** Paths a trial merge would collide in. Empty means clean — but only when
+	 *  `previewUnavailable` is null; otherwise the check simply didn't run. */
+	conflicts: string[];
+	/** Why the trial merge couldn't be computed, when it couldn't. Never render an
+	 *  empty `conflicts` as "clean" while this is set. */
+	previewUnavailable?: string | null;
 }
 
 /** A project's main-checkout git status (mirrors commands::RepoStatus). */
