@@ -131,6 +131,9 @@ export interface MergeStatus {
 	/** Why the trial merge couldn't be computed, when it couldn't. Never render an
 	 *  empty `conflicts` as "clean" while this is set. */
 	previewUnavailable?: string | null;
+	/** A turn is running right now, so the worktree is being written as we look at it.
+	 *  Together with `uncommitted`, this is what makes commit-then-merge unsafe. */
+	midTurn: boolean;
 }
 
 /** A project's main-checkout git status (mirrors commands::RepoStatus). */

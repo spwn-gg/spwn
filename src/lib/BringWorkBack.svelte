@@ -45,7 +45,13 @@
 	let sendTarget = $state('');
 
 	const nothingToMerge = $derived(!!status && status.ahead === 0 && !status.uncommitted);
-	const canMerge = $derived(!!status?.branch && !status?.blocker && !nothingToMerge && !busy);
+	// See MergePanel: a running turn is writing the tree, so there's no coherent
+	// moment to snapshot. This panel's whole job is moving work back, so when the turn
+	// is done it always commits the leftovers rather than offering to leave them.
+	const inFlux = $derived(!!status?.uncommitted && !!status?.midTurn);
+	const canMerge = $derived(
+		!!status?.branch && !status?.blocker && !nothingToMerge && !busy && !inFlux
+	);
 	const conflictCount = $derived(status?.conflicts?.length ?? 0);
 
 	onMount(async () => {
@@ -83,7 +89,7 @@
 		error = '';
 		result = '';
 		try {
-			result = await mergeSession(projectId, terminalId);
+			result = await mergeSession(projectId, terminalId, !!status?.uncommitted);
 			status = await sessionMergeStatus(projectId, terminalId).catch(() => status);
 			await refreshProjects();
 		} catch (e) {
@@ -156,7 +162,12 @@
 						{/if}
 					</div>
 					<p class="opt-desc">Fold this session’s git branch back into the branch it was forked from.</p>
-					{#if status?.blocker}
+					{#if inFlux}
+						<div class="warn">
+							This session is mid-turn with uncommitted changes. Wait for the turn to finish,
+							so the merge doesn’t take a half-written tree.
+						</div>
+					{:else if status?.blocker}
 						<div class="warn">Can’t merge yet: {status.blocker}</div>
 					{:else if nothingToMerge}
 						<div class="hint">Nothing to merge — no commits ahead of base.</div>
@@ -168,6 +179,9 @@
 						</div>
 					{:else if status?.previewUnavailable}
 						<div class="hint">Couldn’t check for conflicts first: {status.previewUnavailable}</div>
+					{/if}
+					{#if status?.uncommitted && !inFlux}
+						<div class="hint">Uncommitted changes will be committed onto the branch first.</div>
 					{/if}
 					<button class="primary" disabled={!canMerge} onclick={doMerge}>
 						{conflictCount ? 'Merge anyway' : 'Merge'}

@@ -15,6 +15,7 @@
 	let loadError = $state('');
 	let merging = $state(false);
 	let deleteAfter = $state(false);
+	let commitFirst = $state(true);
 	let result = $state('');
 	let merged = $state(false);
 
@@ -32,14 +33,18 @@
 
 	onMount(load);
 
-	const nothingToMerge = $derived(!!status && status.ahead === 0);
+	const nothingToMerge = $derived(!!status && status.ahead === 0 && !status.uncommitted);
+	// A running turn is writing the tree right now: committing would catch it
+	// half-written, and merging without committing would drop the work. Neither is a
+	// choice worth offering, so wait it out.
+	const inFlux = $derived(!!status?.uncommitted && !!status?.midTurn);
 	const conflicts = $derived(new Set(status?.conflicts ?? []));
 	// "Clean" is only claimable when the trial merge actually ran and found nothing.
 	const mergesClean = $derived(
 		!!status && !nothingToMerge && !status.previewUnavailable && conflicts.size === 0
 	);
 	const canMerge = $derived(
-		!!status?.branch && !status?.blocker && !nothingToMerge && !merging
+		!!status?.branch && !status?.blocker && !nothingToMerge && !merging && !inFlux
 	);
 
 	async function merge() {
@@ -47,7 +52,7 @@
 		merging = true;
 		result = '';
 		try {
-			const msg = await mergeSession(projectId, terminalId);
+			const msg = await mergeSession(projectId, terminalId, commitFirst && !!status?.uncommitted);
 			result = msg;
 			merged = true;
 			await refreshProjects();
@@ -115,7 +120,9 @@
 				{/if}
 
 				{#if nothingToMerge}
-					<div class="note">This session's branch has no new commits — nothing to merge yet.</div>
+					<div class="note">
+						This session's branch has no new commits and nothing uncommitted — nothing to merge yet.
+					</div>
 				{/if}
 				{#if conflicts.size}
 					<div class="note warn">
@@ -129,10 +136,21 @@
 						Couldn't check for conflicts ahead of time: {status.previewUnavailable}
 					</div>
 				{/if}
-				{#if status.uncommitted}
+				{#if inFlux}
 					<div class="note warn">
-						This session has uncommitted changes that won't be included until its next turn commits them.
+						This session is mid-turn and has uncommitted changes. Wait for the turn to finish,
+						so the merge doesn't take a half-written tree.
 					</div>
+				{:else if status.uncommitted}
+					<label class="del">
+						<input type="checkbox" bind:checked={commitFirst} />
+						Commit this session's uncommitted changes first
+					</label>
+					{#if !commitFirst}
+						<div class="note warn">
+							Uncommitted changes will be left behind — only committed work merges.
+						</div>
+					{/if}
 				{/if}
 				{#if status.blocker}
 					<div class="blocker">{status.blocker}</div>

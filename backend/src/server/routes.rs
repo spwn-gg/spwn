@@ -184,8 +184,8 @@ pub async fn invoke(
             ok_result(cmd::delete_terminal(&state, a.project_id, a.terminal_id).await)
         }
         "merge_session" => blocking!(
-            state, body, ProjectTerminalArgs, st, a,
-            ok_result(cmd::merge_session(&st, a.project_id, a.terminal_id))
+            state, body, MergeSessionArgs, st, a,
+            ok_result(cmd::merge_session(&st, a.project_id, a.terminal_id, a.commit_first))
         ),
         "session_merge_status" => blocking!(
             state, body, ProjectTerminalArgs, st, a,
@@ -535,6 +535,17 @@ struct OpenTerminalArgs {
 struct ProjectTerminalArgs {
     project_id: String,
     terminal_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MergeSessionArgs {
+    project_id: String,
+    terminal_id: String,
+    /// Commit the session worktree's leftovers before merging. Defaults to false so a
+    /// caller that omits it keeps the old behaviour rather than committing by surprise.
+    #[serde(default)]
+    commit_first: bool,
 }
 
 #[derive(Deserialize)]

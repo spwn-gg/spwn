@@ -818,12 +818,18 @@ pub async fn delete_terminal(
 }
 
 /// Merge a session's branch back into its base branch (manual, user-triggered).
+///
+/// `commit_first` commits the worktree's leftovers onto the session branch before
+/// merging. Without it, anything the last turn didn't commit is silently left behind —
+/// and since the per-turn commit is a hook users can delete, "uncommitted" is a normal
+/// steady state for some setups, not just a mid-turn blip.
 pub fn merge_session(
     state: &AppState,
     project_id: String,
     terminal_id: String,
+    commit_first: bool,
 ) -> Result<String, String> {
-    let (proj_dir, branch, base) = {
+    let (proj_dir, branch, base, cwd) = {
         let store = state.store.lock();
         let proj_dir = store
             .project(&project_id)
@@ -840,10 +846,27 @@ pub fn merge_session(
             .base_branch
             .clone()
             .ok_or_else(|| "this session has no base branch to merge into".to_string())?;
-        (proj_dir, branch, base)
+        (proj_dir, branch, base, t.cwd.clone())
     };
     let repo = gitwt::repo_root(Path::new(&proj_dir))
         .ok_or_else(|| "project is not a git repository".to_string())?;
+    let wt = Path::new(&cwd);
+    if !gitwt::is_clean(wt) {
+        // A running turn is actively writing this tree, so there's no coherent moment
+        // to snapshot: committing catches it half-written, and merging without
+        // committing drops the work. Enforced here and not only in the panel, because
+        // a stale client would otherwise sail straight past the warning.
+        if agent_status_of(state, &terminal_id) == crate::agents::SessionStatus::Thinking {
+            return Err(
+                "This session is mid-turn and has uncommitted changes — wait for the turn \
+                 to finish, so the merge doesn't take a half-written tree."
+                    .to_string(),
+            );
+        }
+        if commit_first {
+            gitwt::commit_all(wt, "spwn: uncommitted work, committed before merge")?;
+        }
+    }
     gitwt::merge_into_base(&repo, &base, &branch)
 }
 
@@ -874,6 +897,9 @@ pub struct MergeStatus {
     /// `conflicts` on purpose: the UI must not show "merges cleanly" for a check that
     /// never ran.
     pub preview_unavailable: Option<String>,
+    /// A turn is running right now, so the worktree is being written as we look at it.
+    /// With `uncommitted`, this is what makes committing-then-merging unsafe.
+    pub mid_turn: bool,
 }
 
 /// Compute a merge preview for a session: target branch, how far ahead it is, which
@@ -905,6 +931,7 @@ pub fn session_merge_status(
     let ahead = gitwt::count_commits(wt, &format!("{base}..{branch}"));
     let changed_files = gitwt::changed_files(wt, &base, &branch);
     let uncommitted = !gitwt::is_clean(wt);
+    let mid_turn = agent_status_of(state, &terminal_id) == crate::agents::SessionStatus::Thinking;
     // Cheap enough to run on every status refresh — which matters, because the status
     // strip refetches after each turn commits, and "this session now collides with
     // main" is worth knowing then rather than at merge time. Measured ~3ms on this
@@ -939,6 +966,7 @@ pub fn session_merge_status(
         blocker,
         conflicts,
         preview_unavailable,
+        mid_turn,
     })
 }
 
@@ -2695,10 +2723,12 @@ mod merge_status_tests {
             blocker: None,
             conflicts: vec!["src/a.rs".into()],
             preview_unavailable: Some("unrelated histories".into()),
+            mid_turn: true,
         })
         .unwrap();
         assert_eq!(json["conflicts"], serde_json::json!(["src/a.rs"]));
         assert_eq!(json["previewUnavailable"], "unrelated histories");
+        assert_eq!(json["midTurn"], true);
     }
 
     /// Default() backs the "no branch, nothing to merge" early returns, and must not
@@ -2708,5 +2738,6 @@ mod merge_status_tests {
         let s = MergeStatus::default();
         assert!(s.conflicts.is_empty());
         assert!(s.preview_unavailable.is_none());
+        assert!(!s.mid_turn);
     }
 }
