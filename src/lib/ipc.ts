@@ -367,8 +367,12 @@ export function deleteTerminal(projectId: string, terminalId: string): Promise<v
 }
 
 /** Merge a session's worktree branch back into its base branch; resolves to a summary. */
-export function mergeSession(projectId: string, terminalId: string): Promise<string> {
-	return invoke('merge_session', { projectId, terminalId });
+export function mergeSession(
+	projectId: string,
+	terminalId: string,
+	commitFirst = false
+): Promise<string> {
+	return invoke('merge_session', { projectId, terminalId, commitFirst });
 }
 
 /** Preview what merging a session's branch into its base would do. */
