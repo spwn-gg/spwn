@@ -271,6 +271,23 @@ pub fn count_commits(dir: &Path, range: &str) -> u32 {
         .unwrap_or(0)
 }
 
+/// Every local branch and the commit it points at, in one call.
+///
+/// The point is the *one*: checking N sessions for staleness with N `rev-parse` calls
+/// puts the quadratic back that the overlap index exists to remove.
+pub fn branch_heads(dir: &Path) -> std::collections::HashMap<String, String> {
+    let Ok(out) = git(
+        dir,
+        &["for-each-ref", "--format=%(refname:short) %(objectname)", "refs/heads"],
+    ) else {
+        return std::collections::HashMap::new();
+    };
+    out.lines()
+        .filter_map(|l| l.split_once(' '))
+        .map(|(name, oid)| (name.to_string(), oid.to_string()))
+        .collect()
+}
+
 /// Whether `ancestor` is reachable from `descendant` — i.e. `descendant` already
 /// contains it. When that holds for (base, branch), merging the branch into the base
 /// is a fast-forward: no merge algorithm runs, so it cannot conflict.

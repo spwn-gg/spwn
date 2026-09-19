@@ -63,6 +63,10 @@ pub struct AppState {
     /// Live agent-session status: terminal id → status. Derived from the pane, so
     /// background sessions with no mounted tab still drive the sidebar.
     pub agent_status: Mutex<HashMap<String, crate::agents::SessionStatus>>,
+    /// What each session's branch changes, keyed by the commits it was computed from.
+    /// Shared so a status refresh reads other sessions' diffs instead of recomputing
+    /// them — see `commands::overlaps_for`.
+    pub overlap_index: Mutex<HashMap<String, crate::commands::OverlapEntry>>,
     /// Which turn each session last fired `session-turn` hooks for.
     pub turns: Mutex<crate::agents::turns::TurnTracker>,
     /// Running project workflows (`.spwn/workflows`) and what they own.
