@@ -141,6 +141,14 @@ export interface MergeStatus {
 	/** A turn is running right now, so the worktree is being written as we look at it.
 	 *  Together with `uncommitted`, this is what makes commit-then-merge unsafe. */
 	midTurn: boolean;
+	/** Commits on the base this session doesn't have yet — how stale it has grown. */
+	behind: number;
+	/** The branch already contains the base tip, so landing it is a fast-forward and
+	 *  cannot conflict. Syncing is what makes this true. */
+	willFastForward: boolean;
+	/** A sync conflicted and its resolution is still sitting in the worktree. Distinct
+	 *  from `uncommitted`: committing these would commit conflict markers. */
+	syncConflicts: string[];
 }
 
 /** A project's main-checkout git status (mirrors commands::RepoStatus). */
