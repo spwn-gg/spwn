@@ -55,3 +55,28 @@ export const ACTIONS = {
 	/** Unified "move this session's work somewhere useful" flow. */
 	bringWorkBack: 'Bring work back'
 } as const;
+
+/**
+ * The message handed to a session whose sync stopped on conflicts.
+ *
+ * This is the point of syncing base→branch rather than branch→base: the conflict
+ * lands in the worktree of the agent that wrote the code and still holds the
+ * conversation explaining it, instead of in a shared base checkout nobody can answer
+ * for. It goes into the composer unsubmitted, so a turn only starts when the user
+ * decides it should.
+ */
+export function syncConflictPrompt(base: string, files: string[]): string {
+	const list = files.map((f) => `- ${f}`).join('\n');
+	return [
+		`I merged \`${base}\` into this session's branch and it stopped on conflicts.`,
+		'',
+		`Conflicted ${files.length === 1 ? 'file' : 'files'}:`,
+		list,
+		'',
+		'The merge is still open in this worktree. Please resolve each conflict — you have',
+		'the context for our side of it, so keep both intents where they do not actually',
+		'disagree — then stage the files and commit the merge.',
+		'',
+		'Do not run `git merge --abort`: that would throw the sync away.'
+	].join('\n');
+}
